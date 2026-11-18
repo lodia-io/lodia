@@ -60,6 +60,9 @@ func TestACopyOfAnAccessSecretThatLagsMakesNoPassWaitAndAPassThatWaitsReadsItLiv
 			f.publishWorking(t)
 			setAccess(t, f.cp)
 			writeKubeconfig(t, f.cp, tenantKubeconfig)
+			testenv.Eventually(t, func() error {
+				return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
+			})
 			name := c.secret.Name(f.cp.Name)
 			live, liveReads := readsOf(t)
 			r := &health.Reconciler{Client: k8s, Reader: live, Secrets: copyShowing{Reader: k8s, name: name, shown: c.shown}, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: clock.RealClock{}}
@@ -67,9 +70,9 @@ func TestACopyOfAnAccessSecretThatLagsMakesNoPassWaitAndAPassThatWaitsReadsItLiv
 			if got := *liveReads; !slices.Equal(got, []string{name}) {
 				t.Errorf("a pass whose copy of %s lags read the Secrets %v from the API server, want only it", name, got)
 			}
-			testenv.Eventually(t, func() error {
-				return expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered())
-			})
+			if err := expect(t, f.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, f.allAnswered()); err != nil {
+				t.Errorf("right after the pass whose copy lags: %v", err)
+			}
 			if c := meta.FindStatusCondition(get(t, f.cp).Status.Conditions, lodiav1alpha1.ConditionControllersLeading); c != nil && strings.Contains(c.Message, "is kept by") {
 				t.Errorf("ControllersLeading says %q after a pass whose copy lags", c.Message)
 			}
