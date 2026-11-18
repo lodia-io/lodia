@@ -4,13 +4,18 @@
 package health
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func TestAWebhookActsOutsideWhenItCallsAURLOrFailsClosed(t *testing.T) {
@@ -69,22 +74,51 @@ func TestEveryKindOfAHeldRestoreSaysOrMoreWhenItsPageHasANextAndOnlyThen(t *test
 	}
 }
 
+type requestConn struct {
+	net.Conn
+	inFlight, most *atomic.Int32
+	state          atomic.Int32
+}
+
+func (c *requestConn) Write(b []byte) (int, error) {
+	if c.state.CompareAndSwap(0, 1) {
+		n := c.inFlight.Add(1)
+		for m := c.most.Load(); n > m && !c.most.CompareAndSwap(m, n); m = c.most.Load() {
+		}
+	}
+	return c.Conn.Write(b)
+}
+
+func (c *requestConn) Close() error {
+	if c.state.Swap(2) == 1 {
+		c.inFlight.Add(-1)
+	}
+	return c.Conn.Close()
+}
+
 func TestHeldRestoresListAtMostHeldRestoresAtOnceWhateverTheWorkers(t *testing.T) {
 	var inFlight, most atomic.Int32
 	hang := http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
-		n := inFlight.Add(1)
-		defer inFlight.Add(-1)
-		for m := most.Load(); n > m && !most.CompareAndSwap(m, n); m = most.Load() {
-		}
 		<-req.Context().Done()
 	})
+	dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &requestConn{Conn: conn, inFlight: &inFlight, most: &most}, nil
+	}
 	const timeout = 500 * time.Millisecond
 	r := &Reconciler{Timeout: timeout}
+	clients := &Reconciler{Timeout: 10 * time.Minute, DialContext: dial}
 	var passes sync.WaitGroup
 	took := make([]time.Duration, 2*heldRestores)
 	said := make([]string, len(took))
 	for i := range took {
-		tenant := restoreTenantOf(t, hang)
+		tenant, err := clients.tenant(types.NamespacedName{Namespace: "team-a", Name: strconv.Itoa(i)}, serveTenant(t, hang))
+		if err != nil {
+			t.Fatal(err)
+		}
 		passes.Go(func() {
 			start := time.Now()
 			said[i] = r.actedOn(t.Context(), tenant)
