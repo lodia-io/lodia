@@ -679,10 +679,8 @@ func TestTheSecretsOfTheAccessAreReadThroughOneReaderHealthAndTheEtcdSamplerShar
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, got := range map[string]client.Reader{"health": sources.Health.Secrets, "health-nodes": sources.Nodes.Secrets} {
-		if got != sources.Secrets {
-			t.Errorf("%s reads Secrets through %T, want the reader Setup returns", name, got)
-		}
+	if sources.Nodes.Secrets != sources.Health.Secrets {
+		t.Errorf("health-nodes reads Secrets through %T, want health's %T", sources.Nodes.Secrets, sources.Health.Secrets)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan error, 1)

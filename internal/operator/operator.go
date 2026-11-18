@@ -136,14 +136,11 @@ type Inputs struct {
 // Sources are the controllers Setup registers whose memory Lodia's metrics
 // serve: Health, with its counter of failed probes, health-nodes, with its
 // histogram of lag and its counts of the nodes, and the etcd sampler, with its
-// samples. No registry holds the counter or the histogram. Secrets is the
-// reader of the access Secrets' data that Tenant, Health, health-nodes and the
-// etcd sampler share.
+// samples. No registry holds the counter or the histogram.
 type Sources struct {
-	Health  *health.Reconciler
-	Nodes   *health.NodesReconciler
-	Etcd    *datastore.SampleReconciler
-	Secrets client.Reader
+	Health *health.Reconciler
+	Nodes  *health.NodesReconciler
+	Etcd   *datastore.SampleReconciler
 }
 
 type controllers struct {
@@ -245,7 +242,7 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := c.workloads.SetupWithManager(mgr, workers.Workloads.Workers); err != nil {
 		return nil, fmt.Errorf("set up the workloads controller: %w", err)
 	}
-	return &Sources{Health: c.health, Nodes: c.nodes, Etcd: c.sampler, Secrets: c.secrets}, nil
+	return &Sources{Health: c.health, Nodes: c.nodes, Etcd: c.sampler}, nil
 }
 
 // Metrics is Lodia's collector over a manager's cache and its Elected, and
