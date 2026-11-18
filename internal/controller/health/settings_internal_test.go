@@ -126,11 +126,17 @@ func TestTheTenantClientsFollowNoRedirectAndNameNoByteOfItsLocation(t *testing.T
 				})))
 			}
 			var requests atomic.Int64
+			var holding atomic.Bool
 			origin := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if holding.Load() {
+					time.Sleep(50 * time.Millisecond)
+				}
 				other := others[int(requests.Add(1))%len(others)]
 				http.Redirect(w, req, "http://"+other.listener.Addr().String()+"/"+marker+req.URL.RequestURI(), http.StatusFound)
 			}))
 			tenant, pass := c.start(t, origin.kubeconfig, time.Minute)
+			var sockets socketCount
+			sockets.watch(transportOf(t, tenant))
 			_, err := tenant.getLease(t.Context(), "kube-controller-manager")
 			if err == nil || strings.Contains(err.Error(), marker) {
 				t.Errorf("a read redirected returned %v, want an error that names none of the Location", err)
@@ -141,13 +147,10 @@ func TestTheTenantClientsFollowNoRedirectAndNameNoByteOfItsLocation(t *testing.T
 			for range 10 {
 				_ = pass(t.Context())
 			}
-			time.Sleep(100 * time.Millisecond)
-			var open int64
-			for _, server := range append(others, origin) {
-				open += server.listener.peak.Load()
-			}
-			if reached.Load() != 0 || open > int64(c.reads) {
-				t.Errorf("10 passes redirected to 5 hosts reached the others %d times and had %d connections open at most across the 6 servers, want 0 and %d", reached.Load(), open, c.reads)
+			holding.Store(true)
+			readsAtOnce(t, tenant, 2*c.reads)
+			if reached.Load() != 0 || sockets.peak.Load() > int64(c.reads) {
+				t.Errorf("10 passes and %d reads at once redirected to 5 hosts reached the others %d times and had %d sockets open at most, want 0 and at most the cap, %d", 2*c.reads, reached.Load(), sockets.peak.Load(), c.reads)
 			}
 		})
 	}
