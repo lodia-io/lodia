@@ -144,7 +144,6 @@ type Sources struct {
 }
 
 type controllers struct {
-	secrets   *secretcache.Reader
 	pki       *pki.Reconciler
 	requests  *pki.KubeconfigRequestReconciler
 	datastore *datastore.Reconciler
@@ -163,7 +162,6 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 		return datastore.DialEtcd(ctx, secrets, etcd)
 	}
 	c := &controllers{
-		secrets: secrets,
 		pki: &pki.Reconciler{
 			Client:              mgr.GetClient(),
 			Reader:              mgr.GetAPIReader(),

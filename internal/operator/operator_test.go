@@ -753,4 +753,12 @@ func TestTheSecretsOfTheAccessAreReadThroughOneReaderHealthAndTheEtcdSamplerShar
 	if got := named.Load(); got != 2 {
 		t.Errorf("3 dials of the etcd sent %d reads of a Secret, want the 2 of the first, which the others did not repeat", got)
 	}
+	for _, name := range []string{"dev-etcd-client", "dev-etcd-ca"} {
+		if err := sources.Health.Secrets.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: name}, &corev1.Secret{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := named.Load(); got != 2 {
+		t.Errorf("health's reader sent %d reads of the Secrets the etcd sampler had read, want none: the sampler reads through another reader", got-2)
+	}
 }

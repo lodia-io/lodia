@@ -24,6 +24,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/secretcache"
 )
 
 func TestHealthRunsOnTheFilesValues(t *testing.T) {
@@ -219,9 +220,12 @@ func TestEveryReconcilerThatReadsTheAccessSecretsReadsThemThroughTheOneReader(t 
 	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
 	c := newControllers(managerOf{cache: cacheOf{secrets: secrets}, reader: live}, in, "v1.0.0+0")
 
-	for name, got := range map[string]client.Reader{"tenant": c.tenant.Secrets, "health": c.health.Secrets, "health-nodes": c.nodes.Secrets} {
-		if got != c.secrets {
-			t.Errorf("%s reads Secrets through %T, want the one reader", name, got)
+	if _, ok := c.health.Secrets.(*secretcache.Reader); !ok {
+		t.Errorf("health reads Secrets through %T, want a *secretcache.Reader", c.health.Secrets)
+	}
+	for name, got := range map[string]client.Reader{"tenant": c.tenant.Secrets, "health-nodes": c.nodes.Secrets} {
+		if got != c.health.Secrets {
+			t.Errorf("%s reads Secrets through %T, want health's", name, got)
 		}
 	}
 	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}}
@@ -240,5 +244,13 @@ func TestEveryReconcilerThatReadsTheAccessSecretsReadsThemThroughTheOneReader(t 
 	}
 	if got := live.reads.Load(); got != 2 {
 		t.Errorf("3 dials of the etcd sent %d reads of a Secret, want the 2 of the first, which the others did not repeat", got)
+	}
+	for key := range secrets {
+		if err := c.health.Secrets.Get(t.Context(), key, &corev1.Secret{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := live.reads.Load(); got != 2 {
+		t.Errorf("health's reader sent %d reads of the Secrets the dials had read, want none: the dials read through another reader", got-2)
 	}
 }
