@@ -1087,11 +1087,7 @@ func renew(t *testing.T, name, holder string, at time.Time) {
 
 func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	paused := get(t, cp)
-	paused.Spec.Paused = true
-	if err := k8s.Update(t.Context(), paused); err != nil {
-		t.Fatal(err)
-	}
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
 }
 
 func unpaused(t *testing.T, cp *lodiav1alpha1.ControlPlane) client.WithWatch {
