@@ -18,9 +18,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 type counting struct {
@@ -77,11 +78,11 @@ func TestAResponseLongerThanTheBoundFailsBeforeItIsDecoded(t *testing.T) {
 		wantBytes  int64
 		wantLeases int
 	}{
-		{"exactly the bound", maxResponseBytes, false, false, maxResponseBytes, 1},
-		{"exactly the bound, chunked", maxResponseBytes, true, false, maxResponseBytes, 1},
-		{"a byte over", maxResponseBytes + 1, false, true, maxResponseBytes, 0},
-		{"a byte over, chunked", maxResponseBytes + 1, true, true, maxResponseBytes, 0},
-		{"far over, chunked", 3 * maxResponseBytes, true, true, maxResponseBytes, 0},
+		{"exactly the bound", tenantclient.MaxResponseBytes, false, false, tenantclient.MaxResponseBytes, 1},
+		{"exactly the bound, chunked", tenantclient.MaxResponseBytes, true, false, tenantclient.MaxResponseBytes, 1},
+		{"a byte over", tenantclient.MaxResponseBytes + 1, false, true, tenantclient.MaxResponseBytes, 0},
+		{"a byte over, chunked", tenantclient.MaxResponseBytes + 1, true, true, tenantclient.MaxResponseBytes, 0},
+		{"far over, chunked", 3 * tenantclient.MaxResponseBytes, true, true, tenantclient.MaxResponseBytes, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			body := leaseListOf(c.size)
@@ -106,38 +107,23 @@ func TestAResponseLongerThanTheBoundFailsBeforeItIsDecoded(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			read := &counting{next: r.clients[key].transport.Transport}
-			r.clients[key].transport.Transport = read
+			read := &counting{next: tenant.client.HTTP().Transport}
+			tenant.client.HTTP().Transport = read
 
 			leases, err := tenant.leasePage(t.Context(), metav1.ListOptions{})
-			if c.wantErr != (err != nil) || c.wantErr && !errors.Is(err, errResponseTooLong) {
+			if c.wantErr != (err != nil) || c.wantErr && !errors.Is(err, tenantclient.ErrResponseTooLong) {
 				t.Fatalf("list of %d bytes returned %v, want the error of the bound: %t", c.size, err, c.wantErr)
 			}
-			if c.wantErr && !strings.Contains(err.Error(), strconv.Itoa(maxResponseBytes)) {
-				t.Errorf("the error %q does not name the bound %d", err, maxResponseBytes)
+			if c.wantErr && !strings.Contains(err.Error(), strconv.Itoa(tenantclient.MaxResponseBytes)) {
+				t.Errorf("the error %q does not name the bound %d", err, tenantclient.MaxResponseBytes)
 			}
 			if got := read.bytes.Load(); got != c.wantBytes {
 				t.Errorf("the client read %d bytes of a response of %d, want %d", got, c.size, c.wantBytes)
 			}
-			if err == nil && len(leases.Items.items) != c.wantLeases {
-				t.Errorf("the response decoded to %d Leases, want %d", len(leases.Items.items), c.wantLeases)
+			if err == nil && len(leases.Items.Items) != c.wantLeases {
+				t.Errorf("the response decoded to %d Leases, want %d", len(leases.Items.Items), c.wantLeases)
 			}
 		})
-	}
-}
-
-type idleCloser struct {
-	http.RoundTripper
-	closed atomic.Bool
-}
-
-func (i *idleCloser) CloseIdleConnections() { i.closed.Store(true) }
-
-func TestTheCapStillLetsAForgottenControlPlaneCloseItsIdleConnections(t *testing.T) {
-	below := &idleCloser{}
-	utilnet.CloseIdleConnectionsFor(capResponses(below, 1, time.Minute))
-	if !below.closed.Load() {
-		t.Error("CloseIdleConnectionsFor did not reach the transport below the cap")
 	}
 }
 
@@ -220,7 +206,7 @@ func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStat
 			{http.StatusNotFound, "NotFound", "not found", apierrors.IsNotFound},
 		} {
 			t.Run(read.name+", "+strconv.Itoa(status.code), func(t *testing.T) {
-				body := failureOver(status.code, status.reason, status.message, maxResponseBytes+1)
+				body := failureOver(status.code, status.reason, status.message, tenantclient.MaxResponseBytes+1)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					w.Header().Set("Content-Length", strconv.Itoa(len(body)))
@@ -240,7 +226,7 @@ func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStat
 					}
 					return
 				}
-				if !errors.Is(err, errResponseTooLong) || status.is(err) {
+				if !errors.Is(err, tenantclient.ErrResponseTooLong) || status.is(err) {
 					t.Errorf("the read returned %v, want the error of the bound and nothing the Status of the body says", err)
 				}
 			})
@@ -250,7 +236,7 @@ func TestAResponseOverTheBoundIsAStopOrAFailedReadAndNeverDecodedWhateverItsStat
 
 func TestAFailedRequestOfExactlyTheBoundIsStillItsStatus(t *testing.T) {
 	sizedForTheBounds(t)
-	body := failureOver(http.StatusConflict, "Conflict", "the object has been modified", maxResponseBytes)
+	body := failureOver(http.StatusConflict, "Conflict", "the object has been modified", tenantclient.MaxResponseBytes)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
@@ -263,51 +249,6 @@ func TestAFailedRequestOfExactlyTheBoundIsStillItsStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := tenant.getLease(t.Context(), "kube-controller-manager"); !apierrors.IsConflict(err) {
-		t.Errorf("a Status of exactly %d bytes returned %v, want the conflict it says", maxResponseBytes, err)
-	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
-
-func TestTheCapFailsABodyPastTheBoundAndSaysSoToTheRequestThatAsked(t *testing.T) {
-	sizedForTheBounds(t)
-	for _, c := range []struct {
-		name    string
-		size    int
-		flagged bool
-		wantCut bool
-	}{
-		{"a byte over, asked", maxResponseBytes + 1, true, true},
-		{"a byte over, not asked", maxResponseBytes + 1, false, false},
-		{"exactly the bound, asked", maxResponseBytes, true, false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			body := strings.NewReader(strings.Repeat("x", c.size))
-			transport := capResponses(roundTripFunc(func(*http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(body)}, nil
-			}), 1, time.Minute)
-			var cut bool
-			ctx := t.Context()
-			if c.flagged {
-				ctx = context.WithValue(ctx, cutKey{}, &cut)
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://tenant", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			resp, err := transport.RoundTrip(req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			read, err := io.ReadAll(resp.Body)
-			if wantErr := c.size > maxResponseBytes; wantErr != errors.Is(err, errResponseTooLong) || len(read) != min(c.size, maxResponseBytes) {
-				t.Errorf("read %d bytes and returned %v, want %d bytes and the error of the bound: %t", len(read), err, min(c.size, maxResponseBytes), wantErr)
-			}
-			if cut != c.wantCut {
-				t.Errorf("the request was told of the cut: %t, want %t", cut, c.wantCut)
-			}
-		})
+		t.Errorf("a Status of exactly %d bytes returned %v, want the conflict it says", tenantclient.MaxResponseBytes, err)
 	}
 }

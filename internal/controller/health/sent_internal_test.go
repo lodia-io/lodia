@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func TestWhatHealthSendsBackOfATokenAndAVersionAtTheirRawBoundsIsPinned(t *testing.T) {
@@ -51,7 +53,7 @@ func TestWhatHealthSendsBackOfATokenAndAVersionAtTheirRawBoundsIsPinned(t *testi
 					patch = string(body)
 					_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"2"},"spec":{}}`)
 				default:
-					_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"`+strings.Repeat(c.byte, maxVersionRaw)+`"},"spec":{"holderIdentity":"lodia"}}`)
+					_, _ = io.WriteString(w, `{"metadata":{"resourceVersion":"`+strings.Repeat(c.byte, tenantclient.MaxVersionRaw)+`"},"spec":{"holderIdentity":"lodia"}}`)
 				}
 			}))
 			t.Cleanup(server.Close)
@@ -77,7 +79,7 @@ func TestWhatHealthSendsBackOfATokenAndAVersionAtTheirRawBoundsIsPinned(t *testi
 			start := strings.Index(patch, key) + len(key)
 			sent := strings.Index(patch[start:], `"`)
 			if len(read.Metadata.ResourceVersion) != c.heldVersion || sent != c.patchVersion {
-				t.Errorf("a resourceVersion of %d raw bytes is held as %d bytes and patched as %d, want %d and %d", maxVersionRaw, len(read.Metadata.ResourceVersion), sent, c.heldVersion, c.patchVersion)
+				t.Errorf("a resourceVersion of %d raw bytes is held as %d bytes and patched as %d, want %d and %d", tenantclient.MaxVersionRaw, len(read.Metadata.ResourceVersion), sent, c.heldVersion, c.patchVersion)
 			}
 		})
 	}

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go.lodia.io/lodia/internal/jsonscan"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func sizedForTheBounds(t testing.TB) {
@@ -15,26 +16,26 @@ func sizedForTheBounds(t testing.TB) {
 		name        string
 		bound, most int
 	}{
-		{"maxNameRaw", maxNameRaw, 2048},
-		{"maxVersionRaw", maxVersionRaw, 64},
+		{"tenantclient.MaxNameRaw", tenantclient.MaxNameRaw, 2048},
+		{"tenantclient.MaxVersionRaw", tenantclient.MaxVersionRaw, 64},
 		{"maxTimeRaw", maxTimeRaw, 64},
-		{"maxWordRaw", maxWordRaw, 72},
-		{"maxReasonRaw", maxReasonRaw, 126},
+		{"tenantclient.MaxWordRaw", tenantclient.MaxWordRaw, 72},
+		{"tenantclient.MaxReasonRaw", tenantclient.MaxReasonRaw, 126},
 		{"maxHolderRaw", maxHolderRaw, 512},
 		{"maxKubeletRaw", maxKubeletRaw, 384},
-		{"maxNumberRaw", maxNumberRaw, 11},
-		{"maxMessageRaw", maxMessageRaw, 1024},
+		{"tenantclient.MaxNumberRaw", tenantclient.MaxNumberRaw, 11},
+		{"tenantclient.MaxMessageRaw", tenantclient.MaxMessageRaw, 1024},
 		{"maxConditions", maxConditions, 64},
 		{"maxWebhooks", maxWebhooks, 256},
-		{"maxCauses", maxCauses, 64},
+		{"tenantclient.MaxCauses", tenantclient.MaxCauses, 64},
 		{"leasePage", leasePage, 500},
 		{"nodePage", nodePage, 100},
 		{"listLimit", listLimit, 500},
 		{"maxKubeletVersion", maxKubeletVersion, 64},
-		{"maxName", maxName, 253},
+		{"tenantclient.MaxName", tenantclient.MaxName, 253},
 		{"maxContinue", maxContinue, 4096},
-		{"maxResponseBytes", maxResponseBytes, 8 << 20},
-		{"maxResponseHeaderBytes", maxResponseHeaderBytes, 64 << 10},
+		{"tenantclient.MaxResponseBytes", tenantclient.MaxResponseBytes, 8 << 20},
+		{"tenantclient.MaxResponseHeaderBytes", tenantclient.MaxResponseHeaderBytes, 64 << 10},
 		{"jsonscan.MaxKey", jsonscan.MaxKey, 256},
 	} {
 		if c.bound > c.most {

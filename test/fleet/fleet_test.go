@@ -417,6 +417,9 @@ func (f *fleet) rest() {
 	f.report("at rest, %d tenants, over %s: %.1f requests/s to the API server: %s", f.size, restWindow, float64(total(d.requests))/restWindow.Seconds(), counts(d.requests, restWindow))
 	f.report("at rest: uncached Secret reads %.1f/s, %.2f per tenant per 5 s; status writes %.2f/s; etcd-druid's refresh %.1f status writes/s",
 		secrets, secrets*5/float64(f.size), float64(d.requests[statusWrites])/restWindow.Seconds(), float64(f.platform.refresh.Load()-refreshed)/restWindow.Seconds())
+	if n := d.requests["get secrets"]; n > 0 {
+		f.t.Errorf("at rest the operator sent %d reads of Secrets in %s, want none: Tenant, health, health-nodes and the etcd sampler read them from memory", n, restWindow)
+	}
 	f.report("at rest: passes %s; errors %s", counts(d.reconciles, restWindow), counts(d.errors, 0))
 	f.report("at rest: health passes a tenant every %s; health-nodes every %s", quantiles(intervals[kindProbe+"/"+classHonest]), quantiles(intervals[kindNodeLeases+"/"+classHonest]))
 	f.report("at rest: memory at the end %s; peak %s; %s a tenant by RSS, %s by heap in use", last, peak, kib(last.RSS, f.size), kib(last.HeapInuse, f.size))

@@ -18,6 +18,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func TestARequestIsSentOnceWhateverTheServerSaysOfWhenToSendItAgain(t *testing.T) {
@@ -124,9 +126,9 @@ func TestTheHeadersOfAResponseFailTheReadOnceTheyAreOneBytePastTheBound(t *testi
 		head int
 		fail bool
 	}{
-		{"a head of the bound", maxResponseHeaderBytes, false},
-		{"a head of the bound less one", maxResponseHeaderBytes - 1, false},
-		{"a head one byte past the bound", maxResponseHeaderBytes + 1, true},
+		{"a head of the bound", tenantclient.MaxResponseHeaderBytes, false},
+		{"a head of the bound less one", tenantclient.MaxResponseHeaderBytes - 1, false},
+		{"a head one byte past the bound", tenantclient.MaxResponseHeaderBytes + 1, true},
 		{"a head of 10 MiB", 10 << 20, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -142,8 +144,8 @@ func TestTheHeadersOfAResponseFailTheReadOnceTheyAreOneBytePastTheBound(t *testi
 			}
 			if _, err := tenant.leasePage(t.Context(), metav1.ListOptions{Limit: leasePage}); (err != nil) != c.fail {
 				t.Errorf("a head of %d bytes returned %v, want a failure: %t", c.head, err, c.fail)
-			} else if err != nil && !strings.Contains(err.Error(), "exceeded "+strconv.Itoa(maxResponseHeaderBytes)+" bytes") {
-				t.Errorf("the error %q does not name the bound %d", err, maxResponseHeaderBytes)
+			} else if err != nil && !strings.Contains(err.Error(), "exceeded "+strconv.Itoa(tenantclient.MaxResponseHeaderBytes)+" bytes") {
+				t.Errorf("the error %q does not name the bound %d", err, tenantclient.MaxResponseHeaderBytes)
 			}
 			if n := requests.Load(); n != 1 {
 				t.Errorf("the read sent %d requests, want 1", n)

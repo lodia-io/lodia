@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 type wordField struct {
@@ -37,7 +38,7 @@ var wordFields = []wordField{
 		return string(c.Status), err
 	}},
 	{"a Status's status", []string{metav1.StatusFailure}, func(token string) (string, error) {
-		s, err := statusFrom([]byte(`{"status":` + token + `}`))
+		s, err := tenantclient.StatusFrom([]byte(`{"status":` + token + `}`))
 		return s.Status, err
 	}},
 	{"a Service's type", []string{string(corev1.ServiceTypeLoadBalancer)}, func(token string) (string, error) {
@@ -64,10 +65,10 @@ var wordFields = []wordField{
 func TestAFieldOnlyComparedWithAWordIsNoneOfTheWordsPastItsBoundAndNeitherAStopNorAFailedRead(t *testing.T) {
 	sizedForTheBounds(t)
 	for _, c := range wordFields {
-		for _, n := range []int{maxWordRaw, maxWordRaw + 1, 316, 1 << 20} {
+		for _, n := range []int{tenantclient.MaxWordRaw, tenantclient.MaxWordRaw + 1, 316, 1 << 20} {
 			t.Run(c.name+", "+strconv.Itoa(n)+" bytes", func(t *testing.T) {
 				want := ""
-				if n <= maxWordRaw && c.name != "a condition's type" {
+				if n <= tenantclient.MaxWordRaw && c.name != "a condition's type" {
 					want = strings.Repeat("a", n)
 				}
 				if got, err := c.read(quotedOf(n)); err != nil || got != want {
@@ -107,13 +108,13 @@ func TestEveryWordAWordFieldIsComparedWithIsReadAsItselfWithEveryCharacterEscape
 			})
 		}
 	}
-	if longest != maxWordRaw {
-		t.Errorf("the longest word a field read with jsonscan.Word is compared with is %d bytes with every character escaped, and maxWordRaw is %d", longest, maxWordRaw)
+	if longest != tenantclient.MaxWordRaw {
+		t.Errorf("the longest word a field read with jsonscan.Word is compared with is %d bytes with every character escaped, and tenantclient.MaxWordRaw is %d", longest, tenantclient.MaxWordRaw)
 	}
 	for _, c := range wordFields {
 		t.Run(c.name+", one byte past the bound", func(t *testing.T) {
-			if got, err := c.read(quotedOf(maxWordRaw + 1)); err != nil || (got != "" && got != "<nil>") {
-				t.Errorf("read %d bytes as %q, error %v, want none of the words", maxWordRaw+1, got, err)
+			if got, err := c.read(quotedOf(tenantclient.MaxWordRaw + 1)); err != nil || (got != "" && got != "<nil>") {
+				t.Errorf("read %d bytes as %q, error %v, want none of the words", tenantclient.MaxWordRaw+1, got, err)
 			}
 		})
 	}
@@ -124,7 +125,7 @@ func TestAWordWithinItsBoundIsComparedAfterUnquoting(t *testing.T) {
 	if err != nil || c.Type != corev1.NodeReady || c.Status != corev1.ConditionTrue {
 		t.Errorf("read type %q and status %q, error %v, want Ready and True", c.Type, c.Status, err)
 	}
-	s, err := statusFrom([]byte(`{"status":"Fail\u0075re"}`))
+	s, err := tenantclient.StatusFrom([]byte(`{"status":"Fail\u0075re"}`))
 	if err != nil || s.Status != metav1.StatusFailure {
 		t.Errorf("read status %q, error %v, want Failure", s.Status, err)
 	}
@@ -172,13 +173,13 @@ func TestAFieldComparedOrSkippedIsNeverDecoded(t *testing.T) {
 	}{
 		{"a Status's status", func() ([]byte, func([]byte) error) {
 			return read(`{"status":`+huge+`}`, func(body []byte) error {
-				_, err := statusFrom(body)
+				_, err := tenantclient.StatusFrom(body)
 				return err
 			})
 		}},
 		{"a Status read for a failure", func() ([]byte, func([]byte) error) {
 			return read(`{"kind":"Status","status":`+huge+`,"message":"m"}`, func(body []byte) error {
-				if _, ok := failureOf(body); ok {
+				if _, ok := tenantclient.FailureOf(body); ok {
 					t.Error("a Status whose status is no word was read as a failure")
 				}
 				return nil
@@ -245,7 +246,7 @@ func TestAFieldComparedOrSkippedIsNeverDecoded(t *testing.T) {
 
 func TestAStopInsideAPageKeepsTheItemsBeforeItAtMostMaxNodes(t *testing.T) {
 	sizedForTheBounds(t)
-	long := strings.Repeat("a", maxNameRaw+1)
+	long := strings.Repeat("a", tenantclient.MaxNameRaw+1)
 	for _, c := range []struct {
 		name     string
 		maxNodes int
@@ -336,7 +337,7 @@ func TestEveryReasonAnErrorIsComparedWithIsReadAsItselfWithEveryCharacterEscaped
 			}
 			for _, code := range []int{http.StatusNotFound, http.StatusConflict, http.StatusForbidden} {
 				body := statusWith(raw, "", code)
-				failure, ok := failureOf(body)
+				failure, ok := tenantclient.FailureOf(body)
 				if !ok || failure.Reason != reason || failure.Code != int32(code) {
 					t.Fatalf("read %d raw bytes of %q with the code %d as %q, %t, want it as itself", len(raw), reason, code, failure.Reason, ok)
 				}
@@ -347,21 +348,21 @@ func TestEveryReasonAnErrorIsComparedWithIsReadAsItselfWithEveryCharacterEscaped
 					}
 				}
 			}
-			if len(raw) < maxReasonRaw {
-				if failure, ok := failureOf(statusWith(raw+"a", "", http.StatusForbidden)); !ok || failure.Reason == reason {
+			if len(raw) < tenantclient.MaxReasonRaw {
+				if failure, ok := tenantclient.FailureOf(statusWith(raw+"a", "", http.StatusForbidden)); !ok || failure.Reason == reason {
 					t.Errorf("read %q followed by a letter as %q, %t, want another reason", reason, failure.Reason, ok)
 				}
 			}
 		})
 	}
-	if longest != maxReasonRaw {
-		t.Errorf("the longest reason apierrors compares is %d bytes with every character escaped, and maxReasonRaw is %d", longest, maxReasonRaw)
+	if longest != tenantclient.MaxReasonRaw {
+		t.Errorf("the longest reason apierrors compares is %d bytes with every character escaped, and tenantclient.MaxReasonRaw is %d", longest, tenantclient.MaxReasonRaw)
 	}
-	if _, ok := failureOf(statusWith(strings.Repeat("a", maxReasonRaw), "", http.StatusForbidden)); !ok {
-		t.Errorf("a reason of %d bytes, the bound, is no Status", maxReasonRaw)
+	if _, ok := tenantclient.FailureOf(statusWith(strings.Repeat("a", tenantclient.MaxReasonRaw), "", http.StatusForbidden)); !ok {
+		t.Errorf("a reason of %d bytes, the bound, is no Status", tenantclient.MaxReasonRaw)
 	}
-	if _, ok := failureOf(statusWith(strings.Repeat("a", maxReasonRaw+1), "", http.StatusForbidden)); ok {
-		t.Errorf("a reason of %d bytes, one past the bound, is a Status", maxReasonRaw+1)
+	if _, ok := tenantclient.FailureOf(statusWith(strings.Repeat("a", tenantclient.MaxReasonRaw+1), "", http.StatusForbidden)); ok {
+		t.Errorf("a reason of %d bytes, one past the bound, is a Status", tenantclient.MaxReasonRaw+1)
 	}
 }
 
@@ -369,8 +370,8 @@ func TestANamespaceBeingDeletedIsTheCauseRefusedLooksForWhateverTheEscapes(t *te
 	sizedForTheBounds(t)
 	cause := string(corev1.NamespaceTerminatingCause)
 	raw := escapedFully(cause)
-	if len(raw) > maxReasonRaw || len(raw) != 6*len(cause) {
-		t.Fatalf("NamespaceTerminating is %d bytes with every character escaped, want %d, within maxReasonRaw, %d", len(raw), 6*len(cause), maxReasonRaw)
+	if len(raw) > tenantclient.MaxReasonRaw || len(raw) != 6*len(cause) {
+		t.Fatalf("NamespaceTerminating is %d bytes with every character escaped, want %d, within tenantclient.MaxReasonRaw, %d", len(raw), 6*len(cause), tenantclient.MaxReasonRaw)
 	}
 	for _, c := range []struct {
 		name, cause string
@@ -381,14 +382,14 @@ func TestANamespaceBeingDeletedIsTheCauseRefusedLooksForWhateverTheEscapes(t *te
 		{"fully escaped", raw, false, true},
 		{"fully escaped and followed by a letter", raw + "a", true, true},
 		{"another cause", string(metav1.CauseTypeFieldValueInvalid), true, true},
-		{"a cause one byte past the bound", strings.Repeat("a", maxReasonRaw+1), true, false},
+		{"a cause one byte past the bound", strings.Repeat("a", tenantclient.MaxReasonRaw+1), true, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			body := statusWith("Forbidden", c.cause, http.StatusForbidden)
 			if got := apistatus.Refused(asTheTypedClientReadsIt(t, body)); got != c.refused {
 				t.Fatalf("the typed client's Refused is %t, want %t", got, c.refused)
 			}
-			failure, ok := failureOf(body)
+			failure, ok := tenantclient.FailureOf(body)
 			if ok != c.read {
 				t.Fatalf("a Status with the cause %q is read as a Status: %t, want %t", c.cause, ok, c.read)
 			}

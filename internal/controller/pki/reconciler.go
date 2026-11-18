@@ -12,10 +12,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
@@ -30,6 +32,7 @@ import (
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/statusapply"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -65,6 +68,9 @@ type Reconciler struct {
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
+
+	mu      sync.Mutex
+	clients *tenantclient.Clients
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -90,6 +96,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.forget(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if cp.DeletionTimestamp != nil || cp.Spec.Paused {

@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func startAPIServer(t *testing.T) (*kubernetes.Clientset, *tenant) {
@@ -92,7 +93,7 @@ func TestTheCausesOfARealAPIServersRefusalAreWhatTheTypedClientReads(t *testing.
 		{"an invalid create", "kube-system", invalid, &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "Not_A_Name"}, Spec: coordinationv1.LeaseSpec{LeaseDurationSeconds: ptr.To[int32](-5)}}, apierrors.IsInvalid, true, metav1.CauseTypeFieldValueInvalid},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := tenant.do(t.Context(), tenant.api.Post().AbsPath(coordinationPath, c.namespace, "leases").SetHeader("Content-Type", "application/json").Body([]byte(c.body)))
+			_, err := tenant.client.Do(t.Context(), tenant.client.Post().AbsPath(coordinationPath, c.namespace, "leases").SetHeader("Content-Type", "application/json").Body([]byte(c.body)))
 			_, want := typed.CoordinationV1().Leases(c.namespace).Create(t.Context(), c.object, metav1.CreateOptions{})
 			if !c.is(err) || !c.is(want) {
 				t.Fatalf("the projection returned %v and the typed client %v, want the error the API's own check recognises", err, want)
@@ -130,7 +131,7 @@ func (m measuringHeads) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestAKubeAPIServersHeadersAreFarUnderTheBoundHealthReads(t *testing.T) {
 	_, tenant := startAPIServer(t)
 	var biggest int
-	tenant.api.Client.Transport = measuringHeads{tenant.api.Client.Transport, &biggest}
+	tenant.client.HTTP().Transport = measuringHeads{tenant.client.HTTP().Transport, &biggest}
 	lease := func(name string) []byte {
 		return []byte(`{"apiVersion":"coordination.k8s.io/v1","kind":"Lease","metadata":{"name":"` + name + `","namespace":"kube-system"}}`)
 	}
@@ -141,9 +142,9 @@ func TestAKubeAPIServersHeadersAreFarUnderTheBoundHealthReads(t *testing.T) {
 	_, _ = tenant.createLease(t.Context(), lease("held"))
 	_, _ = tenant.createLease(t.Context(), []byte(`{"metadata":{"name":"Not_A_Name","namespace":"kube-system"}}`))
 	_, _ = tenant.getLease(t.Context(), "held")
-	_, _ = tenant.do(t.Context(), tenant.api.Patch(types.MergePatchType).AbsPath(coordinationPath, "kube-system", "leases", "held").Body([]byte(`{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"x"}}`)))
-	t.Logf("the biggest head of 8 answers of a kube-apiserver, %d bytes; maxResponseHeaderBytes %d", biggest, maxResponseHeaderBytes)
-	if biggest == 0 || biggest*16 > maxResponseHeaderBytes {
-		t.Errorf("the biggest head is %d bytes, want 1/16 of %d at most", biggest, maxResponseHeaderBytes)
+	_, _ = tenant.client.Do(t.Context(), tenant.client.Patch(types.MergePatchType).AbsPath(coordinationPath, "kube-system", "leases", "held").Body([]byte(`{"metadata":{"resourceVersion":"1"},"spec":{"holderIdentity":"x"}}`)))
+	t.Logf("the biggest head of 8 answers of a kube-apiserver, %d bytes; tenantclient.MaxResponseHeaderBytes %d", biggest, tenantclient.MaxResponseHeaderBytes)
+	if biggest == 0 || biggest*16 > tenantclient.MaxResponseHeaderBytes {
+		t.Errorf("the biggest head is %d bytes, want 1/16 of %d at most", biggest, tenantclient.MaxResponseHeaderBytes)
 	}
 }

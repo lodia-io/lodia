@@ -1,7 +1,7 @@
 # The management cluster is the platform's and no tenant reaches its API; a tenant's administrator is untrusted inside the tenant
 
 Decided 2026-11-12.
-Health's bounded reads of a tenant are built; the confirmation before a `ControlPlane` is deleted is not.
+The bounded reads of a tenant, Health's, Tenant's and PKI's, are built; the confirmation before a `ControlPlane` is deleted is not.
 
 ## Decision
 
@@ -32,12 +32,12 @@ Health's bounded reads of a tenant are built; the confirmation before a `Control
 ## Consequences
 
 - Every read of a tenant is bounded in bytes, items and time.
-  Health's are ([controller-manager-hold](controller-manager-hold.md), [tenant-clients-speak-http1](tenant-clients-speak-http1.md)); PKI's and Tenant's are not yet, and phase 3 bounds them ([roadmap](../roadmap.md)).
+  Health's, Tenant's and PKI's are, through one client ([controller-manager-hold](controller-manager-hold.md), [tenant-clients-speak-http1](tenant-clients-speak-http1.md), [one-client-for-a-tenant](one-client-for-a-tenant.md)).
 - The platform's RBAC on the management cluster is the boundary: Secrets in tenant namespaces are readable by Lodia and the platform's administrators only ([Identity and tenancy](../README.md#identity-and-tenancy)).
 - A compromised control plane pod reaches the management network, since its egress is not denied yet (`todo.md`).
 - Item 10 of the [review checklist](../review-checklist.md) checks every change against it.
 
 ## Code
 
-- `internal/controller/health` — the bounded reads ([controller-manager-hold](controller-manager-hold.md#code)).
+- `internal/tenantclient` — the bounds every read of a tenant shares ([one-client-for-a-tenant](one-client-for-a-tenant.md#code)); `internal/controller/health` — Health's reads ([controller-manager-hold](controller-manager-hold.md#code)).
 - `charts/lodia/files/policies/` — the admission policies; the one that refuses a delete is not written yet.

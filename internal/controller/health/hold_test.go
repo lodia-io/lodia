@@ -1096,8 +1096,8 @@ func TestAMissingKubeconfigClearsTheCount(t *testing.T) {
 func TestAFailedReadOfTheKubeconfigRestartsTheCountAndKeepsTheClock(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	h.back(25, 55)
-	reader := h.r.Reader
-	h.r.Reader = interceptor.NewClient(k8s, interceptor.Funcs{
+	reader := h.r.Secrets
+	h.r.Secrets = interceptor.NewClient(k8s, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if _, ok := obj.(*corev1.Secret); ok {
 				return errors.New("injected")
@@ -1106,7 +1106,7 @@ func TestAFailedReadOfTheKubeconfigRestartsTheCountAndKeepsTheClock(t *testing.T
 		},
 	})
 	h.at(80)
-	h.r.Reader = reader
+	h.r.Secrets = reader
 	h.back(85, 204)
 	if holder := h.holder(); holder != contract.HoldHolderIdentity {
 		t.Fatalf("the count survived the failed read of the kubeconfig, holder %q", holder)
@@ -1266,7 +1266,7 @@ func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 			_, _ = w.Write([]byte(strings.Repeat("d", 40000)))
 		}))
 		h.at(25)
-		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: the answer is no Status Health can read")
+		h.expectSilent("the API server refused the renewal of Lease kube-system/kube-controller-manager: the answer is no Status Lodia can read")
 		h.expectHealth(3, 3)
 	})
 }
@@ -1468,7 +1468,7 @@ func TestAHolderLodiaReadsHeldAndAStaleSchedulerNotLeading(t *testing.T) {
 	cp := tenantControlPlane(t)
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
-	leaders := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	leaders := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	renew(t, contract.ControllerManagerLease, contract.HoldHolderIdentity, start)
 	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	reconcile(t, leaders, cp)
@@ -1487,7 +1487,7 @@ func TestAHeldLeaseOfNoRecentRenewalStaysHeld(t *testing.T) {
 	cp := tenantControlPlane(t)
 	start := time.Now().Truncate(time.Second)
 	now := clocktesting.NewFakePassiveClock(start)
-	leaders := &health.Reconciler{Client: k8s, Reader: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
+	leaders := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: 5 * time.Second, Timeout: 2 * time.Second, Clock: now}
 	renew(t, contract.ControllerManagerLease, contract.HoldHolderIdentity, start)
 	renew(t, contract.SchedulerLease, "dev-kube-scheduler-5c4_2", start)
 	reconcile(t, leaders, cp)

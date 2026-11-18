@@ -516,7 +516,7 @@ func TestProxyPresentsANewPairOnceItsTicketStopsResuming(t *testing.T) {
 
 	renewed := client(t, ca)
 	writeVolume(t, f.certDir, pairFiles(t, renewed))
-	eventually(t, "the new pair", func() bool { return f.logs.count("loaded") >= 3 })
+	eventually(t, "the new pair", func() bool { return f.logs.count("msg=loaded") >= 3 })
 	for range 3 {
 		if err := tripThrough(t, f.Listen); err != nil {
 			t.Fatal(err)
@@ -888,6 +888,7 @@ func TestAnExpiredClientPairIsRefusedUntilItsRenewalLoads(t *testing.T) {
 	writeVolume(t, f.proxy.certDir, pairFiles(t, expired(t, f.server.tunnelCA, certs.Profile{
 		CommonName: "lodia-tunnel-client", Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})))
+	eventually(t, "the loaded pair", func() bool { return f.proxy.logs.count("msg=loaded") >= 3 })
 	eventually(t, "the expired pair's refusal", func() bool { return tripThrough(t, f.proxy.Listen) != nil })
 
 	writeVolume(t, f.proxy.certDir, pairFiles(t, client(t, f.server.tunnelCA)))
@@ -899,7 +900,7 @@ func TestAnExpiredServingPairIsRefusedUntilItsRenewalLoads(t *testing.T) {
 	writeVolume(t, f.server.certDir, pairFiles(t, expired(t, f.server.cluster, certs.Profile{
 		CommonName: tunnelHost, DNSNames: []string{tunnelHost}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	})))
-	eventually(t, "the loaded pair", func() bool { return f.server.logs.count("loaded") >= 3 })
+	eventually(t, "the loaded pair", func() bool { return f.server.logs.count("msg=loaded") >= 3 })
 	cfg := f.server.config()
 	if _, err := dialTLS(t, f.server.Listen, cfg); err == nil {
 		t.Fatal("a client accepted the expired pair")
@@ -927,9 +928,9 @@ func TestATunnelCARotationGetsPastCachedSessions(t *testing.T) {
 	rotated := newCA(t, "tunnel rotated")
 	writeVolume(t, f.server.caDir, caFiles(t, f.server.tunnelCA, rotated))
 	writeVolume(t, f.proxy.certDir, pairFiles(t, client(t, rotated)))
-	eventually(t, "the bundle of both", func() bool { return f.server.logs.count("loaded") >= 3 && f.proxy.logs.count("loaded") >= 3 })
+	eventually(t, "the bundle of both", func() bool { return f.server.logs.count("msg=loaded") >= 3 && f.proxy.logs.count("msg=loaded") >= 3 })
 	writeVolume(t, f.server.caDir, caFiles(t, rotated))
-	eventually(t, "the new CA alone", func() bool { return f.server.logs.count("loaded") >= 4 })
+	eventually(t, "the new CA alone", func() bool { return f.server.logs.count("msg=loaded") >= 4 })
 	eventually(t, "a session of the new client", func() bool { return tripThrough(t, f.proxy.Listen) == nil })
 }
 

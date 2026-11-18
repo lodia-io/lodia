@@ -7,6 +7,8 @@ import (
 	"io"
 	"slices"
 	"testing"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 type pacedReader struct {
@@ -60,7 +62,7 @@ func TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut(t *testing.T)
 		t.Run(c.name, func(t *testing.T) {
 			var heldAtMost int
 			var seen, chunks []int
-			for size := 1 << 20; size <= maxResponseBytes; size += 64 << 10 {
+			for size := 1 << 20; size <= tenantclient.MaxResponseBytes; size += 64 << 10 {
 				reader := &pacedReader{left: size, slow: c.slow, atEnd: func() {}}
 				if data, err := io.ReadAll(reader); err != nil || len(data) != size {
 					t.Fatalf("ReadAll returned %d bytes and %v, want %d", len(data), err, size)
@@ -69,21 +71,21 @@ func TestIoReadAllHoldsAtMostItsChunksAndTheSliceItReturnsAtTheCut(t *testing.T)
 					heldAtMost, seen = held, reader.caps
 				}
 			}
-			reader := &pacedReader{left: maxResponseBytes, slow: c.slow}
+			reader := &pacedReader{left: tenantclient.MaxResponseBytes, slow: c.slow}
 			var measured []int64
 			for range 3 {
 				base := liveHeap()
-				reader.left, reader.free, reader.served, reader.caps, reader.opened = maxResponseBytes, 0, 0, nil, nil
+				reader.left, reader.free, reader.served, reader.caps, reader.opened = tenantclient.MaxResponseBytes, 0, 0, nil, nil
 				reader.atEnd = func() { measured = append(measured, int64(liveHeap())-int64(base)) }
-				if data, err := io.ReadAll(reader); err != nil || len(data) != maxResponseBytes {
-					t.Fatalf("ReadAll returned %d bytes and %v, want %d", len(data), err, maxResponseBytes)
+				if data, err := io.ReadAll(reader); err != nil || len(data) != tenantclient.MaxResponseBytes {
+					t.Fatalf("ReadAll returned %d bytes and %v, want %d", len(data), err, tenantclient.MaxResponseBytes)
 				}
 				chunks = reader.caps
 			}
 			slices.Sort(measured)
 			open, closed := chunks[len(chunks)-1], sum(chunks[:len(chunks)-1])
 			t.Logf("at the cut: %d closed chunks of %.2f MiB, the open one of %.2f MiB opened at %.2f MiB of body, the slice %.2f MiB, %.2f MiB; %.2f MiB of chunks measured; the most up to the cut %.2f MiB, with %d chunks",
-				len(chunks)-1, mib(uint64(closed)), mib(uint64(open)), mib(uint64(reader.opened[len(reader.opened)-1])), mib(maxResponseBytes), mib(uint64(reader.held(maxResponseBytes))), mib(uint64(measured[1])), mib(uint64(heldAtMost)), len(seen))
+				len(chunks)-1, mib(uint64(closed)), mib(uint64(open)), mib(uint64(reader.opened[len(reader.opened)-1])), mib(tenantclient.MaxResponseBytes), mib(uint64(reader.held(tenantclient.MaxResponseBytes))), mib(uint64(measured[1])), mib(uint64(heldAtMost)), len(seen))
 			if got := int64(closed + open); measured[1] < got-256<<10 || measured[1] > got+256<<10 {
 				t.Errorf("the chunks hold %d bytes, the sizes ReadAll offered add up to %d", measured[1], got)
 			}

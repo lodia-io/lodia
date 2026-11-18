@@ -30,6 +30,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"go.lodia.io/lodia/internal/jsonscan"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -47,7 +48,7 @@ func paddedPages(t *testing.T) (leases, nodes []byte) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			room := maxResponseBytes - len(out)
+			room := tenantclient.MaxResponseBytes - len(out)
 			if room >= 0 && room < items {
 				return out
 			}
@@ -57,7 +58,7 @@ func paddedPages(t *testing.T) (leases, nodes []byte) {
 				pad += room / items
 			}
 		}
-		t.Fatalf("no padding makes a page of %d items just under %d bytes", items, maxResponseBytes)
+		t.Fatalf("no padding makes a page of %d items just under %d bytes", items, tenantclient.MaxResponseBytes)
 		return nil
 	}
 	meta := func(i int, pad string) metav1.ObjectMeta {
@@ -149,7 +150,7 @@ func TestMeasureTheLiveHeapOfPassesOverTenantsPaddedToTheirBounds(t *testing.T) 
 	begun := time.Now()
 	one := measureLiveHeap(func() { pass("dev") })
 	t.Logf("one pass over %d bytes of padded pages, %d responses, took %v: live heap %.1f MiB, %.2f responses of %d bytes; heap in use %.1f MiB",
-		maxResponseBytes, served.Load(), time.Since(begun).Round(time.Millisecond), mib(one.live), float64(one.live)/maxResponseBytes, maxResponseBytes, mib(one.inUse))
+		tenantclient.MaxResponseBytes, served.Load(), time.Since(begun).Round(time.Millisecond), mib(one.live), float64(one.live)/tenantclient.MaxResponseBytes, tenantclient.MaxResponseBytes, mib(one.inUse))
 
 	served.Store(0)
 	begun = time.Now()
@@ -327,9 +328,9 @@ func amplifiers(size int) []amplifier {
 		{"a leader Lease with a renewTime of invalid UTF-8", 200, invalid(size, `{"metadata":{"resourceVersion":"1"},"spec":{"renewTime":"`, `"}}`), readLeader, "error read the response: spec.renewTime is longer than 64 bytes"},
 		{"a leader Lease with an acquireTime of letters", 200, []byte(`{"metadata":{"resourceVersion":"1"},"spec":{"acquireTime":"` + strings.Repeat("a", 64) + `"}}`), readLeader, "error read the response: spec.acquireTime is not a time"},
 		{"a leader Lease with a number of digits", 200, zeros(size, `{"metadata":{"resourceVersion":"1"},"spec":{"leaseTransitions":1`, `}}`), readLeader, "error read the response: spec.leaseTransitions is longer than 11 bytes"},
-		{"a failed request with a message of escapes", 500, escaped(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
-		{"a failed request with a message of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(longMessage)) + " bytes"},
-		{"a failed request with a reason of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","code":500,"message":"m","reason":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(noStatusMessage)) + " bytes"},
+		{"a failed request with a message of escapes", 500, escaped(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(tenantclient.LongMessage)) + " bytes"},
+		{"a failed request with a message of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","reason":"InternalError","code":500,"message":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(tenantclient.LongMessage)) + " bytes"},
+		{"a failed request with a reason of invalid UTF-8", 500, invalid(size, `{"kind":"Status","status":"Failure","code":500,"message":"m","reason":"`, `"}`), readLeaderError, "error of " + strconv.Itoa(len(tenantclient.NoStatusMessage)) + " bytes"},
 		{"a Service named with escapes", 200, escaped(size, `{"items":[{"metadata":{"namespace":"n","name":"`, `"},"spec":{"type":"LoadBalancer"}}]}`), readFirstPage("/api/v1/services", serviceOf), "error read the response: metadata.name is longer than 2048 bytes"},
 		{"a Service of a type of invalid UTF-8", 200, invalid(size, `{"items":[{"metadata":{"namespace":"n","name":"s"},"spec":{"type":"`, `"}}]}`), readFirstPage("/api/v1/services", serviceOf), "error <nil>"},
 		{"a webhook configuration named with escapes", 200, escaped(size, `{"items":[{"webhooks":[{}],"metadata":{"name":"`, `"}}]}`), readWebhooks("/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations"), "named 0, more false, error read the response: metadata.name is longer than 2048 bytes"},
@@ -368,14 +369,14 @@ func TestMeasureTheLiveHeapOfEveryReadOverAnAmplifyingResponse(t *testing.T) {
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of every read over an amplifying response", measureHeap)
 	}
-	for _, c := range amplifiers(maxResponseBytes) {
+	for _, c := range amplifiers(tenantclient.MaxResponseBytes) {
 		t.Run(c.name, func(t *testing.T) {
 			r, tenant := tenantOverTLS(t, answering(c))
 			var outcome string
 			begun := time.Now()
 			peaks := measureLiveHeap(func() { outcome = c.read(t.Context(), tenant, r) })
 			t.Logf("a response of %d bytes took %v: live heap %.1f MiB, %.2f responses; heap in use %.1f MiB; %s",
-				len(c.body), time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/maxResponseBytes, mib(peaks.inUse), outcome)
+				len(c.body), time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/tenantclient.MaxResponseBytes, mib(peaks.inUse), outcome)
 			if outcome != c.want {
 				t.Errorf("the read says %q, want %q", outcome, c.want)
 			}
@@ -400,7 +401,7 @@ const (
 
 func readsBound(reads int) uint64 {
 	each := uint64(readAllAtMost + headAndTrailersHTTP1 + connectionMargin)
-	return max(uint64(reads)*each, uint64(reads)*(maxResponseBytes+keptAtMost))
+	return max(uint64(reads)*each, uint64(reads)*(tenantclient.MaxResponseBytes+keptAtMost))
 }
 
 func servingTogether(t *testing.T, answers map[string][]byte, requests int) *tenant {
@@ -448,12 +449,12 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 		begun := time.Now()
 		peaks := measureLiveHeap(run)
 		t.Logf("took %v: live heap %.1f MiB, %.2f responses of %d bytes; heap in use %.1f MiB",
-			time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/maxResponseBytes, maxResponseBytes, mib(peaks.inUse))
+			time.Since(begun).Round(time.Millisecond), mib(peaks.live), float64(peaks.live)/tenantclient.MaxResponseBytes, tenantclient.MaxResponseBytes, mib(peaks.inUse))
 		if peaks.inUse > bound {
 			t.Errorf("the pass held %.1f MiB of heap in use, more than the structural bound of %.1f MiB", mib(peaks.inUse), mib(bound))
 		}
 	}
-	body := padding(maxResponseBytes, `{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"},"pad":"`, `"}]}`)
+	body := padding(tenantclient.MaxResponseBytes, `{"items":[{"webhooks":[{}],"spec":{"type":"LoadBalancer"},"metadata":{"namespace":"n","name":"x"},"pad":"`, `"}]}`)
 	answers := map[string][]byte{
 		servicesPath: body, volumesPath: body, claimsPath: body, validatingPath: body, mutatingPath: body, apiServicePath: body, cronJobsPath: body,
 	}
@@ -461,9 +462,9 @@ func TestMeasureTheLiveHeapOfAPassWhoseEveryReadIsAtItsWorst(t *testing.T) {
 	wantRestore := (&Reconciler{Timeout: 10 * time.Minute}).actedOn(t.Context(), reference)
 	t.Run("a pass of health-nodes: the Lease, the two lists and the renewal", func(t *testing.T) {
 		tenant := servingAPass(t,
-			padding(maxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`),
-			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
-			padding(maxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
+			padding(tenantclient.MaxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`),
+			padding(tenantclient.MaxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","resourceVersion":"1","annotations":{"pad":"`, `"}}}]}`),
+			padding(tenantclient.MaxResponseBytes, `{"metadata":{},"items":[{"metadata":{"name":"n","annotations":{"pad":"`, `"}},"status":{"nodeInfo":{"kubeletVersion":"v1.35.0"},"conditions":[{"type":"Ready","status":"True"}]}}]}`))
 		r := &NodesReconciler{Timeout: 10 * time.Minute, MaxNodes: 5000}
 		measure(t, readsBound(nodesReads)+summariesAtMost, func() {
 			s := &sampling{}
@@ -528,15 +529,15 @@ func cutAnswers(t *testing.T, body []byte, shape cutShape) *tenant {
 		body = []byte(fmt.Sprintf("%x\r\n%s\r\n0\r\n", len(body), body) + end)
 	}
 	if shape.headers {
-		for _, name := range canonicalFieldNames(maxResponseHeaderBytes - len(head) - len("\r\n")) {
+		for _, name := range canonicalFieldNames(tenantclient.MaxResponseHeaderBytes - len(head) - len("\r\n")) {
 			head += name + ":\n"
 		}
 	}
 	if !shape.announced {
 		head += "\r\n"
 	}
-	if shape.headers && len(head) != maxResponseHeaderBytes && len(head) < maxResponseHeaderBytes-8 {
-		t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), maxResponseHeaderBytes)
+	if shape.headers && len(head) != tenantclient.MaxResponseHeaderBytes && len(head) < tenantclient.MaxResponseHeaderBytes-8 {
+		t.Fatalf("the head has %d bytes, want it to fill the bound of %d", len(head), tenantclient.MaxResponseHeaderBytes)
 	}
 	kubeconfig, _ := answerOnTLS(t, head, string(body))
 	_, tenant := tenantAt(t, kubeconfig)
@@ -548,11 +549,11 @@ func TestMeasureTheLiveHeapOfAReadWhoseAnswerIsCutAtTheBoundWithHeadersAtTheirs(
 	if os.Getenv(measureHeap) == "" {
 		t.Skipf("set %s to measure the heap of a read whose answer is cut, with headers at their bound", measureHeap)
 	}
-	body := bytes.Repeat([]byte("a"), 2*maxResponseBytes)
-	whole := padding(maxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`)
+	body := bytes.Repeat([]byte("a"), 2*tenantclient.MaxResponseBytes)
+	whole := padding(tenantclient.MaxResponseBytes, `{"metadata":{"resourceVersion":"1","annotations":{"pad":"`, `"}},"spec":{"holderIdentity":"lodia"}}`)
 	for _, shape := range []cutShape{{}, {headers: true}, {announced: true}, {announced: true, trailers: true}} {
 		t.Run(shape.String(), func(t *testing.T) {
-			answer, want := body, errResponseTooLong
+			answer, want := body, tenantclient.ErrResponseTooLong
 			if shape.trailers {
 				answer, want = whole, nil
 			}

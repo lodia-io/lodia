@@ -562,7 +562,7 @@ func TestAPassLeavesOneConnectionIdleWhateverItHadInFlight(t *testing.T) {
 
 func transportOf(t *testing.T, tenant *tenant) *http.Transport {
 	t.Helper()
-	bottom := tenant.api.Client.Transport
+	bottom := tenant.client.HTTP().Transport
 	for {
 		wrapped, ok := bottom.(utilnet.RoundTripperWrapper)
 		if !ok {
@@ -577,6 +577,11 @@ func transportOf(t *testing.T, tenant *tenant) *http.Transport {
 	return transport
 }
 
+// A socket counts from its first write to its Close, not from its dial: the
+// transport hands the place of a connection it closes to a waiting dial before
+// it closes the socket (persistConn.closeLocked,
+// https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L2997-L3013),
+// so a count from the dial reads the cap plus one.
 type socketCount struct {
 	open, peak atomic.Int64
 }
@@ -584,31 +589,47 @@ type socketCount struct {
 type countedSocket struct {
 	net.Conn
 	count *socketCount
-	once  sync.Once
+	state atomic.Int32
+}
+
+func (c *countedSocket) Write(b []byte) (int, error) {
+	if c.state.CompareAndSwap(0, 1) {
+		open := c.count.open.Add(1)
+		for {
+			peak := c.count.peak.Load()
+			if open <= peak || c.count.peak.CompareAndSwap(peak, open) {
+				break
+			}
+		}
+	}
+	return c.Conn.Write(b)
 }
 
 func (c *countedSocket) Close() error {
-	c.once.Do(func() { c.count.open.Add(-1) })
+	if c.state.Swap(2) == 1 {
+		c.count.open.Add(-1)
+	}
 	return c.Conn.Close()
 }
 
 func (c *socketCount) watch(transport *http.Transport) {
 	dial := transport.DialContext
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		open := c.open.Add(1)
-		for {
-			peak := c.peak.Load()
-			if open <= peak || c.peak.CompareAndSwap(peak, open) {
-				break
-			}
-		}
 		conn, err := dial(ctx, network, address)
 		if err != nil {
-			c.open.Add(-1)
 			return nil, err
 		}
 		return &countedSocket{Conn: conn, count: c}, nil
 	}
+}
+
+func readsAtOnce(t *testing.T, tenant *tenant, reads int) {
+	t.Helper()
+	var wg sync.WaitGroup
+	for range reads {
+		wg.Go(func() { _, _ = tenant.getLease(t.Context(), "kube-controller-manager") })
+	}
+	wg.Wait()
 }
 
 func TestAPassNeedsNoMoreConnectionsThanItsCapWhenTheCapIsLifted(t *testing.T) {
@@ -660,9 +681,10 @@ func TestAPassAgainstAKubeAPIServerFailsNoReadUnderTheCap(t *testing.T) {
 					t.Fatalf("pass %d: %v", i+1, err)
 				}
 			}
-			t.Logf("%s: %d sockets open at most over 40 passes, under a cap of %d", c.name, sockets.peak.Load(), c.reads)
+			readsAtOnce(t, tenant, 2*restoreReads)
+			t.Logf("%s: %d sockets open at most over 40 passes and %d reads at once, under a cap of %d", c.name, sockets.peak.Load(), 2*restoreReads, c.reads)
 			if sockets.peak.Load() > int64(c.reads) {
-				t.Errorf("a pass had %d sockets open at once, want at most the cap, %d", sockets.peak.Load(), c.reads)
+				t.Errorf("the passes and %d reads at once had %d sockets open at once, want at most the cap, %d", 2*restoreReads, sockets.peak.Load(), c.reads)
 			}
 		})
 	}

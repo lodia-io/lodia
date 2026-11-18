@@ -5,9 +5,10 @@ package tenant
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func TestAnObjectAtAnotherVersionIsNotStale(t *testing.T) {
@@ -25,16 +26,28 @@ func TestAnObjectAtAnotherVersionIsNotStale(t *testing.T) {
 }
 
 func TestAnotherOwnersObjectIsNamedWithItsFieldManagers(t *testing.T) {
-	obj := &metav1.ObjectMeta{ManagedFields: []metav1.ManagedFieldsEntry{
-		{Manager: "kubectl", Operation: metav1.ManagedFieldsOperationApply},
-		{Manager: "helm", Operation: metav1.ManagedFieldsOperationUpdate},
-		{Operation: metav1.ManagedFieldsOperationUpdate},
-		{Manager: "kubectl", Operation: metav1.ManagedFieldsOperationUpdate},
-	}}
-	if got, want := (foreignObject{managers: fieldManagers(obj)}).owners(), "its field managers are helm, kubectl"; got != want {
+	var managers managers
+	for _, name := range []string{"kubectl", "helm", "kubectl"} {
+		managers.add(name)
+	}
+	if got, want := (foreignObject{managers: managers}).owners(), "its field managers are helm, kubectl"; got != want {
 		t.Errorf("an object with field managers is named %q, want %q", got, want)
 	}
-	if got, want := (foreignObject{managers: fieldManagers(&metav1.ObjectMeta{})}).owners(), "it has no field manager"; got != want {
+	if got, want := (foreignObject{}).owners(), "it has no field manager"; got != want {
 		t.Errorf("an object without a field manager is named %q, want %q", got, want)
+	}
+}
+
+func TestAManagerNameBeyondItsBoundIsKeptAndSearchedCut(t *testing.T) {
+	long := strings.Repeat("m", 300)
+	var managers managers
+	for _, name := range []string{"helm", long, long, long + "x", "helm"} {
+		managers.add(name)
+	}
+	if want := []string{"helm", long[:tenantclient.MaxName+1]}; !slices.Equal(managers.names, want) {
+		t.Errorf("kept %d names, want helm and one name cut to %d bytes", len(managers.names), tenantclient.MaxName+1)
+	}
+	if managers.total != 5 || managers.more() != 0 {
+		t.Errorf("counted %d entries, %d more than the names", managers.total, managers.more())
 	}
 }

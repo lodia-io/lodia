@@ -18,6 +18,10 @@ import (
 	"testing"
 	"time"
 	"weak"
+
+	"k8s.io/apimachinery/pkg/types"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 func TestTheTenantClientsAskForNoCompression(t *testing.T) {
@@ -94,7 +98,7 @@ func TestAGzipAnswerSentUnaskedIsAFailedReadThatKeepsNothingOfItsResponse(t *tes
 				}))
 				tenant, _ := c.start(t, server.kubeconfig, time.Minute)
 				var last weak.Pointer[http.Response]
-				tenant.api.Client.Transport = remembered{tenant.api.Client.Transport, &last}
+				tenant.client.HTTP().Transport = remembered{tenant.client.HTTP().Transport, &last}
 				_, err := tenant.getLease(t.Context(), "x")
 				if err == nil {
 					t.Fatal("a gzip answer nobody asked for was read")
@@ -122,11 +126,17 @@ func TestTheTenantClientsFollowNoRedirectAndNameNoByteOfItsLocation(t *testing.T
 				})))
 			}
 			var requests atomic.Int64
+			var holding atomic.Bool
 			origin := serveCounted(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if holding.Load() {
+					time.Sleep(50 * time.Millisecond)
+				}
 				other := others[int(requests.Add(1))%len(others)]
 				http.Redirect(w, req, "http://"+other.listener.Addr().String()+"/"+marker+req.URL.RequestURI(), http.StatusFound)
 			}))
 			tenant, pass := c.start(t, origin.kubeconfig, time.Minute)
+			var sockets socketCount
+			sockets.watch(transportOf(t, tenant))
 			_, err := tenant.getLease(t.Context(), "kube-controller-manager")
 			if err == nil || strings.Contains(err.Error(), marker) {
 				t.Errorf("a read redirected returned %v, want an error that names none of the Location", err)
@@ -137,13 +147,10 @@ func TestTheTenantClientsFollowNoRedirectAndNameNoByteOfItsLocation(t *testing.T
 			for range 10 {
 				_ = pass(t.Context())
 			}
-			time.Sleep(100 * time.Millisecond)
-			var open int64
-			for _, server := range append(others, origin) {
-				open += server.listener.peak.Load()
-			}
-			if reached.Load() != 0 || open > int64(c.reads) {
-				t.Errorf("10 passes redirected to 5 hosts reached the others %d times and had %d connections open at most across the 6 servers, want 0 and %d", reached.Load(), open, c.reads)
+			holding.Store(true)
+			readsAtOnce(t, tenant, 2*c.reads)
+			if reached.Load() != 0 || sockets.peak.Load() > int64(c.reads) {
+				t.Errorf("10 passes and %d reads at once redirected to 5 hosts reached the others %d times and had %d sockets open at most, want 0 and at most the cap, %d", 2*c.reads, reached.Load(), sockets.peak.Load(), c.reads)
 			}
 		})
 	}
@@ -194,7 +201,7 @@ func TestADialHeldPastTimeoutGivesItsPlaceBackAtTimeoutAndAReadBehindItDialsAfte
 			begun := time.Now()
 			released := make(chan struct{})
 			t.Cleanup(func() { close(released) })
-			clients := &tenantClients{connections: c.reads, timeout: timeout, dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			clients := tenantclient.NewClients(tenantclient.Options{Connections: c.reads, Timeout: timeout, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				mu.Lock()
 				started = append(started, time.Since(begun))
 				mu.Unlock()
@@ -204,12 +211,12 @@ func TestADialHeldPastTimeoutGivesItsPlaceBackAtTimeoutAndAReadBehindItDialsAfte
 				case <-released:
 					return nil, errors.New("released")
 				}
-			}}
-			tenant, err := clients.of(kubeconfigFor(t, "http://127.0.0.1:1"))
+			}})
+			client, err := clients.Of(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, "http://127.0.0.1:1"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			behindAHeldPlace(t, c, timeout, tenant, func() []time.Duration {
+			behindAHeldPlace(t, c, timeout, newTenant(client), func() []time.Duration {
 				mu.Lock()
 				defer mu.Unlock()
 				return slices.Clone(started)
@@ -250,12 +257,12 @@ func TestAHandshakeHeldPastTimeoutGivesItsPlaceBackAtTimeoutAndAReadBehindItDial
 					_ = conn.Close()
 				}
 			})
-			clients := &tenantClients{connections: c.reads, timeout: timeout}
-			tenant, err := clients.of(kubeconfigFor(t, "https://"+listener.Addr().String()))
+			clients := tenantclient.NewClients(tenantclient.Options{Connections: c.reads, Timeout: timeout})
+			client, err := clients.Of(types.NamespacedName{Namespace: "team-a", Name: "dev"}, kubeconfigFor(t, "https://"+listener.Addr().String()))
 			if err != nil {
 				t.Fatal(err)
 			}
-			behindAHeldPlace(t, c, timeout, tenant, func() []time.Duration {
+			behindAHeldPlace(t, c, timeout, newTenant(client), func() []time.Duration {
 				mu.Lock()
 				defer mu.Unlock()
 				return slices.Clone(accepted)
@@ -272,60 +279,5 @@ func TestTheTenantClientsBoundTheirHandshakeByTheTimeoutOfTheirReconciler(t *tes
 				t.Errorf("a handshake of %s ends within %v, want the Timeout of its reconciler, 7s", c.name, got)
 			}
 		})
-	}
-}
-
-func TestTheDialFunctionOfAClientGetsAContextThatEndsWithinTimeoutWhicheverDialFunctionItIs(t *testing.T) {
-	const timeout = 7 * time.Second
-	for _, c := range []struct {
-		name   string
-		parent func() (context.Context, context.CancelFunc)
-		most   time.Duration
-	}{
-		{"net/http's context, with no deadline", func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }, timeout},
-		{"a context that ends sooner", func() (context.Context, context.CancelFunc) {
-			return context.WithTimeout(context.Background(), time.Second)
-		}, time.Second},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			var left time.Duration
-			var bounded bool
-			clients := &tenantClients{timeout: timeout, dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				deadline, ok := ctx.Deadline()
-				bounded, left = ok, time.Until(deadline)
-				return nil, errors.New("no connection")
-			}}
-			ctx, cancel := c.parent()
-			defer cancel()
-			if _, err := clients.dialContext(ctx, "tcp", "tenant.example:6443"); err == nil {
-				t.Fatal("the dial function that refuses returned a connection")
-			}
-			if !bounded || left <= 0 || left > c.most {
-				t.Errorf("the dial function got a context that ends in %v, bounded %t, want one that ends in at most %v", left, bounded, c.most)
-			}
-		})
-	}
-}
-
-func TestTheProductionDialerOfAClientIsBoundByTimeoutWhenNoDialFunctionIsSet(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = listener.Close() }()
-	for _, c := range []struct {
-		timeout  time.Duration
-		connects bool
-	}{
-		{time.Nanosecond, false},
-		{time.Minute, true},
-	} {
-		conn, err := (&tenantClients{timeout: c.timeout}).dialContext(context.Background(), "tcp", listener.Addr().String())
-		if conn != nil {
-			_ = conn.Close()
-		}
-		if (err == nil) != c.connects {
-			t.Errorf("a dial of a Timeout of %v to a listener that answers ended in %v, want a connection: %t", c.timeout, err, c.connects)
-		}
 	}
 }

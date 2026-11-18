@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -34,7 +36,7 @@ const (
 	mostSmallObject   = 32768
 	mostMapHint       = 1000
 
-	mostHeadRepeatedBytes = maxResponseHeaderBytes
+	mostHeadRepeatedBytes = tenantclient.MaxResponseHeaderBytes
 	mostRepeatedLines     = mostHeadRepeatedBytes / 3
 )
 
@@ -322,7 +324,7 @@ var pieceBounds = sync.OnceValue(func() []int {
 	for _, class := range sizeClasses {
 		bounds = append(bounds, class+1)
 	}
-	for page := 32768; page <= maxResponseHeaderBytes; page += 8192 {
+	for page := 32768; page <= tenantclient.MaxResponseHeaderBytes; page += 8192 {
 		bounds = append(bounds, page+1)
 	}
 	return bounds
@@ -339,7 +341,7 @@ func valueBytesAtMost(length, lines int) int {
 	}
 	valueMemo.Lock()
 	for len(valueMemo.bytes) <= lines {
-		valueMemo.bytes = append(valueMemo.bytes, make([]int32, maxResponseHeaderBytes+1))
+		valueMemo.bytes = append(valueMemo.bytes, make([]int32, tenantclient.MaxResponseHeaderBytes+1))
 	}
 	best := int(valueMemo.bytes[lines][length])
 	valueMemo.Unlock()
@@ -447,7 +449,7 @@ var searchedTails = struct {
 
 func mostAnnouncedNames() int {
 	names := 0
-	for maxResponseHeaderBytes-headFixed-announcedBytes(names+1) >= 0 {
+	for tenantclient.MaxResponseHeaderBytes-headFixed-announcedBytes(names+1) >= 0 {
 		names++
 	}
 	return names
@@ -465,13 +467,13 @@ func searchOfTail(tail float64) *searchedTail {
 	for keys := range s.names {
 		s.names[keys] = mapBytesAtTail(keys, 0, tail) + mapSplitBytesAtTail(keys, 0, tail)
 	}
-	mostLines := fieldLinesIn(maxResponseHeaderBytes - headFixed)
+	mostLines := fieldLinesIn(tenantclient.MaxResponseHeaderBytes - headFixed)
 	s.header = make([]int, mostLines+headKeysOutsideTheLines+1)
 	for keys := range s.header {
 		_, mapBytes, elements := worstHint(keys, tail)
 		s.header[keys] = mapBytes + elements + nameCopy*keys
 	}
-	s.byLineBytes = make([]int, maxResponseHeaderBytes-headFixed+1)
+	s.byLineBytes = make([]int, tenantclient.MaxResponseHeaderBytes-headFixed+1)
 	for room := range s.byLineBytes {
 		s.byLineBytes[room] = s.header[fieldLinesIn(room)+headKeysOutsideTheLines]
 	}
@@ -519,7 +521,7 @@ func (s *searchedTail) dearest(valueLines func(announced int) (least, most int))
 	for announced := range s.block {
 		least, most := valueLines(announced)
 		for lines := least; lines <= most; lines++ {
-			room := maxResponseHeaderBytes - headFixed - announcedBytes(announced) - trailerLineBytes*(lines-1)
+			room := tenantclient.MaxResponseHeaderBytes - headFixed - announcedBytes(announced) - trailerLineBytes*(lines-1)
 			if room < 0 {
 				break
 			}
@@ -565,7 +567,7 @@ func valueLinesOf(announced int) (least, most int) {
 }
 
 var mostKeysOfTheCount = sync.OnceValue(func() int {
-	return max(mostAnnouncedNames()+trailerFieldsHTTP1, fieldLinesIn(maxResponseHeaderBytes-headFixed)+headKeysOutsideTheLines)
+	return max(mostAnnouncedNames()+trailerFieldsHTTP1, fieldLinesIn(tenantclient.MaxResponseHeaderBytes-headFixed)+headKeysOutsideTheLines)
 })
 
 func theDearestHead() countedHead { return theDearestHeadAt(mapTail) }
@@ -915,7 +917,7 @@ func TestTheTrailerValueTheCountSplitsIsTheMostOfEveryLengthOfItsPiecesOnEveryNu
 			}
 		}
 	}
-	for length := 3; length <= maxResponseHeaderBytes; length += 211 {
+	for length := 3; length <= tenantclient.MaxResponseHeaderBytes; length += 211 {
 		want := sizeClass(length)
 		for piece := 1; piece <= length-2; piece++ {
 			want = max(want, sizeClass(piece)+sizeClass(length-1-piece))

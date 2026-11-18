@@ -9,20 +9,18 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -36,6 +34,7 @@ import (
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/statusapply"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -48,11 +47,19 @@ const (
 // this ControlPlane does not control.
 const waitPeriod = time.Minute
 
-// deliveryTimeout and applyTimeout bound each request of a tenant client. They
-// are on the client because a new client's first read maps the kind through
-// discovery, which takes no context. Delivery's is short of the 30 s dial of a
-// tenant that drops packets, and the two leave a pass on a tenant that answers
-// nothing its status write inside its minute.
+// deliveryTimeout and applyTimeout bound each request of a tenant client, the
+// delivery's and the apply pass's, and deliveryTimeout the dial and the
+// handshake of every request; Delivery's is short of the 30 s dial of a tenant
+// that drops packets. A pass sends its requests one after another and ends at
+// its minute, ReconciliationTimeout, and statusapply gives the status write 10 s
+// of its own after it.
+// A pass completes while the tenant answers each request in under 60 s over
+// the requests it sends. At rest those are 39 for the defaults (the
+// inventory's read, 35 applies, 3 reads of workloads), 1.54 s each, and 45 for
+// a gateway tenant (the delivery's 2, then 1, 38 and 4), 1.33 s. A fresh
+// tenant's first pass writes the inventory with its request 37, or 41, and its
+// second is a pass at rest, so it converges in two passes within the same
+// figures.
 const (
 	deliveryTimeout = 10 * time.Second
 	applyTimeout    = 30 * time.Second
@@ -60,10 +67,12 @@ const (
 
 type Reconciler struct {
 	client.Client
-	// Reader reads the Secrets the cache holds the metadata of only, and
-	// AddonsApplied and AddonsAvailable when Tenant waits for access or keeps
-	// them.
+	// Reader reads AddonsApplied and AddonsAvailable when Tenant waits for
+	// access or keeps them, from the API server, and a Secret again when its
+	// copy makes a pass wait.
 	Reader client.Reader
+	// Secrets reads the Secrets the cache holds the metadata of only.
+	Secrets client.Reader
 	// Events records the transitions of the conditions it writes;
 	// SetupWithManager sets it.
 	Events events.EventRecorder
@@ -78,6 +87,9 @@ type Reconciler struct {
 	// Dial, when set, opens every connection to a tenant's API server; tests
 	// set it, since envtest has no DNS for the tenant's Service.
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
+
+	mu      sync.Mutex
+	clients *tenantclient.Clients
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -120,12 +132,15 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.forget(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
@@ -180,7 +195,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 			return ctrl.Result{}, err
 		}
 	}
-	tenant, err := r.tenantClient(kubeconfig, applyTimeout)
+	tenant, err := r.reach(client.ObjectKeyFromObject(cp), kubeconfig, applyTimeout)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -228,7 +243,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // since appliedByLodia counts only that, writes nothing else, and reports what
 // runs, each condition at the generation it describes. objects is nil when the
 // running operator cannot render.
-func (r *Reconciler) hold(ctx context.Context, cp *lodiav1alpha1.ControlPlane, tenant client.Client, objects []*unstructured.Unstructured, applied, available metav1.Condition) (ctrl.Result, error) {
+func (r *Reconciler) hold(ctx context.Context, cp *lodiav1alpha1.ControlPlane, tenant tenantAPI, objects []*unstructured.Unstructured, applied, available metav1.Condition) (ctrl.Result, error) {
 	listed, missing, complete, err := heldInventory(ctx, tenant, objects)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -327,25 +342,39 @@ func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlP
 // readSecrets stops at the first Secret that is missing, that another owner
 // keeps or that this ControlPlane does not control, and returns what to report
 // about it. AccessReady does not cover the last: PKI grants access while it
-// holds a Secret it has not adopted, and a restore adopts none.
+// holds a Secret it has not adopted, and a restore adopts none. A copy that
+// shows one of the last two is read again from the API server, and the pass
+// decides on that: a wait is never decided on a copy.
 func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reads []secretRead) (string, error) {
 	for _, read := range reads {
 		obj, name := read.obj, read.secret.Name(cp.Name)
-		err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, obj)
+		key := client.ObjectKey{Namespace: cp.Namespace, Name: name}
+		err := r.Secrets.Get(ctx, key, obj)
+		if err == nil && keptApart(obj, cp) != "" {
+			*obj = corev1.Secret{}
+			err = r.Reader.Get(ctx, key, obj)
+		}
 		if apierrors.IsNotFound(err) {
 			return fmt.Sprintf("Secret %s does not exist", name), nil
 		}
 		if err != nil {
 			return "", err
 		}
-		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
-			return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
-		}
-		if !metav1.IsControlledBy(obj, cp) {
-			return fmt.Sprintf("Secret %s is not controlled by this ControlPlane", obj.Name), nil
+		if message := keptApart(obj, cp); message != "" {
+			return message, nil
 		}
 	}
 	return "", nil
+}
+
+func keptApart(obj *corev1.Secret, cp *lodiav1alpha1.ControlPlane) string {
+	if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
+		return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID)
+	}
+	if !metav1.IsControlledBy(obj, cp) {
+		return fmt.Sprintf("Secret %s is not controlled by this ControlPlane", obj.Name)
+	}
+	return ""
 }
 
 // deliverTunnelClient brings a renewed pair to the tenant before any condition
@@ -359,70 +388,79 @@ func (r *Reconciler) deliverTunnelClient(ctx context.Context, cp *lodiav1alpha1.
 		return
 	}
 	if err == nil {
-		err = r.applyTunnelClient(ctx, kubeconfig.Data[lodiav1alpha1.KubeconfigKey], pair)
+		err = r.applyTunnelClient(ctx, client.ObjectKeyFromObject(cp), kubeconfig.Data[lodiav1alpha1.KubeconfigKey], pair)
 	}
 	if err != nil {
 		logf.FromContext(ctx).Error(err, "deliver the tunnel's client certificate")
 	}
 }
 
-func (r *Reconciler) applyTunnelClient(ctx context.Context, kubeconfig []byte, pair *corev1.Secret) error {
-	tenant, err := r.tenantClient(kubeconfig, deliveryTimeout)
+func (r *Reconciler) applyTunnelClient(ctx context.Context, key types.NamespacedName, kubeconfig []byte, pair *corev1.Secret) error {
+	tenant, err := r.reach(key, kubeconfig, deliveryTimeout)
 	if err != nil {
 		return err
 	}
-	existing := &corev1.Secret{}
-	switch err := tenant.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceSystem, Name: apiserverProxyClientSecret}, existing); {
-	case apierrors.IsNotFound(err):
-		return nil
-	case err != nil:
+	e := entry{Version: "v1", Kind: "Secret", Namespace: metav1.NamespaceSystem, Name: apiserverProxyClientSecret}
+	existing, err := tenant.readObject(ctx, e)
+	if err != nil || existing == nil || !existing.applied {
 		return err
-	case !appliedByLodia(existing):
-		return nil
 	}
-	return tenant.Apply(ctx, client.ApplyConfigurationFromUnstructured(apiserverProxyClient(pair.Data[corev1.TLSCertKey], pair.Data[corev1.TLSPrivateKeyKey])), client.FieldOwner(FieldManager), client.ForceOwnership)
+	body, err := apiserverProxyClient(pair.Data[corev1.TLSCertKey], pair.Data[corev1.TLSPrivateKeyKey]).MarshalJSON()
+	if err != nil {
+		return err
+	}
+	return tenant.apply(ctx, e, body)
 }
 
-func (r *Reconciler) tenantClient(kubeconfig []byte, timeout time.Duration) (client.Client, error) {
-	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
-	if err != nil {
-		return nil, err
+// reach returns the client of the ControlPlane under key with each request
+// within timeout; a pass sends its requests one after another.
+func (r *Reconciler) reach(key types.NamespacedName, kubeconfig []byte, timeout time.Duration) (tenantAPI, error) {
+	r.mu.Lock()
+	if r.clients == nil {
+		r.clients = tenantclient.NewClients(tenantclient.Options{Connections: 1, Timeout: deliveryTimeout, Dial: r.Dial})
 	}
-	// The in-namespace Service is never behind a proxy from the environment.
-	cfg.Proxy = http.ProxyURL(nil)
-	cfg.Dial = r.Dial
-	cfg.Timeout = timeout
-	return client.New(cfg, client.Options{Scheme: clientgoscheme.Scheme})
+	clients := r.clients
+	r.mu.Unlock()
+	c, err := clients.Of(key, kubeconfig)
+	return tenantAPI{client: c, timeout: timeout}, err
+}
+
+func (r *Reconciler) forget(key types.NamespacedName) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.clients != nil {
+		r.clients.Forget(key)
+	}
 }
 
 func isWorkload(e entry) bool {
-	return e.Group == appsv1.GroupName && (e.Kind == "DaemonSet" || e.Kind == "Deployment")
+	return e.Group == "apps" && (e.Kind == "DaemonSet" || e.Kind == "Deployment")
 }
 
 // rollout reads the DaemonSets and Deployments among entries but others. One
 // that is missing is pending: a held pass leaves a listed one it no longer
 // renders as it is.
-func rollout(ctx context.Context, c client.Client, cp *lodiav1alpha1.ControlPlane, entries []entry, others []foreignObject) (metav1.Condition, error) {
+func rollout(ctx context.Context, a tenantAPI, cp *lodiav1alpha1.ControlPlane, entries []entry, others []foreignObject) (metav1.Condition, error) {
 	var names, pending []string
 	for _, e := range entries {
 		if !isWorkload(e) || isForeign(others, e) {
 			continue
 		}
-		var workload client.Object = &appsv1.Deployment{}
-		if e.Kind == "DaemonSet" {
-			workload = &appsv1.DaemonSet{}
-		}
 		names = append(names, e.Name)
-		err := c.Get(ctx, client.ObjectKey{Namespace: e.Namespace, Name: e.Name}, workload)
+		body, err := a.read(ctx, e)
+		if err == nil && body != nil {
+			var w *workload
+			if w, err = tenantclient.Decode(body, nil, workloadOf(e.Kind)); err == nil {
+				if want, available, done := rolledOut(e.Kind, w); !done {
+					pending = append(pending, fmt.Sprintf("%s %d of %d available", e.Name, available, want))
+				}
+			}
+		}
 		switch {
-		case apierrors.IsNotFound(err):
-			pending = append(pending, e.Name+" is missing")
-			continue
 		case err != nil:
 			return metav1.Condition{}, failed(e, err)
-		}
-		if want, available, done := rolledOut(workload); !done {
-			pending = append(pending, fmt.Sprintf("%s %d of %d available", e.Name, available, want))
+		case body == nil:
+			pending = append(pending, e.Name+" is missing")
 		}
 	}
 	if len(pending) > 0 {
@@ -433,20 +471,15 @@ func rollout(ctx context.Context, c client.Client, cp *lodiav1alpha1.ControlPlan
 	return newCondition(cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable, strings.Join(names, ", ")+" are rolled out"), nil
 }
 
-func rolledOut(obj client.Object) (int32, int32, bool) {
-	switch w := obj.(type) {
-	case *appsv1.DaemonSet:
-		s := w.Status
-		return s.DesiredNumberScheduled, s.NumberAvailable, s.ObservedGeneration >= w.Generation && s.UpdatedNumberScheduled == s.DesiredNumberScheduled && s.NumberAvailable == s.DesiredNumberScheduled
-	case *appsv1.Deployment:
-		want := int32(1)
-		if w.Spec.Replicas != nil {
-			want = *w.Spec.Replicas
-		}
-		s := w.Status
-		return want, s.AvailableReplicas, s.ObservedGeneration >= w.Generation && s.UpdatedReplicas == want && s.AvailableReplicas == want
+func rolledOut(kind string, w *workload) (int32, int32, bool) {
+	if kind == "DaemonSet" {
+		return w.desiredNumberScheduled, w.available, w.observedGeneration >= w.generation && w.updated == w.desiredNumberScheduled && w.available == w.desiredNumberScheduled
 	}
-	return 0, 0, false
+	want := int32(1)
+	if w.replicas != nil {
+		want = *w.replicas
+	}
+	return want, w.available, w.observedGeneration >= w.generation && w.updated == want && w.available == want
 }
 
 func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condition {
