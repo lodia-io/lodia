@@ -77,7 +77,8 @@ const (
 // Timeout, delays no sample (docs/decisions/controller-manager-hold.md).
 type NodesReconciler struct {
 	client.Client
-	// Reader reads the status NodesReconciler keeps from the API server.
+	// Reader reads the status NodesReconciler keeps from the API server, and
+	// Lodia's kubeconfig again when its copy makes a pass wait.
 	Reader client.Reader
 	// Secrets reads Lodia's kubeconfig, whose data the cache does not hold.
 	Secrets client.Reader
@@ -286,7 +287,7 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 			}
 		}
 	}
-	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Secrets, cp)
+	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Secrets, r.Reader, cp)
 	if err != nil {
 		// No list stands behind this pass, so it clears the count; a failed read
 		// of a management Secret says nothing about the kubelets, so the clock runs on.

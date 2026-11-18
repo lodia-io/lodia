@@ -60,7 +60,8 @@ const (
 type Reconciler struct {
 	client.Client
 	// Reader reads AddonsApplied and AddonsAvailable when Tenant waits for
-	// access or keeps them, from the API server.
+	// access or keeps them, from the API server, and a Secret again when its
+	// copy makes a pass wait.
 	Reader client.Reader
 	// Secrets reads the Secrets the cache holds the metadata of only.
 	Secrets client.Reader
@@ -336,25 +337,39 @@ func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlP
 // readSecrets stops at the first Secret that is missing, that another owner
 // keeps or that this ControlPlane does not control, and returns what to report
 // about it. AccessReady does not cover the last: PKI grants access while it
-// holds a Secret it has not adopted, and a restore adopts none.
+// holds a Secret it has not adopted, and a restore adopts none. A copy that
+// shows one of the last two is read again from the API server, and the pass
+// decides on that: a wait is never decided on a copy.
 func (r *Reconciler) readSecrets(ctx context.Context, cp *lodiav1alpha1.ControlPlane, reads []secretRead) (string, error) {
 	for _, read := range reads {
 		obj, name := read.obj, read.secret.Name(cp.Name)
-		err := r.Secrets.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, obj)
+		key := client.ObjectKey{Namespace: cp.Namespace, Name: name}
+		err := r.Secrets.Get(ctx, key, obj)
+		if err == nil && keptApart(obj, cp) != "" {
+			*obj = corev1.Secret{}
+			err = r.Reader.Get(ctx, key, obj)
+		}
 		if apierrors.IsNotFound(err) {
 			return fmt.Sprintf("Secret %s does not exist", name), nil
 		}
 		if err != nil {
 			return "", err
 		}
-		if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
-			return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID), nil
-		}
-		if !metav1.IsControlledBy(obj, cp) {
-			return fmt.Sprintf("Secret %s is not controlled by this ControlPlane", obj.Name), nil
+		if message := keptApart(obj, cp); message != "" {
+			return message, nil
 		}
 	}
 	return "", nil
+}
+
+func keptApart(obj *corev1.Secret, cp *lodiav1alpha1.ControlPlane) string {
+	if ref := ownership.ControlledElsewhere(obj, cp); ref != nil {
+		return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", obj.Name, ref.Kind, ref.Name, ref.UID)
+	}
+	if !metav1.IsControlledBy(obj, cp) {
+		return fmt.Sprintf("Secret %s is not controlled by this ControlPlane", obj.Name)
+	}
+	return ""
 }
 
 // deliverTunnelClient brings a renewed pair to the tenant before any condition

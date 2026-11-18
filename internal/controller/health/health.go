@@ -75,7 +75,8 @@ const (
 
 type Reconciler struct {
 	client.Client
-	// Reader reads a condition Health keeps from the API server.
+	// Reader reads a condition Health keeps from the API server, and a Secret
+	// again when its copy makes a pass wait.
 	Reader client.Reader
 	// Secrets reads the CA bundle, the tunnel's client pair and Lodia's
 	// kubeconfig, whose data the cache does not hold.
@@ -204,39 +205,12 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if gateway && cp.Status.Endpoint.Tunnel == nil {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel"), "", nil
 	}
-	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
-	secret := &corev1.Secret{}
-	if err := r.Secrets.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the CA bundle "+name), "", nil
-		}
+	prober, waiting, err := r.certificates(ctx, cp)
+	if err != nil {
 		return nil, "", err
 	}
-	if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
-			fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)), "", nil
-	}
-	var pair *corev1.Secret
-	if gateway {
-		pair = &corev1.Secret{}
-		pairName := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
-		if err := r.Secrets.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: pairName}, pair); err != nil {
-			if apierrors.IsNotFound(err) {
-				return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for PKI to write the tunnel's client certificate "+pairName), "", nil
-			}
-			return nil, "", err
-		}
-		if ref := ownership.ControlledElsewhere(pair, cp); ref != nil {
-			return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates,
-				fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)), "", nil
-		}
-	}
-	prober := r.prober(secret.Data[lodiav1alpha1.CACertKey], pair)
-	if prober == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the CA bundle "+name+" holds no certificate"), "", nil
-	}
-	if gateway && prober.client == nil {
-		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "the tunnel's client certificate "+pair.Name+" holds no certificate and key"), "", nil
+	if waiting != nil {
+		return waiting, "", nil
 	}
 	reason, answer := r.probes(ctx, cp, prober, url)
 	if reason == "" {
@@ -251,6 +225,65 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		}
 	}
 	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, reason, answer), reason, nil
+}
+
+// certificates reads the CA bundle and, in gateway mode, the tunnel's client
+// pair, and returns the prober they make or the condition that says why the
+// pass waits for them.
+func (r *Reconciler) certificates(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*prober, *metav1.Condition, error) {
+	var p *prober
+	name := lodiav1alpha1.CABundleSecret.Name(cp.Name)
+	waiting, err := r.accessSecret(ctx, cp, name, "waiting for PKI to write the CA bundle "+name, func(secret *corev1.Secret) string {
+		if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
+			return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)
+		}
+		if p = r.prober(secret.Data[lodiav1alpha1.CACertKey]); p == nil {
+			return "the CA bundle " + name + " holds no certificate"
+		}
+		return ""
+	})
+	if waiting != nil || err != nil || cp.Spec.Endpoint.Gateway == nil {
+		return p, waiting, err
+	}
+	pairName := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
+	waiting, err = r.accessSecret(ctx, cp, pairName, "waiting for PKI to write the tunnel's client certificate "+pairName, func(secret *corev1.Secret) string {
+		if ref := ownership.ControlledElsewhere(secret, cp); ref != nil {
+			return fmt.Sprintf("Secret %s is kept by %s %s with UID %s", pairName, ref.Kind, ref.Name, ref.UID)
+		}
+		pair, err := tls.X509KeyPair(secret.Data[lodiav1alpha1.TLSCertKey], secret.Data[lodiav1alpha1.TLSPrivateKeyKey])
+		if err != nil {
+			return "the tunnel's client certificate " + pairName + " holds no certificate and key"
+		}
+		p.client = &pair
+		return ""
+	})
+	return p, waiting, err
+}
+
+// accessSecret reads a Secret of the access through its copies and returns the
+// condition that says why the pass waits for it, nil when it can be used. A copy
+// that unusable rejects is read again from the API server and the pass decides
+// on that: a wait is never decided on a copy.
+func (r *Reconciler) accessSecret(ctx context.Context, cp *lodiav1alpha1.ControlPlane, name, missing string, unusable func(*corev1.Secret) string) (*metav1.Condition, error) {
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: name}
+	secret := &corev1.Secret{}
+	err := r.Secrets.Get(ctx, key, secret)
+	message := ""
+	if err == nil {
+		if message = unusable(secret); message != "" {
+			secret = &corev1.Secret{}
+			if err = r.Reader.Get(ctx, key, secret); err == nil {
+				message = unusable(secret)
+			}
+		}
+	}
+	if apierrors.IsNotFound(err) {
+		message, err = missing, nil
+	}
+	if message == "" || err != nil {
+		return nil, err
+	}
+	return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), nil
 }
 
 // probes runs the control plane's probes at once, each under Timeout, so that
@@ -347,7 +380,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		r.forget(key)
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, accessNotTrue), nil
 	}
-	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Secrets, cp)
+	kubeconfig, waiting, err := lodiaKubeconfig(ctx, r.Secrets, r.Reader, cp)
 	if err != nil {
 		return nil, err
 	}
@@ -415,11 +448,19 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 }
 
 // lodiaKubeconfig returns Lodia's kubeconfig for cp, or why it cannot be used
-// yet: <cp>-lodia-kubeconfig is missing or kept by another owner.
-func lodiaKubeconfig(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane) ([]byte, string, error) {
+// yet: <cp>-lodia-kubeconfig is missing or kept by another owner. A copy that
+// shows it kept by another owner is read again through live, and the pass
+// decides on that: a wait is never decided on a copy.
+func lodiaKubeconfig(ctx context.Context, copies, live client.Reader, cp *lodiav1alpha1.ControlPlane) ([]byte, string, error) {
 	name := lodiav1alpha1.LodiaKubeconfigSecret.Name(cp.Name)
+	key := client.ObjectKey{Namespace: cp.Namespace, Name: name}
 	secret := &corev1.Secret{}
-	if err := reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, secret); err != nil {
+	err := copies.Get(ctx, key, secret)
+	if err == nil && ownership.ControlledElsewhere(secret, cp) != nil {
+		secret = &corev1.Secret{}
+		err = live.Get(ctx, key, secret)
+	}
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, "waiting for PKI to write " + name, nil
 		}
@@ -728,9 +769,8 @@ func (r *Reconciler) restoreLists() *semaphore.Weighted {
 }
 
 // prober verifies the endpoint against bundle, or is nil when bundle holds no
-// certificate. Its client pair is pair's, and nil outside gateway mode or when
-// pair holds no certificate and key.
-func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
+// certificate. The caller sets its client pair in gateway mode.
+func (r *Reconciler) prober(bundle []byte) *prober {
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(bundle) {
 		return nil
@@ -742,13 +782,7 @@ func (r *Reconciler) prober(bundle []byte, pair *corev1.Secret) *prober {
 		DisableKeepAlives:      true,
 		MaxResponseHeaderBytes: tenantclient.MaxResponseHeaderBytes,
 	}
-	p := &prober{direct: &http.Client{Transport: direct, CheckRedirect: noRedirects}, roots: roots}
-	if pair != nil {
-		if parsed, err := tls.X509KeyPair(pair.Data[lodiav1alpha1.TLSCertKey], pair.Data[lodiav1alpha1.TLSPrivateKeyKey]); err == nil {
-			p.client = &parsed
-		}
-	}
-	return p
+	return &prober{direct: &http.Client{Transport: direct, CheckRedirect: noRedirects}, roots: roots}
 }
 
 // dial is bounded by Timeout because net/http dials on a context detached from

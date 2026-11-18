@@ -1028,3 +1028,64 @@ func TestATenantThatAnswersEveryRequestSlowlyCostsThePassItsPhasesAndThePassRepo
 		})
 	}
 }
+
+type copyOf struct {
+	client.Reader
+	name  string
+	shown func(*corev1.Secret)
+}
+
+func (c copyOf) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if err := c.Reader.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if secret, ok := obj.(*corev1.Secret); ok && key.Name == c.name {
+		c.shown(secret)
+	}
+	return nil
+}
+
+type countingSecrets struct {
+	client.Reader
+	reads atomic.Int32
+}
+
+func (c *countingSecrets) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*corev1.Secret); ok {
+		c.reads.Add(1)
+	}
+	return c.Reader.Get(ctx, key, obj, opts...)
+}
+
+func TestACopyOfASecretThatLagsMakesNoPassWaitAndAPassThatWaitsReadsItLive(t *testing.T) {
+	cp := controlPlane(t, "tenant-copy-lags", gatewayMode)
+	publishGateway(t, cp)
+	reconcilePKI(t, gatewayIssuer(), cp)
+	pause(t, cp)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	refresh(t, cp)
+	pass := func(secrets client.Reader) (*countingSecrets, error) {
+		t.Helper()
+		live := &countingSecrets{Reader: k8s}
+		r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: cp.DeepCopy()}, Reader: live, Secrets: secrets, Revision: revision, ApplyPeriod: time.Hour, TunnelImage: tunnelImage, Dial: unreachable}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return live, err
+	}
+
+	if live, err := pass(k8s); err == nil || live.reads.Load() != 0 {
+		t.Errorf("a pass whose copies are usable read %d Secrets live and returned %v, want none and the tenant's refusal", live.reads.Load(), err)
+	}
+	for _, name := range []string{"dev-ca-bundle", "dev-lodia-kubeconfig", "dev-tunnel-client"} {
+		for shape, shown := range map[string]func(*corev1.Secret){
+			"not yet adopted": func(s *corev1.Secret) { s.OwnerReferences = nil },
+			"kept by another owner": func(s *corev1.Secret) {
+				s.OwnerReferences = []metav1.OwnerReference{{APIVersion: "external-secrets.io/v1", Kind: "ExternalSecret", Name: "stranger", UID: "abc", Controller: new(true)}}
+			},
+		} {
+			live, err := pass(copyOf{Reader: k8s, name: name, shown: shown})
+			if err == nil || live.reads.Load() == 0 {
+				t.Errorf("a pass whose copy of %s is %s read %d Secrets live and returned %v, want a read and the tenant's refusal", name, shape, live.reads.Load(), err)
+			}
+		}
+	}
+}
