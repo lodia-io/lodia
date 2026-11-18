@@ -51,7 +51,7 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   A wait is never decided on a copy: where a copy would make Tenant, `health` or `health-nodes` wait or report a Secret unusable, because another owner keeps it, this `ControlPlane` does not control it or it holds no certificate or key pair, the pass reads that Secret from the API server and decides on what it holds.
   A pass that waits sends that read, and a tenant at rest never does.
 - **At rest the operator sends the API server no `get` of a Secret.**
-  Before this change it sent three in each pass of `health` and one in each of `health-nodes`, every 5 s, and the two of `DialEtcd` in the sampler's pass once a minute, 833 a second at 1,000 tenants, and Tenant's three every 10 minutes beside them, 5 a second.
+  Before this change it sent three in each pass of `health` and one in each of `health-nodes`, every 5 s, and the two of `DialEtcd` in the sampler's pass once a minute, 833 a second at 1,000 tenants, and Tenant's every 10 minutes beside them, five in a gateway pass, 8.3 a second, and two in a load-balancer pass, 3.3 a second.
   PKI's two lists of the namespace's Secrets in its pass over each tenant every 10 minutes, the labelled ones whole and every one's metadata, are as they were, about 3.3 a second at 1,000 tenants ([operations](../operations.md#scale)).
   The cache already knows each Secret's `resourceVersion`, since PKI's `Owns(&corev1.Secret{}, builder.OnlyMetadata)` holds the metadata of the Secrets under the operator's label selector.
 
