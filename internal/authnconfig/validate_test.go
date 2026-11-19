@@ -16,7 +16,7 @@ import (
 )
 
 func TestValidateIsKubeAPIServerOfTheNewestMinorLodiaRuns(t *testing.T) {
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Version}}", "k8s.io/apiserver").Output()
+	out, err := exec.Command("go", "list", "-m", "-f", "{{with .Replace}}{{.Version}}{{else}}{{.Version}}{{end}}", "k8s.io/apiserver").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
