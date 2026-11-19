@@ -210,6 +210,12 @@ func TestJWTAuthenticators(t *testing.T) {
 		{"a user rule twice", func(t *testing.T, o *unstructured.Unstructured) {
 			first(t, o)["userValidationRules"] = []any{map[string]any{"expression": "true"}, map[string]any{"expression": "true", "message": "m"}}
 		}, "Duplicate value"},
+		{"the ServiceAccount issuer as an issuer", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, issuer(first(t, o))["url"], "spec", "serviceAccount", "issuer")
+		}, "kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer"},
+		{"the ServiceAccount issuer as the second issuer", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, second(t, o, "https://login.example.com/realms/team-b")["issuer"].(map[string]any)["url"], "spec", "serviceAccount", "issuer")
+		}, "kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer"},
 		{"the egress selector's gate off", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"StructuredAuthenticationConfigurationEgressSelector": false}, "spec", "apiServer", "featureGates")
 		}, gate},
@@ -287,6 +293,9 @@ func TestTheSchemaAcceptsWhatKubeAPIServerOfEveryMinorAccepts(t *testing.T) {
 		{"an expression with an empty requiredValue", func(t *testing.T, o *unstructured.Unstructured) {
 			first(t, o)["claimValidationRules"] = []any{map[string]any{"expression": "true", "requiredValue": ""}}
 		}},
+		{"the ServiceAccount issuer with a slash more than an issuer", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, issuer(first(t, o))["url"].(string)+"/", "spec", "serviceAccount", "issuer")
+		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			obj := example(t, "controlplane-oidc.yaml", "upstream")
@@ -314,7 +323,11 @@ func TestTheSchemaAcceptsWhatKubeAPIServerOfEveryMinorAccepts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := authnconfig.Validate(file, versions.Minors(), nil, nil); err != nil {
+			var issuers []string
+			if sa, found, _ := unstructured.NestedString(obj.Object, "spec", "serviceAccount", "issuer"); found {
+				issuers = []string{sa}
+			}
+			if err := authnconfig.Validate(file, versions.Minors(), issuers, nil); err != nil {
 				t.Errorf("kube-apiserver's validation refuses it: %v", err)
 			}
 		})

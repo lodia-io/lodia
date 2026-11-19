@@ -144,23 +144,23 @@ func TestATenantOfAnOlderMinorGetsNoExpressionOfANewerOne(t *testing.T) {
 	}
 }
 
-func withoutTheEgressGateRule(t *testing.T, crd *unstructured.Unstructured) {
+func withoutRule(t *testing.T, crd *unstructured.Unstructured, containing string, path ...string) {
 	t.Helper()
 	versions, _, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
 	if err != nil || len(versions) != 1 {
 		t.Fatalf("the CRD has versions %v: %v", versions, err)
 	}
-	path := []string{"schema", "openAPIV3Schema", "properties", "spec", "properties", "apiServer", "properties", "featureGates", "x-kubernetes-validations"}
+	path = append(append([]string{"schema", "openAPIV3Schema", "properties", "spec"}, path...), "x-kubernetes-validations")
 	version := versions[0].(map[string]any)
 	rules, _, err := unstructured.NestedSlice(version, path...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	kept := slices.DeleteFunc(rules, func(r any) bool {
-		return strings.Contains(r.(map[string]any)["rule"].(string), "StructuredAuthenticationConfigurationEgressSelector")
+		return strings.Contains(r.(map[string]any)["rule"].(string), containing)
 	})
-	if len(kept) == len(rules) {
-		t.Fatal("the CRD has no rule on StructuredAuthenticationConfigurationEgressSelector")
+	if len(kept) != len(rules)-1 {
+		t.Fatalf("the CRD has %d rules on %s, not one", len(rules)-len(kept), containing)
 	}
 	if err := unstructured.SetNestedSlice(version, kept, path...); err != nil {
 		t.Fatal(err)
@@ -168,6 +168,16 @@ func withoutTheEgressGateRule(t *testing.T, crd *unstructured.Unstructured) {
 	if err := unstructured.SetNestedSlice(crd.Object, versions, "spec", "versions"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func controlPlanesCRD(t *testing.T) *unstructured.Unstructured {
+	t.Helper()
+	crd := &unstructured.Unstructured{}
+	crd.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "controlplanes.lodia.io"}, crd); err != nil {
+		t.Fatal(err)
+	}
+	return crd
 }
 
 func updateCRD(ctx context.Context, crd *unstructured.Unstructured) error {
@@ -180,7 +190,7 @@ func updateCRD(ctx context.Context, crd *unstructured.Unstructured) error {
 	return k8s.Update(ctx, crd)
 }
 
-func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns, refused string) {
+func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns string, probe func(*lodiav1alpha1.ControlPlaneSpec), refused string) {
 	t.Helper()
 	if err := updateCRD(t.Context(), crd); err != nil {
 		t.Fatal(err)
@@ -189,44 +199,43 @@ func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns, refused string) 
 		cp := &lodiav1alpha1.ControlPlane{
 			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns},
 			Spec: lodiav1alpha1.ControlPlaneSpec{
-				Version:   version,
-				Endpoint:  loadBalancer(),
-				Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-				APIServer: &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}},
+				Version:  version,
+				Endpoint: loadBalancer(),
+				Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 			},
 		}
+		probe(&cp.Spec)
 		got := ""
 		if err := k8s.Create(t.Context(), cp, client.DryRunAll); err != nil {
 			got = err.Error()
 		}
 		if (got == "") != (refused == "") || !strings.Contains(got, refused) {
-			return fmt.Errorf("a ControlPlane with the egress gate off gets %q, want %q", got, refused)
+			return fmt.Errorf("the probe ControlPlane gets %q, want %q", got, refused)
 		}
 		return nil
 	})
 }
 
 func TestAControlPlaneStoredWithTheEgressGateOffGetsNoJWTFile(t *testing.T) {
-	head := &unstructured.Unstructured{}
-	head.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
-	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "controlplanes.lodia.io"}, head); err != nil {
-		t.Fatal(err)
-	}
+	head := controlPlanesCRD(t)
 	const refused = "kube-apiserver refuses the egressSelectorType Lodia renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector"
+	gateOff := func(s *lodiav1alpha1.ControlPlaneSpec) {
+		s.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}}
+	}
 	relaxed := head.DeepCopy()
-	withoutTheEgressGateRule(t, relaxed)
+	withoutRule(t, relaxed, "StructuredAuthenticationConfigurationEgressSelector", "properties", "apiServer", "properties", "featureGates")
 	ns := namespace(t)
 	t.Cleanup(func() {
 		if err := updateCRD(context.Background(), head.DeepCopy()); err != nil {
 			t.Error(err)
 		}
 	})
-	serveCRD(t, relaxed, ns, "")
+	serveCRD(t, relaxed, ns, gateOff, "")
 	cp := create(t, ns, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
 		withJWT(oidc())(s)
 		s.APIServer.FeatureGates = map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}
 	})
-	serveCRD(t, head.DeepCopy(), ns, refused)
+	serveCRD(t, head.DeepCopy(), ns, gateOff, refused)
 
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
@@ -305,10 +314,22 @@ func TestAMinorStepGetsAnExpressionOfTheNewerMinorOnceTheAPIServerReportsIt(t *t
 
 func TestNoJWTIssuerIsTheServiceAccountIssuer(t *testing.T) {
 	const shared = "https://login.example.com/realms/team-a"
-	cp := controlPlane(t, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
+	overlap := func(s *lodiav1alpha1.ControlPlaneSpec) {
 		withJWT(oidc())(s)
 		s.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: shared}
+	}
+	head := controlPlanesCRD(t)
+	relaxed := head.DeepCopy()
+	withoutRule(t, relaxed, "self.serviceAccount.issuer")
+	ns := namespace(t)
+	t.Cleanup(func() {
+		if err := updateCRD(context.Background(), head.DeepCopy()); err != nil {
+			t.Error(err)
+		}
 	})
+	serveCRD(t, relaxed, ns, overlap, "")
+	cp := create(t, ns, loadBalancer(), overlap)
+	serveCRD(t, head.DeepCopy(), ns, overlap, "kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer")
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
