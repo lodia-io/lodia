@@ -5,11 +5,19 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
+
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/authnconfig"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 func authenticators(t *testing.T, o *unstructured.Unstructured) []any {
@@ -79,6 +87,12 @@ func TestJWTAuthenticators(t *testing.T) {
 		{"an issuer with a user", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["url"] = "https://alice@login.example.com"
 		}, https},
+		{"an issuer with a user and a port", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "HTTPS://alice:secret@login.example.com:8443/realms/team-a"
+		}, https},
+		{"an https issuer without a host", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "https:login.example.com"
+		}, https},
 		{"an http discovery URL", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["discoveryURL"] = "http://10.96.0.50/.well-known/openid-configuration"
 		}, https},
@@ -90,6 +104,10 @@ func TestJWTAuthenticators(t *testing.T) {
 		}, differ},
 		{"two audiences without a policy", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["audiences"] = []any{"a", "b"}
+		}, matchAny},
+		{"two audiences with an empty policy", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["audiences"] = []any{"a", "b"}
+			issuer(first(t, o))["audienceMatchPolicy"] = ""
 		}, matchAny},
 		{"two audiences that match any", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["audiences"] = []any{"a", "b"}
@@ -220,4 +238,82 @@ func TestTheSchemaDefaultsTheIssuersEgressToCluster(t *testing.T) {
 func issuerOf(t *testing.T, o *unstructured.Unstructured) map[string]any {
 	t.Helper()
 	return under(first(t, o), "issuer")
+}
+
+func TestTheSchemaAcceptsWhatKubeAPIServerOfEveryMinorAccepts(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	issuer := func(o map[string]any) map[string]any { return under(o, "issuer") }
+	for _, c := range []struct {
+		name   string
+		mutate func(*testing.T, *unstructured.Unstructured)
+	}{
+		{"an upper-case scheme", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "HTTPS://login.example.com/realms/team-a"
+		}},
+		{"an @ in the issuer's path", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "https://login.example.com/realms/team-a@acme"
+		}},
+		{"an empty query", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "https://login.example.com/realms/team-a?"
+		}},
+		{"an empty fragment", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "https://login.example.com/realms/team-a#"
+		}},
+		{"an @ in the discovery URL's path", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = "https://10.96.0.50/realms/team-a@acme/.well-known/openid-configuration"
+		}},
+		{"an empty discoveryURL", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = ""
+		}},
+		{"two empty discoveryURLs", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = ""
+			copied := runtime.DeepCopyJSONValue(first(t, o)).(map[string]any)
+			issuer(copied)["url"] = "https://login.example.com/realms/team-b"
+			set(t, o, append(authenticators(t, o), copied), "spec", "apiServer", "authentication", "jwt")
+		}},
+		{"an empty audienceMatchPolicy", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["audienceMatchPolicy"] = ""
+		}},
+		{"an empty egressSelectorType", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["egressSelectorType"] = ""
+		}},
+		{"a required claim with an empty message", func(t *testing.T, o *unstructured.Unstructured) {
+			first(t, o)["claimValidationRules"] = []any{map[string]any{"claim": "hd", "message": ""}}
+		}},
+		{"an expression with an empty requiredValue", func(t *testing.T, o *unstructured.Unstructured) {
+			first(t, o)["claimValidationRules"] = []any{map[string]any{"expression": "true", "requiredValue": ""}}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-oidc.yaml", "upstream")
+			c.mutate(t, obj)
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll, client.FieldValidation("Strict")), "")
+			data, err := json.Marshal(authenticators(t, obj))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var jwt []lodiav1alpha1.JWTAuthenticator
+			if err := json.Unmarshal(data, &jwt); err != nil {
+				t.Fatal(err)
+			}
+			upstream, err := authnconfig.Upstream(jwt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := range upstream {
+				upstream[i].Issuer.EgressSelectorType = apiserverv1.EgressSelectorCluster
+			}
+			file, err := yaml.Marshal(apiserverv1.AuthenticationConfiguration{
+				TypeMeta: metav1.TypeMeta{APIVersion: apiserverv1.SchemeGroupVersion.String(), Kind: "AuthenticationConfiguration"},
+				JWT:      upstream,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := authnconfig.Validate(file, versions.Minors(), nil, nil); err != nil {
+				t.Errorf("kube-apiserver's validation refuses it: %v", err)
+			}
+		})
+	}
 }

@@ -18,8 +18,8 @@ spec:
       - issuer:
           url: https://login.example.com/realms/team-a
           audiences: [team-a-cluster]
-          # egressSelectorType: cluster, the default and the only value: the
-          # API server reaches the issuer from the tenant's nodes.
+          # egressSelectorType: cluster, the default and what Workloads renders:
+          # the API server reaches the issuer from the tenant's nodes.
         claimValidationRules:
         - expression: "claims.tenant == 'team-a'"
           message: the token is not team-a's

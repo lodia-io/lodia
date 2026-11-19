@@ -12,7 +12,7 @@ type Authentication struct {
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=8
 	// +kubebuilder:validation:XValidation:rule="self.all(a, self.exists_one(b, b.issuer.url == a.issuer.url))",message="each issuer.url appears once"
-	// +kubebuilder:validation:XValidation:rule="self.all(a, !has(a.issuer.discoveryURL) || self.exists_one(b, has(b.issuer.discoveryURL) && b.issuer.discoveryURL == a.issuer.discoveryURL))",message="each issuer.discoveryURL appears once"
+	// +kubebuilder:validation:XValidation:rule="self.all(a, !has(a.issuer.discoveryURL) || size(a.issuer.discoveryURL) == 0 || self.exists_one(b, has(b.issuer.discoveryURL) && b.issuer.discoveryURL == a.issuer.discoveryURL))",message="each issuer.discoveryURL appears once"
 	JWT []JWTAuthenticator `json:"jwt,omitempty"`
 }
 
@@ -44,20 +44,20 @@ type JWTAuthenticator struct {
 }
 
 // Issuer is where the tokens come from and whom they are for.
-// +kubebuilder:validation:XValidation:rule="size(self.audiences) == 1 || has(self.audienceMatchPolicy)",message="audienceMatchPolicy must be MatchAny for multiple audiences"
+// +kubebuilder:validation:XValidation:rule="size(self.audiences) == 1 || has(self.audienceMatchPolicy) && self.audienceMatchPolicy == 'MatchAny'",message="audienceMatchPolicy must be MatchAny for multiple audiences"
 // +kubebuilder:validation:XValidation:rule="!has(self.discoveryURL) || self.discoveryURL != self.url",message="discoveryURL must differ from url"
 type Issuer struct {
 	// URL is the issuer, the iss claim of its tokens.
 	// +required
 	// +kubebuilder:validation:MaxLength=512
-	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://') && !self.contains('?') && !self.contains('#') && !self.contains('@')",message="must be an https URL without a user, a query or a fragment"
+	// +kubebuilder:validation:XValidation:rule="self.matches('^(?i:https)://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
 	URL string `json:"url"`
 
 	// DiscoveryURL is where the discovery document is fetched from, when not
 	// under url.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
-	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://') && !self.contains('?') && !self.contains('#') && !self.contains('@')",message="must be an https URL without a user, a query or a fragment"
+	// +kubebuilder:validation:XValidation:rule="size(self) == 0 || self.matches('^(?i:https)://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
 	DiscoveryURL *string `json:"discoveryURL,omitempty"`
 
 	// CertificateAuthority is the PEM bundle the issuer's serving certificate
@@ -77,22 +77,22 @@ type Issuer struct {
 
 	// AudienceMatchPolicy is MatchAny, required with more than one audience.
 	// +optional
-	// +kubebuilder:validation:Enum=MatchAny
+	// +kubebuilder:validation:Enum="";MatchAny
 	AudienceMatchPolicy string `json:"audienceMatchPolicy,omitempty"`
 
 	// EgressSelectorType is cluster: the API server reaches the issuer
 	// through konnectivity, from the tenant's nodes.
 	// +optional
 	// +kubebuilder:default=cluster
-	// +kubebuilder:validation:Enum=cluster
+	// +kubebuilder:validation:Enum="";cluster
 	EgressSelectorType string `json:"egressSelectorType,omitempty"`
 }
 
 // ClaimValidationRule is a claim a token must hold, or a CEL expression on its
 // claims that must be true.
 // +kubebuilder:validation:XValidation:rule="has(self.claim) != has(self.expression)",message="set exactly one of claim and expression"
-// +kubebuilder:validation:XValidation:rule="!has(self.claim) || !has(self.message)",message="message is set only with expression"
-// +kubebuilder:validation:XValidation:rule="!has(self.expression) || !has(self.requiredValue)",message="requiredValue is set only with claim"
+// +kubebuilder:validation:XValidation:rule="!has(self.claim) || !has(self.message) || size(self.message) == 0",message="message is set only with expression"
+// +kubebuilder:validation:XValidation:rule="!has(self.expression) || !has(self.requiredValue) || size(self.requiredValue) == 0",message="requiredValue is set only with claim"
 type ClaimValidationRule struct {
 	// +optional
 	// +kubebuilder:validation:MinLength=1
