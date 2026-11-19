@@ -122,11 +122,35 @@ func TestValidateLooksUpEachIssuersEgressAsKubeAPIServerBuildsIt(t *testing.T) {
 	}
 }
 
+func TestValidateRefusesAFileOfAnotherKindAndKeepsEveryError(t *testing.T) {
+	err := Validate([]byte("apiVersion: apiserver.config.k8s.io/v1\nkind: AuthorizationConfiguration\n"), nil, []byte(egress))
+	if want := "it does not decode: it decodes as *apiserver.AuthorizationConfiguration"; err == nil || err.Error() != want {
+		t.Errorf("a file of another kind gives %v, want %q", err, want)
+	}
+
+	const five = `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer: {url: "http://login.example.com", audiences: [lodia]}
+  claimMappings:
+    username: {expression: claims.sub}
+  userValidationRules:
+  - {expression: user.username}
+  - {expression: user.uid}
+  - {expression: "1"}
+  - {expression: "'x'"}
+`
+	invalid, ok := errors.AsType[*Invalid](Validate([]byte(five), nil, []byte(egress)))
+	if !ok || len(invalid.Errors) != 5 || !strings.HasSuffix(invalid.Error(), "; and 2 more") {
+		t.Errorf("a file with five errors gives %v, want all five kept and two of them counted", invalid)
+	}
+}
+
 func TestARefusalNamesItsFirstErrorsWithinBounds(t *testing.T) {
 	long := strings.Repeat("é", 300)
-	err := &Invalid{Minor: "1.35", Errors: []string{long, "b", "c", "d", "e"}}
+	err := &Invalid{Minor: "1.35", Errors: []string{long, "a" + long, "c", "d", "e"}}
 	got := err.Error()
-	want := "kube-apiserver 1.35 refuses it: " + strings.Repeat("é", 128) + "…; b; c; and 2 more"
+	want := "kube-apiserver 1.35 refuses it: " + strings.Repeat("é", 128) + "…; a" + strings.Repeat("é", 127) + "…; c; and 2 more"
 	if got != want {
 		t.Errorf("the message is %q, want %q", got, want)
 	}
