@@ -97,11 +97,12 @@ type Reconciler struct {
 	gateways map[types.NamespacedName]*fence.Fence
 
 	validating  sync.Mutex
-	validations map[types.NamespacedName]validation
+	validations map[types.NamespacedName][]validation
 }
 
 // validation is the outcome of validating one authentication configuration
-// for the minors that read it.
+// for the minors that read it. A pass validates the spec's and, when that
+// fails, the one stored, so a ControlPlane keeps the last two.
 type validation struct {
 	key string
 	err error
@@ -424,47 +425,68 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 }
 
 // validated is config with the authentication configuration Workloads writes:
-// the spec's once kube-apiserver of every minor that reads it would load it,
-// and otherwise, with the reason, the one stored, or one without JWT
-// authenticators while this ControlPlane has none.
+// the spec's once kube-apiserver of every minor that reads it would load it
+// under the ServiceAccount issuer the pass renders, and otherwise, with the
+// reason, the one stored while this ControlPlane controls it and it would load
+// the same way, or else one without JWT authenticators, whose reason says why
+// on the pass that writes it.
 func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
-	err := r.validate(cp, config[1].Data[authenticationFile], readers(cp), []string{issuer(cp, endpoint.APIServer)})
+	minors, issuers := readers(cp), []string{issuer(cp, endpoint.APIServer)}
+	err := r.validate(cp, config[1].Data[authenticationFile], minors, issuers)
 	var invalid *authnconfig.Invalid
 	if !errors.As(err, &invalid) {
 		return config, "", err
 	}
 	refused := "the authentication configuration of spec.apiServer.authentication is not written: " + invalid.Error()
-	stored, err := r.stored(ctx, cp, hashed[1].DeepCopy())
-	if err != nil {
-		return nil, "", err
+	const removed = "; the API server's JWT authenticators are removed"
+	stored := &corev1.ConfigMap{}
+	err = r.Reader.Get(ctx, client.ObjectKeyFromObject(hashed[1]), stored)
+	var why string
+	switch {
+	case apierrors.IsNotFound(err):
+		why = "none is stored"
+	case err != nil:
+		return nil, "", fmt.Errorf("read ConfigMap %s: %w", hashed[1].Name, err)
+	case !metav1.IsControlledBy(stored, cp):
+		why = "the one stored is not this ControlPlane's"
+	default:
+		err := r.validate(cp, stored.Data[authenticationFile], minors, issuers)
+		if !errors.As(err, &invalid) {
+			if err != nil {
+				return nil, "", err
+			}
+			if stored.Data[authenticationFile] == hashed[1].Data[authenticationFile] {
+				refused += removed
+			}
+			return config[:1], refused, nil
+		}
+		why = "the one stored is refused too: " + invalid.Error()
 	}
-	if stored {
-		return config[:1], refused, nil
-	}
-	return []*corev1.ConfigMap{config[0], hashed[1]}, refused, nil
+	return []*corev1.ConfigMap{config[0], hashed[1]}, refused + removed + ", since " + why, nil
 }
 
 // validate is authnconfig.Validate under the API server's feature gates, kept
-// per ControlPlane for the content, minors, issuers and gates it last
-// validated.
+// per ControlPlane for the content, minors, issuers and gates of its last two
+// validations.
 func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, minors, issuers []string) error {
 	gates := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{}).FeatureGates
 	sum := sha256.Sum256([]byte(data))
 	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(minors, ",") + "/" + strings.Join(issuers, ",") + "/" + fmt.Sprint(gates)
 	name := client.ObjectKeyFromObject(cp)
 	r.validating.Lock()
-	kept, ok := r.validations[name]
+	kept := r.validations[name]
+	i := slices.IndexFunc(kept, func(v validation) bool { return v.key == key })
 	r.validating.Unlock()
-	if ok && kept.key == key {
-		return kept.err
+	if i >= 0 {
+		return kept[i].err
 	}
 	err := authnconfig.Validate([]byte(data), minors, issuers, gates)
 	r.validating.Lock()
 	defer r.validating.Unlock()
 	if r.validations == nil {
-		r.validations = map[types.NamespacedName]validation{}
+		r.validations = map[types.NamespacedName][]validation{}
 	}
-	r.validations[name] = validation{key: key, err: err}
+	r.validations[name] = append([]validation{{key: key, err: err}}, r.validations[name][:min(len(r.validations[name]), 1)]...)
 	return err
 }
 

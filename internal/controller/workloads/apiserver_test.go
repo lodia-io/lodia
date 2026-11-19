@@ -157,7 +157,7 @@ func writeAtomically(t *testing.T, path string, data []byte) {
 	}
 }
 
-func startTenantAPIServer(t *testing.T, authentication []byte) (*tenantAPIServer, error) {
+func startTenantAPIServer(t *testing.T, authentication []byte, issuer string) (*tenantAPIServer, error) {
 	t.Helper()
 	dir := t.TempDir()
 	s := &tenantAPIServer{file: filepath.Join(dir, "authentication-config.yaml"), log: &syncBuffer{}}
@@ -175,6 +175,9 @@ func startTenantAPIServer(t *testing.T, authentication []byte) (*tenantAPIServer
 	api := env.ControlPlane.GetAPIServer()
 	api.Err = s.log
 	api.Configure().Set("authentication-config", s.file).Set("egress-selector-config-file", egressFile)
+	if issuer != "" {
+		api.Configure().Set("service-account-issuer", issuer)
+	}
 	s.config, err = env.Start()
 	t.Cleanup(func() {
 		if err := env.Stop(); err != nil {
@@ -262,7 +265,7 @@ func TestARealAPIServerLoadsAndReloadsTheRenderedConfiguration(t *testing.T) {
 	cp := running(t, withJWT(first.authenticators()))
 	hashed := hashes(t, cp)
 	written := authenticationData(t, cp, first.server.URL)
-	tenant, err := startTenantAPIServer(t, written)
+	tenant, err := startTenantAPIServer(t, written, "")
 	if err != nil {
 		t.Fatalf("kube-apiserver %s does not start on the file Workloads wrote: %v\n%s", envtestMinor(t), err, tenant.log)
 	}
@@ -330,7 +333,7 @@ func TestWhatWouldStopKubeAPIServerNeverReachesTheConfigMap(t *testing.T) {
 	if err := authnconfig.Validate(unknown, []string{minor}, nil, nil); err == nil || !strings.Contains(err.Error(), `unknown field "notAField"`) {
 		t.Errorf("the file with an unknown field validates: %v", err)
 	}
-	tenant, err := startTenantAPIServer(t, unknown)
+	tenant, err := startTenantAPIServer(t, unknown, "")
 	if err == nil {
 		t.Error("kube-apiserver starts on a file with an unknown field")
 	} else if failure := tenant.failure(); !strings.Contains(failure, `strict decoding error: unknown field \"notAField\"`) {
@@ -346,7 +349,7 @@ func TestWhatWouldStopKubeAPIServerNeverReachesTheConfigMap(t *testing.T) {
 	})
 	includes := authenticationData(t, cp, "includes")
 	refused := authnconfig.Validate(includes, []string{minor}, nil, nil)
-	tenant, err = startTenantAPIServer(t, includes)
+	tenant, err = startTenantAPIServer(t, includes, "")
 	if supported := utilversion.MustParseGeneric(minor).AtLeast(utilversion.MajorMinor(1, 37)); supported {
 		if err != nil || refused != nil {
 			t.Errorf("kube-apiserver %s refuses includes: %v, %v", minor, err, refused)

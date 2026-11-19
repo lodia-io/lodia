@@ -233,3 +233,63 @@ func TestAControlPlaneGoneTakesItsValidationAlong(t *testing.T) {
 		t.Errorf("after a pass that finds no ControlPlane team-a/dev Workloads keeps the validations of %v", slices.Collect(maps.Keys(r.validations)))
 	}
 }
+
+func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesOne(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "dev-uid"}}
+	cp.Status.Target = &lodiav1alpha1.Target{Version: "v1.37.1"}
+	endpoint := &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: lodiav1alpha1.APIServerServicePort}}
+	jwt := acceptance()
+	cp.Spec.APIServer = &lodiav1alpha1.APIServer{Authentication: &lodiav1alpha1.Authentication{JWT: jwt}}
+	valid, _, err := configMaps(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwt[0].UserValidationRules = []lodiav1alpha1.UserValidationRule{{Expression: "user.nope == 'x'"}}
+	config, hashed, err := configMaps(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const refused = "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed: ERROR: <input>:1:5: undefined field 'nope'\n | user.nope == 'x'\n | ....^"
+	const removed = "; the API server's JWT authenticators are removed"
+	stored := func(data string, owners ...metav1.OwnerReference) *corev1.ConfigMap {
+		c := hashed[1].DeepCopy()
+		c.OwnerReferences = owners
+		c.Data[authenticationFile] = data
+		return c
+	}
+	own := hashed[1].OwnerReferences[0]
+	for _, c := range []struct {
+		name    string
+		stored  []client.Object
+		kept    bool
+		message string
+	}{
+		{"none stored", nil, false, refused + removed + ", since none is stored"},
+		{"a predecessor's orphan", []client.Object{stored(valid[1].Data[authenticationFile])}, false, refused + removed + ", since the one stored is not this ControlPlane's"},
+		{"this ControlPlane's, refused", []client.Object{stored(config[1].Data[authenticationFile], own)}, false, refused + removed + ", since the one stored is refused too: " + refused[len("the authentication configuration of spec.apiServer.authentication is not written: "):]},
+		{"this ControlPlane's, loaded", []client.Object{stored(valid[1].Data[authenticationFile], own)}, true, refused},
+		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, refused + removed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fake := fake.NewClientBuilder().WithScheme(scheme).WithObjects(c.stored...).Build()
+			r := &Reconciler{Client: fake, Reader: fake}
+			written, message, err := r.validated(t.Context(), cp, endpoint, config, hashed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message != c.message {
+				t.Errorf("the message is\n%s\nwant\n%s", message, c.message)
+			}
+			switch {
+			case c.kept && len(written) != 1:
+				t.Errorf("Workloads writes %d ConfigMaps, want the egress selector's alone", len(written))
+			case !c.kept && (len(written) != 2 || written[1].Data[authenticationFile] != mainsAuthentication):
+				t.Errorf("Workloads writes %v, want the authentication configuration without JWT authenticators", written)
+			}
+		})
+	}
+}
