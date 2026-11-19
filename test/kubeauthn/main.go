@@ -3,12 +3,13 @@
 
 // Command kubeauthn checks authentication configurations as kube-apiserver of
 // the k8s.io/apiserver it is built with checks its --authentication-config: a
-// strict decode, then upstream's validation with upstream's default compiler
-// (pkg/kubeapiserver/options/authentication.go). It reads a JSON array of
-// files on standard input and writes, as JSON, the versions it links and the
-// error of each file, empty when the file passes. Each minor's dependencies
-// are <minor>.mod and <minor>.sum, built with -modfile; go.mod only marks the
-// module's root.
+// strict decode, then upstream's validation with upstream's default compiler,
+// under the --feature-gates and --service-account-issuer it is given
+// (pkg/kubeapiserver/options/authentication.go). It reads the gates and the
+// files with their issuers as JSON on standard input and writes, as JSON, the
+// versions it links and the error of each file, empty when the file passes.
+// Each minor's dependencies are <minor>.mod and <minor>.sum, built with
+// -modfile; go.mod only marks the module's root.
 package main
 
 import (
@@ -24,7 +25,16 @@ import (
 	"k8s.io/apiserver/pkg/apis/apiserver/install"
 	"k8s.io/apiserver/pkg/apis/apiserver/validation"
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 )
+
+type input struct {
+	FeatureGates map[string]bool `json:"featureGates"`
+	Files        []struct {
+		Data                  string   `json:"data"`
+		ServiceAccountIssuers []string `json:"serviceAccountIssuers"`
+	} `json:"files"`
+}
 
 type report struct {
 	Versions map[string]string `json:"versions"`
@@ -32,8 +42,11 @@ type report struct {
 }
 
 func main() {
-	var files []string
-	if err := json.NewDecoder(os.Stdin).Decode(&files); err != nil {
+	var in input
+	if err := json.NewDecoder(os.Stdin).Decode(&in); err != nil {
+		log.Fatal(err)
+	}
+	if err := utilfeature.DefaultMutableFeatureGate.SetFromMap(in.FeatureGates); err != nil {
 		log.Fatal(err)
 	}
 	scheme := runtime.NewScheme()
@@ -46,15 +59,15 @@ func main() {
 			out.Versions[m.Path] = m.Version
 		}
 	}
-	for _, file := range files {
-		out.Errors = append(out.Errors, check(decoder, compiler, []byte(file)))
+	for _, file := range in.Files {
+		out.Errors = append(out.Errors, check(decoder, compiler, []byte(file.Data), file.ServiceAccountIssuers))
 	}
 	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func check(decoder runtime.Decoder, compiler authenticationcel.Compiler, data []byte) string {
+func check(decoder runtime.Decoder, compiler authenticationcel.Compiler, data []byte, issuers []string) string {
 	decoded, err := runtime.Decode(decoder, data)
 	if err != nil {
 		return err.Error()
@@ -63,7 +76,7 @@ func check(decoder runtime.Decoder, compiler authenticationcel.Compiler, data []
 	if !ok {
 		return fmt.Sprintf("expected AuthenticationConfiguration, got %T", decoded)
 	}
-	if err := validation.ValidateAuthenticationConfiguration(compiler, config, nil).ToAggregate(); err != nil {
+	if err := validation.ValidateAuthenticationConfiguration(compiler, config, issuers).ToAggregate(); err != nil {
 		return err.Error()
 	}
 	return ""
