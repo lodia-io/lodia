@@ -903,3 +903,15 @@ func TestAWaitAtALaterRefusedGenerationCountsTheValidOneItNamesAsItWas(t *testin
 		t.Errorf("a wait at generation %d, whose spec is refused, over generation %d, whose file is written: %v", get(t, cp).Generation, ready.ObservedGeneration, err)
 	}
 }
+
+func TestAHeldPassAtALaterRefusedGenerationCountsTheValidOneItNamesAsItWas(t *testing.T) {
+	cp := running(t, withJWT(oidc()))
+	ready := *condition(t, cp)
+
+	setTargetAt(t, cp, version, next)
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
+	reconcileNow(t, cp)
+	if err := expectAt(cp, ready.ObservedGeneration, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, ready.Message); err != nil {
+		t.Errorf("a held pass at generation %d, whose spec is refused, over generation %d, whose file is written: %v", get(t, cp).Generation, ready.ObservedGeneration, err)
+	}
+}
