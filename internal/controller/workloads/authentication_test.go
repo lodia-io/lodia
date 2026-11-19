@@ -771,6 +771,22 @@ func TestAWaitAtALaterGenerationThatFixesTheFieldKeepsTheRefusal(t *testing.T) {
 	}
 }
 
+func TestAHeldPassAtALaterGenerationThatFixesTheFieldKeepsTheRefusal(t *testing.T) {
+	cp := running(t, withJWT(oidc()))
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
+	g := get(t, cp).Generation
+	testenv.Eventually(t, func() error {
+		return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+	})
+
+	setTargetAt(t, cp, version, next)
+	update(t, cp, withJWT(oidc("user.username != 'x'")))
+	reconcileNow(t, cp)
+	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast); err != nil {
+		t.Errorf("a held pass at generation %d, whose spec fixes the field: %v", g+1, err)
+	}
+}
+
 func TestAWaitAtALaterRefusedGenerationCountsTheValidOneItNamesAsItWas(t *testing.T) {
 	cp := running(t, withJWT(oidc()))
 	ready := *condition(t, cp)
