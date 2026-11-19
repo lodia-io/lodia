@@ -52,10 +52,11 @@ func (i *Invalid) Error() string {
 }
 
 // Validate decodes data as strictly as kube-apiserver decodes its
-// --authentication-config, and validates it as the API server of each of
-// minors does at its start and at a reload, with the CEL libraries of that
-// minor; no JWT authenticator may name one of issuers, the ServiceAccount
-// issuers.
+// --authentication-config, and runs upstream's validation of it for each of
+// minors with the CEL libraries and the parser of that minor; no JWT
+// authenticator may name one of issuers, the ServiceAccount issuers. On the
+// expressions of testdata/corpus.txt it agrees with each minor's own
+// validation, but refuses duration() of an int, which 1.35 and 1.36 accept.
 func Validate(data []byte, minors, issuers []string) error {
 	decoded, err := runtime.Decode(codecs.UniversalDecoder(), data)
 	if err != nil {

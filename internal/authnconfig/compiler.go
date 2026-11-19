@@ -8,20 +8,28 @@ import (
 	"sync"
 
 	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common"
+	"github.com/google/cel-go/parser"
 	"k8s.io/apimachinery/pkg/util/version"
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
 	apiservercel "k8s.io/apiserver/pkg/cel"
 	"k8s.io/apiserver/pkg/cel/environment"
 )
 
-// compiler compiles claim and user expressions with the CEL libraries of one
-// Kubernetes minor, the NewExpressions environment at that minor: upstream's
-// compiler offers only every library of the release it is built from, and an
-// older API server knows fewer.
-// @todo: mirrors k8s.io/apiserver's unexported compiler, mustBuildEnvs and buildUserType (pkg/authentication/cel/compile.go at v0.37.1); drop it for upstream's compiler of a given version once k8s.io/apiserver has one (todo.md).
+// compiler compiles claim and user expressions as kube-apiserver of one minor
+// does: in the NewExpressions environment at that minor, since upstream's
+// compiler offers only every library of its own release, and before
+// escapesFrom also with cel-go v0.26.0's parser, which refuses backtick-escaped
+// identifiers (google/cel-go#1295).
+// @todo: mirrors k8s.io/apiserver's unexported compiler, mustBuildEnvs and buildUserType (pkg/authentication/cel/compile.go at v0.37.1), and the parser of cel-go v0.26.0, which 1.35 and 1.36 link; drop it for upstream's compiler of a given version once k8s.io/apiserver has one (todo.md).
 type compiler struct {
 	claims, user *cel.Env
+	unescaped    *parser.Parser
 }
+
+// escapesFrom is the first minor that links a cel-go parsing backtick-escaped
+// identifiers, v0.29.2; 1.35 and 1.36 link v0.26.0.
+var escapesFrom = version.MajorMinor(1, 37)
 
 var compilers sync.Map
 
@@ -63,21 +71,32 @@ func compilerOf(minor string) (authenticationcel.Compiler, error) {
 	if err != nil {
 		return nil, err
 	}
-	c, _ := compilers.LoadOrStore(minor, compiler{claims: claims, user: users})
+	built := compiler{claims: claims, user: users}
+	if v.LessThan(escapesFrom) {
+		if built.unescaped, err = parser.NewParser(parser.Macros(claims.Macros()...), parser.EnableOptionalSyntax(claims.HasLibrary("cel.lib.optional")), parser.EnableIdentEscapeSyntax(false)); err != nil {
+			return nil, err
+		}
+	}
+	c, _ := compilers.LoadOrStore(minor, built)
 	return c.(compiler), nil
 }
 
 func (c compiler) CompileClaimsExpression(a authenticationcel.ExpressionAccessor) (authenticationcel.CompilationResult, error) {
-	return compile(c.claims, a)
+	return c.compile(c.claims, a)
 }
 
 func (c compiler) CompileUserExpression(a authenticationcel.ExpressionAccessor) (authenticationcel.CompilationResult, error) {
-	return compile(c.user, a)
+	return c.compile(c.user, a)
 }
 
-func compile(env *cel.Env, a authenticationcel.ExpressionAccessor) (authenticationcel.CompilationResult, error) {
+func (c compiler) compile(env *cel.Env, a authenticationcel.ExpressionAccessor) (authenticationcel.CompilationResult, error) {
 	failed := func(detail string, errorType apiservercel.ErrorType) (authenticationcel.CompilationResult, error) {
 		return authenticationcel.CompilationResult{}, &apiservercel.Error{Type: errorType, Detail: detail}
+	}
+	if c.unescaped != nil {
+		if _, errs := c.unescaped.Parse(common.NewTextSource(a.GetExpression())); len(errs.GetErrors()) > 0 {
+			return failed("compilation failed: "+cel.NewIssues(errs).String(), apiservercel.ErrorTypeInvalid)
+		}
 	}
 	ast, issues := env.Compile(a.GetExpression())
 	if issues != nil {

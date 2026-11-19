@@ -1,0 +1,364 @@
+# Expressions TestValidateAgreesWithTheKubeAPIServerOfEveryMinorOnTheCorpus
+# checks at every minor Lodia runs: "claims" ones as a username mapping, a
+# claim rule and an extra value, "user" ones as a user rule, each line a kind,
+# a tab and the expression.
+
+claims	claims.sub
+claims	claims.`sub`
+claims	claims.`my-claim`
+claims	claims.`https://example.com/roles`
+claims	has(claims.`my-claim`)
+claims	claims['my-claim']
+claims	duration(1)
+claims	string(duration(60))
+claims	timestamp(1)
+claims	int(timestamp('2020-01-01T00:00:00Z'))
+claims	duration('1h')
+claims	type(claims.sub) == string
+claims	type(claims.roles) == list
+claims	type(1) == int
+claims	type(null) == null_type
+claims	type(b'a') == bytes
+claims	type(1.0) == double
+claims	type(1u) == uint
+claims	type(true) == bool
+claims	type({}) == map
+claims	type(type(1)) == type
+claims	type(duration('1s')) == google.protobuf.Duration
+claims	type(timestamp(0)) == google.protobuf.Timestamp
+claims	claims.sub.charAt(0)
+claims	claims.sub.indexOf('a')
+claims	claims.sub.lastIndexOf('a')
+claims	claims.sub.lowerAscii()
+claims	claims.sub.upperAscii()
+claims	claims.sub.replace('a', 'b')
+claims	claims.sub.split('@')
+claims	claims.sub.substring(1)
+claims	claims.sub.trim()
+claims	['a', 'b'].join(',')
+claims	strings.quote(claims.sub)
+claims	'abc'.reverse()
+claims	'%s'.format([claims.sub])
+claims	'%d'.format([1])
+claims	[1, 2].slice(0, 1)
+claims	[[1], [2]].flatten()
+claims	lists.range(3)
+claims	[2, 1].sort()
+claims	[1, 1].distinct()
+claims	[1, 2].reverse()
+claims	[1, 2].first()
+claims	[1, 2].last()
+claims	[1, 2].sortBy(x, -x)
+claims	sets.contains([1], [1])
+claims	sets.equivalent([1], [1])
+claims	sets.intersects([1], [1])
+claims	[1, 2].all(i, v, v > i)
+claims	[1, 2].exists(i, v, v > i)
+claims	[1, 2].existsOne(i, v, v > i)
+claims	[1, 2].exists_one(i, v, v > i)
+claims	{'a': 1}.transformMap(k, v, v + 1)
+claims	[1].transformList(i, v, v)
+claims	[1].transformMapEntry(i, v, {string(i): v})
+claims	claims.?email.orValue('x')
+claims	optional.of(1).hasValue()
+claims	optional.none()
+claims	[?optional.none()]
+claims	optional.ofNonZeroValue('')
+claims	claims.?a.optMap(x, x)
+claims	claims.?a.optFlatMap(x, optional.of(x))
+claims	optional.of(1).value()
+claims	optional.unwrap([optional.of(1)])
+claims	[optional.of(1)].unwrapOpt()
+claims	isURL('https://x')
+claims	url('https://x').getHost()
+claims	url('https://x').getScheme()
+claims	url('https://x').getEscapedPath()
+claims	url('https://x').getPort()
+claims	url('https://x').getQuery()
+claims	'abc'.find('b')
+claims	'abc'.findAll('b')
+claims	'abc'.findAll('b', 1)
+claims	isQuantity('1')
+claims	quantity('1').add(1)
+claims	quantity('1').sign()
+claims	quantity('1').asInteger()
+claims	quantity('1').isInteger()
+claims	quantity('1').compareTo(quantity('2'))
+claims	quantity('1').asApproximateFloat()
+claims	ip('10.0.0.1').family()
+claims	ip.isCanonical('10.0.0.1')
+claims	ip('::1').isLoopback()
+claims	ip('10.0.0.1').isGlobalUnicast()
+claims	cidr('10.0.0.0/8').prefixLength()
+claims	cidr('10.0.0.0/8').masked()
+claims	cidr('10.0.0.0/8').containsCIDR('10.1.0.0/16')
+claims	isCIDR('x')
+claims	isIP('x')
+claims	semver('1.0.0').major()
+claims	isSemver('v1.0', true)
+claims	semver('v1.0', true)
+claims	semver('1.0.0').isLessThan(semver('1.1.0'))
+claims	timestamp('2020-01-01T00:00:00Z').getFullYear()
+claims	timestamp('2020-01-01T00:00:00Z').getDayOfWeek()
+claims	duration('1h').getHours()
+claims	string(1)
+claims	string(1.5)
+claims	string(true)
+claims	string(timestamp('2020-01-01T00:00:00Z'))
+claims	string(b'a')
+claims	bool('true')
+claims	int(1.5)
+claims	int('1')
+claims	uint('1')
+claims	uint(1)
+claims	double('1.5')
+claims	double(1)
+claims	bytes('a')
+claims	size('a')
+claims	'a'.size()
+claims	1 == 1.0
+claims	1 < 1.5
+claims	1u < 2
+claims	[1, 'a']
+claims	dyn([1, 'a'])
+claims	{'a': 1, 2: 'b'}
+claims	math.greatest(1, 2)
+claims	base64.encode(b'a')
+claims	cel.bind(x, 1, x)
+claims	null
+claims	claims.sub.matches('^a$')
+claims	claims.sub.startsWith('a')
+claims	claims.sub.endsWith('a')
+claims	claims.sub.contains('a')
+claims	1 in [1]
+claims	has(claims.a)
+claims	claims.a.b
+claims	dyn(claims.roles).map(r, r)
+claims	claims.roles.map(r, r)
+claims	dyn(claims.roles).filter(r, r != '')
+claims	dyn(claims.roles).map(r, r != '', r)
+claims	[1].isSorted()
+claims	[1].sum()
+claims	[1].min()
+claims	[1].max()
+claims	[1].indexOf(1)
+claims	[1].lastIndexOf(1)
+claims	[1].includes(1)
+claims	'a'.includes('a')
+claims	authorizer.group('').resource('').check('').allowed()
+claims	{'a': 1}.?a
+claims	{'a': 1}[?'a']
+claims	claims[?'a']
+claims	1 + 2 * 3 % 2
+claims	-claims.n
+claims	claims.sub == 'a' || claims.sub == 'b'
+claims	!(claims.sub == 'a')
+claims	claims.sub + 1
+claims	request.user
+claims	claims.sub.
+claims	0x10
+claims	1e3
+claims	"a" + 'b'
+claims	r'a\b'
+claims	'''a'''
+claims	b'\xff'
+claims	'é'
+claims	claims.sub.format([])
+claims	[1, 2, 3].map(x, x).sum()
+claims	lists.range(3).map(x, x)
+claims	{'a': 1}.map(k, k)
+claims	claims.all(k, k != '')
+claims	timestamp('2020-01-01T00:00:00Z') + duration('1h')
+claims	timestamp('2020-01-01T00:00:00Z') - timestamp('2019-01-01T00:00:00Z')
+claims	claims.exp - claims.iat < duration(3600)
+claims	claims.exp - claims.iat < 3600
+claims	timestamp(claims.exp) > timestamp(claims.iat)
+claims	int(claims.exp) - int(claims.iat) < 3600
+claims	claims.sub.trim().lowerAscii()
+claims	'a'.compare('b')
+claims	ip('10.0.0.1').isUnspecified()
+claims	ip('10.0.0.1').isLinkLocalMulticast()
+claims	ip('10.0.0.1') == ip('10.0.0.1')
+claims	cidr('10.0.0.0/8').ip()
+claims	format.dns1123Label().validate('a')
+claims	'a'.quote()
+claims	strings.quote('a')
+claims	'A'.lowerAscii() == 'a'
+claims	[1, 2].@in(1)
+claims	claims.sub.?x
+claims	{'a': [1]}.a.size()
+claims	dyn(claims).sub
+claims	claims.sub in ['a']
+claims	[[1, 2], [3]].map(l, l.size())
+claims	optional.of(1).or(optional.of(2))
+claims	[1, 2][?5]
+user	!user.username.startsWith('system:')
+user	user.groups.exists(g, g == 'x')
+user	'x' in user.extra
+user	user.uid != ''
+user	!user.groups.includes('x')
+user	user.username
+user	user.missing
+user	size(user.groups) < 10
+user	user.`username` != ''
+user	user.extra.?`example.com/x`.hasValue()
+user	!user.username.startsWith('system:') && !user.username.startsWith('lodia:') && !user.groups.exists(g, g.startsWith('system:') || g.startsWith('lodia:'))
+user	user.groups.all(i, g, g != '')
+user	!('oidc:suspended' in user.groups)
+user	user.groups.sortBy(g, g).size() > 0
+user	user.groups.first().hasValue()
+user	duration(1) < duration('1s')
+user	type(user.username) == string
+claims	duration(int(claims.n))
+claims	timestamp(claims.iat) + duration(int(claims.ttl)) > timestamp(claims.exp)
+claims	claims.`cognito:groups`
+claims	claims.`cognito_groups`
+claims	claims.`custom-tenant`
+user	user.extra.`example.com/tenant`.size() > 0
+claims	claims.?`custom-tenant`.orValue('')
+
+# The expressions of the compiler's earlier test against upstream's.
+claims	'oidc:' + claims.sub
+claims	dyn(claims.roles).map(r, 'oidc:' + r)
+claims	claims.email.split('@')[0]
+claims	claims.?email.orValue('none')
+claims	has(claims.email) ? claims.email : claims.sub
+claims	claims.sub.matches('^[a-z]+$')
+claims	url(claims.iss).getHost()
+claims	isIP(claims.ip)
+claims	cidr('10.0.0.0/8').containsIP(claims.ip)
+claims	'%s/%s'.format([claims.tenant, claims.sub])
+claims	sets.contains(['a', 'b'], ['a'])
+claims	isSemver(claims.v)
+claims	[3, 1, 2].sort()
+claims	['a', 'a'].distinct()
+claims	quantity('1Gi').isGreaterThan(quantity('1Mi'))
+claims	['a'].includes('a')
+claims	1 + ''
+claims	claims.tenant == 'acme'
+claims	claims.sub == 'a' ? ['a'] : []
+
+# The rule kube-apiserver adds for claims.email in a username.
+claims	claims.email
+claims	claims.email_verified ? claims.email : ''
+claims	claims.?email.orValue('') + string(claims.email_verified)
+claims	claims.`email`
+claims	has(claims.email_verified) && claims.email != ''
+
+# The accumulator macros hide.
+claims	[1].all(x, __result__)
+claims	[1].exists(x, @result)
+
+# cel-go v0.26.1, google/cel-go#1196: the nesting limit of comprehensions.
+claims	[[[1]]].all(a, a.all(b, b.all(c, c > 0)))
+claims	dyn(claims.roles).all(r, dyn(claims.roles).exists(s, dyn(claims.roles).exists_one(u, u == r && s == r)))
+
+# cel-go v0.26.1, google/cel-go#1190: nested element types.
+claims	type([[1]]) == list
+claims	[[claims.sub]][0][0]
+claims	dyn(claims.roles).map(r, [r])
+
+# cel-go v0.27.0, google/cel-go#1262: types are no longer variables.
+claims	int
+claims	[int, string].size() == 2
+claims	int == type(1)
+claims	type(int) == type
+claims	google.protobuf.Duration
+claims	[1].exists(int, int > 0)
+claims	['a'].map(string, string + 'b')
+claims	{'a': 1}.all(bool, bool == 'a')
+claims	dyn == type(dyn(1))
+user	type(user) != null_type
+
+# cel-go v0.27.0, google/cel-go#1256: namespace resolution.
+claims	.claims.sub
+claims	[1].exists(claims, claims == 1)
+claims	[{'sub': 'a'}].exists(claims, claims.sub == 'a')
+claims	[1].exists(x, .claims.sub == 'a')
+claims	[{'sub': 'a'}].exists(claims, .claims.sub == claims.sub)
+user	['a'].exists(user, user == 'a')
+user	.user.username != ''
+user	[{'username': 'a'}].exists(user, .user.username == user.username)
+
+# cel-go v0.27.0, google/cel-go#1232: format directives as the spec says.
+claims	'%x'.format([255])
+claims	'%X'.format(['ab'])
+claims	'%o'.format([8])
+claims	'%b'.format([5])
+claims	'%e'.format([1.0])
+claims	'%.2f'.format([1.5])
+claims	'%f'.format([1])
+claims	'%d'.format([1.5])
+claims	'%d'.format(['a'])
+claims	'%s'.format([[1, 'a']])
+claims	'%5s'.format(['a'])
+claims	'%-5s'.format(['a'])
+claims	'%q'.format(['a'])
+claims	'%%'.format([])
+claims	'%'.format([])
+claims	'%s %s'.format(['a'])
+claims	'%x'.format([b'a'])
+claims	'%.3e'.format([1.0])
+
+# cel-go v0.28.0, google/cel-go#1276: argument kinds of optional.or and orValue.
+claims	optional.of(1).or(2)
+claims	optional.of(1).orValue('a')
+claims	optional.none().or(optional.of('a'))
+claims	claims.?sub.or(claims.?email)
+
+# cel-go v0.28.0, google/cel-go#1295: backtick-escaped identifiers.
+claims	claims.`a.b`
+claims	claims.`a/b`
+claims	claims.`sub` == 'x'
+claims	`claims`.sub
+claims	claims.?`sub`.hasValue()
+claims	{'a': 1}.`a`
+user	user.extra.`example.com/x`[0] != ''
+user	has(user.`groups`)
+
+# cel-go v0.28.0, google/cel-go#1292: the precision of a format.
+claims	'%.1000f'.format([1.0])
+claims	'%.101f'.format([1.0])
+
+# cel-go v0.28.1, google/cel-go#1300: duration of an int.
+claims	duration(-1)
+claims	duration(1 + 1)
+claims	duration(claims.n)
+claims	duration(dyn(1))
+claims	duration(int(claims.n)) > duration('1s')
+claims	duration(string(claims.n) + 's')
+
+# cel-go v0.29.0, google/cel-go#1340: the JSON encoder, a library Kubernetes does not add.
+claims	json.encode({'a': 1})
+
+# cel-go v0.29.0, google/cel-go#1238: cel-go's network library, which Kubernetes does not add.
+claims	ip('10.0.0.1').isLoopback()
+claims	cidr('10.0.0.0/8').containsIP(ip('10.0.0.1'))
+claims	network.ip('10.0.0.1')
+
+# cel-go v0.29.0, google/cel-go#1315: optionals inside optionals.
+claims	optional.of(optional.of(1)).value().value()
+claims	[optional.of(1)][0].hasValue()
+claims	{'a': optional.of(1)}.a.value()
+claims	optional.of(optional.none()).value().hasValue()
+
+# cel-go v0.29.0, google/cel-go#1326: doubles in scientific notation.
+claims	1.5e-3 < 1.0
+claims	2E10 > 1.0
+
+# cel-go v0.29.0, google/cel-go#1336: a time zone's minutes.
+claims	timestamp('2020-01-01T00:00:00Z').getHours('+01:60')
+claims	timestamp('2020-01-01T00:00:00Z').getHours('+01:30')
+claims	timestamp('2020-01-01T00:00:61Z')
+
+# cel-go v0.29.0, google/cel-go#1335: indexOf on an empty string.
+claims	''.indexOf('', 1)
+claims	'a'.lastIndexOf('', 1)
+
+# cel-go v0.29.0, google/cel-go#1337: narrowed map keys.
+claims	{1: 'a'}[1u]
+claims	{1u: 'a'}[1]
+
+# cel-go v0.29.0, google/cel-go#1310: the size of lists.range.
+claims	lists.range(1000000000)
+claims	lists.range(-1)

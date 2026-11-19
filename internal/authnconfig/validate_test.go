@@ -14,56 +14,6 @@ import (
 	"go.lodia.io/lodia/internal/versions"
 )
 
-func newest() string {
-	minors := versions.Minors()
-	return minors[len(minors)-1]
-}
-
-func TestTheMinorCompilerAgreesWithUpstreamsAtTheNewestMinor(t *testing.T) {
-	ours, err := compilerOf(newest())
-	if err != nil {
-		t.Fatal(err)
-	}
-	upstream := authenticationcel.NewDefaultCompiler()
-	claims := []string{
-		"claims.sub", "'oidc:' + claims.sub", "dyn(claims.roles).map(r, 'oidc:' + r)", "claims.roles.map(r, r)",
-		"claims.sub.lowerAscii()", "claims.email.split('@')[0]", "claims.?email.orValue('none')", "has(claims.email) ? claims.email : claims.sub",
-		"claims.sub.matches('^[a-z]+$')", "url(claims.iss).getHost()", "isIP(claims.ip)", "cidr('10.0.0.0/8').containsIP(claims.ip)",
-		"'%s/%s'.format([claims.tenant, claims.sub])", "sets.contains(['a', 'b'], ['a'])", "[1, 2].all(i, v, v > i)",
-		"isSemver(claims.v)", "[3, 1, 2].sort()", "['a', 'a'].distinct()", "quantity('1Gi').isGreaterThan(quantity('1Mi'))",
-		"['a'].includes('a')", "claims.sub + 1", "request.user", "claims.sub.", "1 + ''",
-	}
-	users := []string{
-		"!user.username.startsWith('system:')", "user.groups.exists(g, g == 'x')", "'x' in user.extra", "user.uid != ''",
-		"!user.groups.includes('x')", "user.username", "user.missing", "size(user.groups) < 10",
-	}
-	type compiled struct {
-		ok     bool
-		output string
-	}
-	outcome := func(r authenticationcel.CompilationResult, err error) compiled {
-		if err != nil {
-			return compiled{}
-		}
-		return compiled{true, r.AST.OutputType().String()}
-	}
-	for _, e := range claims {
-		for _, a := range []authenticationcel.ExpressionAccessor{&authenticationcel.ClaimMappingExpression{Expression: e}, &authenticationcel.ClaimValidationCondition{Expression: e}} {
-			got, want := outcome(ours.CompileClaimsExpression(a)), outcome(upstream.CompileClaimsExpression(a))
-			if got != want {
-				t.Errorf("claims %T %q: Lodia's compiler at %s gives %+v, upstream's %+v", a, e, newest(), got, want)
-			}
-		}
-	}
-	for _, e := range users {
-		a := &authenticationcel.UserValidationCondition{Expression: e}
-		got, want := outcome(ours.CompileUserExpression(a)), outcome(upstream.CompileUserExpression(a))
-		if got != want {
-			t.Errorf("user %q: Lodia's compiler at %s gives %+v, upstream's %+v", e, newest(), got, want)
-		}
-	}
-}
-
 func TestIncludesCompilesFrom137(t *testing.T) {
 	for minor, want := range map[string]bool{"1.35": false, "1.36": false, "1.37": true} {
 		c, err := compilerOf(minor)

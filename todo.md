@@ -261,8 +261,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From structured authentication (2026-11-19)
 
-- Workloads compiles a tenant's claim and user expressions with the CEL libraries of each minor that reads the file, through a mirror of `k8s.io/apiserver`'s unexported compiler (the `@todo` in `internal/authnconfig/compiler.go`, [structured-authentication](docs/decisions/structured-authentication.md#workaround-the-compiler-of-a-minor)).
-  Remove it once `k8s.io/apiserver` builds a compiler of a given version; until then each bump of `k8s.io/apiserver` checks it against upstream's `compile.go`.
+- Workloads compiles a tenant's claim and user expressions with the CEL libraries and the parser of each minor that reads the file, through a mirror of `k8s.io/apiserver`'s unexported compiler and of cel-go v0.26.0's parser (the `@todo` in `internal/authnconfig/compiler.go`, [structured-authentication](docs/decisions/structured-authentication.md#workaround-the-compiler-of-a-minor)).
+  Remove it once `k8s.io/apiserver` builds a compiler of a given version; until then `TestValidateAgreesWithTheKubeAPIServerOfEveryMinorOnTheCorpus` holds it to each minor's own validation.
 - `Ready` at a generation says that the authentication configuration is written and valid, not that every API server replica has loaded it: an issuer that does not answer holds a load back with nothing in the status ([structured-authentication](docs/decisions/structured-authentication.md)).
   A condition outside `Ready` could compare each replica's `apiserver_authentication_config_controller_last_config_info` with a hash Workloads writes on the ConfigMap.
 - In `gateway` mode the konnectivity agents resolve names through the node's DNS, so a JWT issuer inside the tenant is reached by a name the nodes resolve or by its ClusterIP in `issuer.discoveryURL` ([operations](docs/operations.md#logging-in-with-an-oidc-provider)); decide whether the agents of that mode should resolve the tenant's Services too.
