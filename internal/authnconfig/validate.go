@@ -90,6 +90,7 @@ func Validate(data []byte, minors, issuers []string, gates map[string]bool) erro
 // egressGated refuses an egress selector, as upstream's validation does, when
 // gates turn StructuredAuthenticationConfigurationEgressSelector off: that
 // validation reads the gate of the process it runs in, the operator's.
+// @todo: mirrors upstream's check of the gate (pkg/apis/apiserver/validation/validation.go L230-L232 at v0.37.1); drop it for upstream's validation of a given version and gates once k8s.io/apiserver has one (todo.md).
 func egressGated(config *apiserver.AuthenticationConfiguration, gates map[string]bool) field.ErrorList {
 	gate := features.StructuredAuthenticationConfigurationEgressSelector
 	if on, set := gates[string(gate)]; !set || on || !utilfeature.DefaultFeatureGate.Enabled(gate) {

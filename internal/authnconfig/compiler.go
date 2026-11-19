@@ -27,7 +27,7 @@ import (
 // dot-prefixed identifier that names a comprehension variable around it, which
 // its checker resolves to that variable and later versions to a global
 // (google/cel-go#1256).
-// @todo: mirrors k8s.io/apiserver's unexported compiler, mustBuildEnvs and buildUserType (pkg/authentication/cel/compile.go at v0.37.1), and the parser and the name resolution of cel-go v0.26.0, which 1.35 and 1.36 link; drop it for upstream's compiler of a given version once k8s.io/apiserver has one (todo.md).
+// @todo: mirrors k8s.io/apiserver's unexported compiler, mustBuildEnvs and buildUserType (pkg/authentication/cel/compile.go at v0.37.1), and the parser and the name resolution of cel-go v0.26.0, which 1.35 and 1.36 link; drop it for upstream's validation of a given version and gates once k8s.io/apiserver has one (todo.md).
 type compiler struct {
 	claims, user *cel.Env
 	unescaped    *parser.Parser

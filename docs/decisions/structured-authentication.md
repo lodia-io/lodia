@@ -72,9 +72,10 @@ What the neighbours do is in [analysis](../analysis.md).
 It checks that each modfile selects the cel-go, antlr and `cel.dev/expr` that the minor's `k8s.io/apiserver` requires.
 The corpus has a case for each change in cel-go's release notes from v0.26.0 to the version the operator links that touches parsing, checking or the standard library; a bump of cel-go or `k8s.io/apiserver` reruns the test, and a minor added to the table needs its reference.
 The real API server of `ENVTEST_K8S_VERSION`, the oldest minor, loads the file Workloads renders (`internal/controller/workloads/apiserver_test.go`).
-It goes, with its `@todo`, once `k8s.io/apiserver` builds a compiler of a given version.
+`egressGated` in `validate.go` mirrors upstream's check of the egress selector's gate, since that check reads the gates of the process it runs in.
+Both go, with their `@todo`s, once `k8s.io/apiserver` offers a validation that takes the version and the gates.
 
-Upstream issue: (filed by the coordinator)
+Upstream issue, for a validation that takes the version and the gates: (filed by the coordinator)
 Notion task: (filed by the coordinator)
 
 ## Code
