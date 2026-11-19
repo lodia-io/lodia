@@ -346,11 +346,11 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"))
 		return nil, waiting, err
 	}
-	config, err := configMaps(cp)
+	config, hashed, err := configMaps(cp)
 	if err != nil {
 		return nil, nil, err
 	}
-	hashes, unhashed, err := r.hashes(ctx, cp, config)
+	hashes, unhashed, err := r.hashes(ctx, cp, hashed)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -755,9 +755,9 @@ func (r *Reconciler) hashes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 }
 
 // restartHashes are each component's hash of what it reads once: its
-// restart-only Secrets by their data hashes and, for the API server, the
-// ConfigMaps Workloads renders, so that a change to one rolls the component
-// that reads it once and nothing else.
+// restart-only Secrets by their data hashes and, for the API server, its
+// ConfigMaps as configMaps hashes them, so that a change to one rolls the
+// component that reads it once and nothing else.
 func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap) map[string]string {
 	out := map[string]string{}
 	for component, secrets := range restartOnly {

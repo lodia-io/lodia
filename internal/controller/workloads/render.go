@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/authnconfig"
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/versions"
@@ -175,31 +176,70 @@ func egressSelector() ([]byte, error) {
 	})
 }
 
-func authentication() ([]byte, error) {
+func authentication(jwt []apiserverv1.JWTAuthenticator) ([]byte, error) {
 	anonymous := &apiserverv1.AnonymousAuthConfig{Enabled: true}
 	for _, path := range anonymousPaths {
 		anonymous.Conditions = append(anonymous.Conditions, apiserverv1.AnonymousAuthCondition{Path: path})
 	}
 	return yaml.Marshal(apiserverv1.AuthenticationConfiguration{
 		TypeMeta:  metav1.TypeMeta{APIVersion: apiserverv1.SchemeGroupVersion.String(), Kind: "AuthenticationConfiguration"},
-		JWT:       []apiserverv1.JWTAuthenticator{},
+		JWT:       append([]apiserverv1.JWTAuthenticator{}, jwt...),
 		Anonymous: anonymous,
 	})
 }
 
-func configMaps(cp *lodiav1alpha1.ControlPlane) ([]*corev1.ConfigMap, error) {
+// jwtAuthenticators are the spec's JWT authenticators, each reaching its
+// issuer through konnectivity and keeping its identities out of the names
+// Kubernetes and Lodia own.
+func jwtAuthenticators(cp *lodiav1alpha1.ControlPlane) ([]apiserverv1.JWTAuthenticator, error) {
+	settings := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{})
+	if settings.Authentication == nil {
+		return nil, nil
+	}
+	jwt, err := authnconfig.Upstream(settings.Authentication.JWT)
+	if err != nil {
+		return nil, err
+	}
+	for i := range jwt {
+		jwt[i].Issuer.EgressSelectorType = apiserverv1.EgressSelectorCluster
+		if !slices.ContainsFunc(jwt[i].UserValidationRules, func(r apiserverv1.UserValidationRule) bool { return r.Expression == reservedNames.Expression }) {
+			jwt[i].UserValidationRules = append(jwt[i].UserValidationRules, reservedNames)
+		}
+	}
+	return jwt, nil
+}
+
+// reservedNames keeps a token from being a node, a ServiceAccount, a member
+// of system:masters or a person's lodia:user:<user>.
+var reservedNames = apiserverv1.UserValidationRule{
+	Expression: "!user.username.startsWith('system:') && !user.username.startsWith('lodia:') && !user.groups.exists(g, g.startsWith('system:') || g.startsWith('lodia:'))",
+	Message:    "system: and lodia: names are reserved",
+}
+
+// configMaps are the API server's ConfigMaps as Workloads writes them, and as
+// its restart hash reads them: there the authentication configuration has no
+// JWT authenticator, since kube-apiserver reloads them and never the anonymous
+// section.
+func configMaps(cp *lodiav1alpha1.ControlPlane) (written, hashed []*corev1.ConfigMap, err error) {
 	egress, err := egressSelector()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	authn, err := authentication()
+	jwt, err := jwtAuthenticators(cp)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return []*corev1.ConfigMap{
-		configMap(cp, "egress-selector", egressFile, egress),
-		configMap(cp, "authentication-config", authenticationFile, authn),
-	}, nil
+	authn, err := authentication(jwt)
+	if err != nil {
+		return nil, nil, err
+	}
+	anonymous, err := authentication(nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	written = []*corev1.ConfigMap{configMap(cp, "egress-selector", egressFile, egress), configMap(cp, "authentication-config", authenticationFile, authn)}
+	hashed = []*corev1.ConfigMap{written[0], configMap(cp, "authentication-config", authenticationFile, anonymous)}
+	return written, hashed, nil
 }
 
 func configMap(cp *lodiav1alpha1.ControlPlane, suffix, key string, content []byte) *corev1.ConfigMap {
