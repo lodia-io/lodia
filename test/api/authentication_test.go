@@ -267,9 +267,13 @@ func TestEveryBoundOfAJWTAuthenticatorHoldsAtItsLimit(t *testing.T) {
 		return list(n, func(i int) any { return map[string]any{"expression": fmt.Sprintf("user.username != '%d'", i)} })
 	}
 	extra := func(n int) []any {
-		return list(n, func(i int) any { return map[string]any{"key": fmt.Sprintf("example.com/k%d", i), "valueExpression": "claims.k"} })
+		return list(n, func(i int) any {
+			return map[string]any{"key": fmt.Sprintf("example.com/k%d", i), "valueExpression": "claims.k"}
+		})
 	}
-	claimRules := func(n int) []any { return list(n, func(i int) any { return map[string]any{"claim": fmt.Sprintf("c%d", i)} }) }
+	claimRules := func(n int) []any {
+		return list(n, func(i int) any { return map[string]any{"claim": fmt.Sprintf("c%d", i)} })
+	}
 	url := func(prefix string, n int) string { return prefix + text(n-len(prefix)) }
 	mapping := func(name string, value map[string]any) func(map[string]any) {
 		return func(o map[string]any) { under(o, "claimMappings")[name] = value }
