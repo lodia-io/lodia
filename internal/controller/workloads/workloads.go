@@ -42,7 +42,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
@@ -509,10 +508,7 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if err != nil {
 		return nil, "", err
 	}
-	var file struct {
-		JWT []any `json:"jwt"`
-	}
-	if yaml.Unmarshal([]byte(stored.Data[authenticationFile]), &file) == nil && len(file.JWT) > 0 {
+	if file, err := authnconfig.Decode([]byte(stored.Data[authenticationFile])); err == nil && len(file.JWT) > 0 {
 		return config[:1], servesLast, nil
 	}
 	return config[:1], servesNone, nil

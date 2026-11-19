@@ -23,6 +23,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/authnconfig"
@@ -523,6 +524,34 @@ func TestThisControlPlanesOwnValidFileIsKeptWithoutARoll(t *testing.T) {
 	if after := generationsOf(t, cp); fmt.Sprint(after) != fmt.Sprint(generations) {
 		t.Errorf("a refused configuration rolled the Deployments: generations %v, then %v", generations, after)
 	}
+}
+
+func TestAKeptFileInJSONWithEscapesGoYAMLLacksIsSaidToBeServed(t *testing.T) {
+	cp := running(t, withJWT(oidc()))
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
+	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, nopeRefusal+servesLast) })
+
+	edited := authenticationConfig(t, cp)
+	compact, err := yaml.YAMLToJSON([]byte(edited.Data["authentication-config.yaml"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := strings.Replace(strings.ReplaceAll(string(compact), "https://", `https:\/\/`), `"message":"`, `"message":"\ud83d\ude00 `, 1)
+	if err := yaml.Unmarshal([]byte(file), &map[string]any{}); err == nil {
+		t.Fatalf("go-yaml reads\n%s", file)
+	}
+	edited.Data["authentication-config.yaml"] = file
+	if err := k8s.Update(t.Context(), edited); err != nil {
+		t.Fatal(err)
+	}
+	reconcileNow(t, cp)
+	if err := expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast); err != nil {
+		t.Error(err)
+	}
+	if kept := authenticationConfig(t, cp).Data["authentication-config.yaml"]; kept != file {
+		t.Errorf("the ConfigMap was written:\n%s", kept)
+	}
+	expectAReplicaLoads(t, cp)
 }
 
 func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {

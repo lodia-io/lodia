@@ -68,13 +68,9 @@ func Validate(data []byte, issuers []string, egress []byte) error {
 	if err != nil {
 		return err
 	}
-	decoded, err := runtime.Decode(codecs.UniversalDecoder(), data)
+	config, err := Decode(data)
 	if err != nil {
-		return &Invalid{Errors: []string{err.Error()}}
-	}
-	config, ok := decoded.(*apiserver.AuthenticationConfiguration)
-	if !ok {
-		return &Invalid{Errors: []string{fmt.Sprintf("it decodes as %T", decoded)}}
+		return err
 	}
 	errs := validation.ValidateAuthenticationConfiguration(authenticationcel.NewDefaultCompiler(), config, issuers)
 	for i, a := range config.JWT {
@@ -90,6 +86,20 @@ func Validate(data []byte, issuers []string, egress []byte) error {
 		invalid.Errors = append(invalid.Errors, e.Error())
 	}
 	return invalid
+}
+
+// Decode is data as kube-apiserver decodes its --authentication-config, or an
+// *Invalid without a minor.
+func Decode(data []byte) (*apiserver.AuthenticationConfiguration, error) {
+	decoded, err := runtime.Decode(codecs.UniversalDecoder(), data)
+	if err != nil {
+		return nil, &Invalid{Errors: []string{err.Error()}}
+	}
+	config, ok := decoded.(*apiserver.AuthenticationConfiguration)
+	if !ok {
+		return nil, &Invalid{Errors: []string{fmt.Sprintf("it decodes as %T", decoded)}}
+	}
+	return config, nil
 }
 
 // egressLookup is the lookup kube-apiserver gives its JWT authenticators for

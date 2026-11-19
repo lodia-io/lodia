@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -279,6 +280,11 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhatTheAPISer
 	}
 	own := hashed[1].OwnerReferences[0]
 	const withoutJWT = "apiVersion: apiserver.config.k8s.io/v1\nkind: AuthenticationConfiguration\n"
+	compact, err := yaml.YAMLToJSON([]byte(valid[1].Data[authenticationFile]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	escaped := strings.Replace(strings.ReplaceAll(string(compact), "https://", `https:\/\/`), `"message":"`, `"message":"\ud83d\ude00 `, 1)
 	for _, c := range []struct {
 		name         string
 		stored       []client.Object
@@ -293,6 +299,7 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhatTheAPISer
 		{"this ControlPlane's, undecodable", []client.Object{stored("jwt: [", own)}, false, servesNone, ""},
 		{"this ControlPlane's, loaded", []client.Object{stored(valid[1].Data[authenticationFile], own)}, true, servesLast, servesLast},
 		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, servesNone, servesNone},
+		{"this ControlPlane's in JSON with escapes go-yaml lacks", []client.Object{stored(escaped, own)}, true, servesLast, servesLast},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, revision := range []string{"", "held"} {
