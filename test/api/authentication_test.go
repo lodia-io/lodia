@@ -109,6 +109,9 @@ func TestJWTAuthenticators(t *testing.T) {
 			issuer(first(t, o))["audiences"] = []any{"a", "b"}
 			issuer(first(t, o))["audienceMatchPolicy"] = ""
 		}, matchAny},
+		{"an empty audience", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["audiences"] = []any{""}
+		}, "should be at least 1 chars long"},
 		{"two audiences that match any", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["audiences"] = []any{"a", "b"}
 			issuer(first(t, o))["audienceMatchPolicy"] = "MatchAny"
