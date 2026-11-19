@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
@@ -464,19 +465,20 @@ const notWritten = "the authentication configuration of spec.apiServer.authentic
 // the spec's unless refused, and otherwise the one stored while this
 // ControlPlane controls it and kube-apiserver would load it under the
 // ServiceAccount issuer the pass renders, or else one without JWT
-// authenticators. The second result says that the API server is
-// left without JWT authenticators, and why on the pass that writes the file.
+// authenticators. The second result says that the API server's JWT
+// authenticators are removed, and why, when the pass writes that one over a
+// file that lists some.
 func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, refused string, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
 	if refused == "" {
 		return config, "", nil
 	}
-	const removed = "; the API server's JWT authenticators are removed"
+	written := []*corev1.ConfigMap{config[0], hashed[1]}
 	stored := &corev1.ConfigMap{}
 	err := r.Reader.Get(ctx, client.ObjectKeyFromObject(hashed[1]), stored)
 	var why string
 	switch {
 	case apierrors.IsNotFound(err):
-		why = "none is stored"
+		return written, "", nil
 	case err != nil:
 		return nil, "", fmt.Errorf("read ConfigMap %s: %w", hashed[1].Name, err)
 	case !metav1.IsControlledBy(stored, cp):
@@ -488,14 +490,17 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 			if err != nil {
 				return nil, "", err
 			}
-			if stored.Data[authenticationFile] == hashed[1].Data[authenticationFile] {
-				return config[:1], removed, nil
-			}
 			return config[:1], "", nil
 		}
 		why = "the one stored is refused too: " + invalid.Error()
 	}
-	return []*corev1.ConfigMap{config[0], hashed[1]}, removed + ", since " + why, nil
+	var file struct {
+		JWT []any `json:"jwt"`
+	}
+	if yaml.Unmarshal([]byte(stored.Data[authenticationFile]), &file) == nil && len(file.JWT) > 0 {
+		return written, "; the API server's JWT authenticators are removed, since " + why, nil
+	}
+	return written, "", nil
 }
 
 // validate is authnconfig.Validate, kept per ControlPlane for the content and

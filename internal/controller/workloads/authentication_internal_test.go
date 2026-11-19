@@ -270,17 +270,20 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesO
 		return c
 	}
 	own := hashed[1].OwnerReferences[0]
+	const withoutJWT = "apiVersion: apiserver.config.k8s.io/v1\nkind: AuthenticationConfiguration\n"
 	for _, c := range []struct {
 		name    string
 		stored  []client.Object
 		kept    bool
 		message string
 	}{
-		{"none stored", nil, false, refused + removed + ", since none is stored"},
+		{"none stored", nil, false, refused},
 		{"a predecessor's orphan", []client.Object{stored(valid[1].Data[authenticationFile])}, false, refused + removed + ", since the one stored is not this ControlPlane's"},
+		{"a predecessor's orphan without JWT authenticators", []client.Object{stored(withoutJWT)}, false, refused},
 		{"this ControlPlane's, refused", []client.Object{stored(config[1].Data[authenticationFile], own)}, false, refused + removed + ", since the one stored is refused too: " + refused[len("the authentication configuration of spec.apiServer.authentication is not written: "):]},
+		{"this ControlPlane's, refused, without JWT authenticators", []client.Object{stored(withoutJWT+"unknown: 1\n", own)}, false, refused},
 		{"this ControlPlane's, loaded", []client.Object{stored(valid[1].Data[authenticationFile], own)}, true, refused},
-		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, refused + removed},
+		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, refused},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fake := fake.NewClientBuilder().WithScheme(scheme).WithObjects(c.stored...).Build()

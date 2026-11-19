@@ -29,7 +29,10 @@ import (
 	"go.lodia.io/lodia/internal/versions"
 )
 
-const nopeRefusal = "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed: ERROR: <input>:1:5: undefined field 'nope'\n | user.nope == 'x'\n | ....^"
+const (
+	notWritten  = "the authentication configuration of spec.apiServer.authentication is not written: "
+	nopeRefusal = notWritten + "kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed: ERROR: <input>:1:5: undefined field 'nope'\n | user.nope == 'x'\n | ....^"
+)
 
 func oidc(rules ...string) []lodiav1alpha1.JWTAuthenticator {
 	a := lodiav1alpha1.JWTAuthenticator{
@@ -245,6 +248,58 @@ func expectAReplicaLoads(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Logf("kube-apiserver %s with --service-account-issuer=%s starts on the file Workloads keeps", minor, issuer)
 }
 
+func overlapErrors(issuer string) string {
+	return "kube-apiserver 1.37 refuses it: jwt[0].issuer.url: Invalid value: \"" + issuer + "\": URL must not overlap with disallowed issuers: [" + issuer + "]"
+}
+
+func conditionsWhile(t *testing.T, cp *lodiav1alpha1.ControlPlane, do func(), done func() error) []metav1.Condition {
+	t.Helper()
+	list := &lodiav1alpha1.ControlPlaneList{}
+	if err := k8s.List(t.Context(), list, client.InNamespace(cp.Namespace)); err != nil {
+		t.Fatal(err)
+	}
+	events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, &client.ListOptions{Namespace: cp.Namespace, Raw: &metav1.ListOptions{ResourceVersion: list.ResourceVersion}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer events.Stop()
+	do()
+	testenv.Eventually(t, done)
+	current := get(t, cp).ResourceVersion
+	var seen []metav1.Condition
+	for last := ""; last != current; {
+		select {
+		case event, open := <-events.ResultChan():
+			if !open {
+				t.Fatal("the watch of the ControlPlanes closed")
+			}
+			fresh, ok := event.Object.(*lodiav1alpha1.ControlPlane)
+			if !ok {
+				t.Fatalf("the watch of the ControlPlanes sent %s %+v", event.Type, event.Object)
+			}
+			if fresh.Name != cp.Name {
+				continue
+			}
+			last = fresh.ResourceVersion
+			if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c != nil {
+				seen = append(seen, *c)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatalf("the watch did not reach resourceVersion %s", current)
+		}
+	}
+	return seen
+}
+
+func expectSaid(t *testing.T, seen []metav1.Condition, refusal string) {
+	t.Helper()
+	if !slices.ContainsFunc(seen, func(c metav1.Condition) bool {
+		return c.Status == metav1.ConditionFalse && strings.Contains(c.Message, refusal)
+	}) {
+		t.Errorf("no APIServerReady said %q; they were %+v", refusal, seen)
+	}
+}
+
 func TestAServiceAccountIssuerMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *testing.T) {
 	const shared = "https://login.example.com/realms/team-a"
 	cp := running(t, withJWT(oidc()))
@@ -263,24 +318,25 @@ func TestAServiceAccountIssuerMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *
 		}
 	})
 	serveCRD(t, relaxed, cp.Namespace, overlap, "")
-	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
-		s.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: shared}
-	})
-	serveCRD(t, head.DeepCopy(), cp.Namespace, overlap, "kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer")
-
-	testenv.Eventually(t, func() error {
+	seen := conditionsWhile(t, cp, func() {
+		update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+			s.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: shared}
+		})
+	}, func() error {
 		if issuer := flagValue(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "service-account-issuer"); issuer != shared {
 			return errors.New("the API server's Deployment runs --service-account-issuer=" + issuer)
 		}
 		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 			return errors.New("the authentication configuration is\n" + authn)
 		}
-		return expectAuthenticationInvalid(cp, "kube-apiserver 1.37 refuses it: jwt[0].issuer.url: Invalid value: \""+shared+"\": URL must not overlap with disallowed issuers: ["+shared+"]; the API server's JWT authenticators are removed")
+		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, notWritten+overlapErrors(shared))
 	})
+	expectSaid(t, seen, notWritten+overlapErrors(shared)+"; the API server's JWT authenticators are removed, since the one stored is refused too: "+overlapErrors(shared))
 	expectAReplicaLoads(t, cp)
 	if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
 		t.Errorf("the restart hashes are %v, then %v", hashed, after)
 	}
+	serveCRD(t, head.DeepCopy(), cp.Namespace, overlap, "kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer")
 
 	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.ServiceAccount = nil })
 	testenv.Eventually(t, func() error {
@@ -299,16 +355,16 @@ func TestALoadBalancerAddressMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *t
 	authenticationData(t, cp, "url: https://"+moved)
 	hashed := hashes(t, cp)
 
-	setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
-	testenv.Eventually(t, func() error {
+	seen := conditionsWhile(t, cp, func() { setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved}) }, func() error {
 		if issuer := flagValue(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "service-account-issuer"); issuer != "https://"+moved {
 			return errors.New("the API server's Deployment runs --service-account-issuer=" + issuer)
 		}
 		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 			return errors.New("the authentication configuration is\n" + authn)
 		}
-		return expectAuthenticationInvalid(cp, "URL must not overlap with disallowed issuers: [https://"+moved+"]; the API server's JWT authenticators are removed")
+		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, notWritten+overlapErrors("https://"+moved))
 	})
+	expectSaid(t, seen, notWritten+overlapErrors("https://"+moved)+"; the API server's JWT authenticators are removed, since the one stored is refused too: "+overlapErrors("https://"+moved))
 	expectAReplicaLoads(t, cp)
 	if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
 		t.Errorf("the restart hashes are %v, then %v", hashed, after)
@@ -334,21 +390,20 @@ func TestAPredecessorsOrphanedFileIsReplacedForATenantWhoseAPIServerRefusesIt(t 
 		s.Version = "v1.35.0"
 		withJWT(jwt)(s)
 	})
-	setIngress(t, cp, corev1.LoadBalancerIngress{IP: address})
-	setTargetAt(t, cp, "v1.35.0", revision)
-	inputsReadyBesidesTheTarget(t, cp)
-	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
-		markAvailable(t, eventuallyDeployment(t, cp, component))
-	}
-	testenv.Eventually(t, func() error {
+	seen := conditionsWhile(t, cp, func() {
+		setIngress(t, cp, corev1.LoadBalancerIngress{IP: address})
+		setTargetAt(t, cp, "v1.35.0", revision)
+		inputsReadyBesidesTheTarget(t, cp)
+		for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+			markAvailable(t, eventuallyDeployment(t, cp, component))
+		}
+	}, func() error {
 		if c := authenticationConfig(t, cp); !strings.Contains(c.Data["authentication-config.yaml"], "jwt: []") || !metav1.IsControlledBy(c, get(t, cp)) {
 			return fmt.Errorf("the authentication configuration, controlled by %v, is\n%s", metav1.GetControllerOf(c), c.Data["authentication-config.yaml"])
 		}
-		if err := expectAuthenticationInvalid(cp, "kube-apiserver 1.37 refuses it: jwt[0].issuer.url: Invalid value: \"https://"+address+"\": URL must not overlap with disallowed issuers: [https://"+address+"]"); err != nil {
-			return err
-		}
-		return expectAuthenticationInvalid(cp, "; the API server's JWT authenticators are removed")
+		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, notWritten+overlapErrors("https://"+address))
 	})
+	expectSaid(t, seen, notWritten+overlapErrors("https://"+address)+"; the API server's JWT authenticators are removed, since the one stored is not this ControlPlane's")
 	expectAReplicaLoads(t, cp)
 	hashed := hashes(t, cp)
 
@@ -374,18 +429,41 @@ func TestAStoredFileEditedByHandIntoOneTheMinorRefusesIsReplaced(t *testing.T) {
 
 	edited := authenticationConfig(t, cp)
 	edited.Data["authentication-config.yaml"] = strings.Replace(edited.Data["authentication-config.yaml"], "claims.tenant == 'team-a'", "claims.tenant ==", 1)
-	if err := k8s.Update(t.Context(), edited); err != nil {
-		t.Fatal(err)
-	}
-	testenv.Eventually(t, func() error {
+	seen := conditionsWhile(t, cp, func() {
+		if err := k8s.Update(t.Context(), edited); err != nil {
+			t.Fatal(err)
+		}
+	}, func() error {
 		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 			return errors.New("the authentication configuration is\n" + authn)
 		}
-		return expectAuthenticationInvalid(cp, "undefined field 'nope'\n | user.nope == 'x'\n | ....^; the API server's JWT authenticators are removed")
+		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal)
 	})
+	expectSaid(t, seen, nopeRefusal+"; the API server's JWT authenticators are removed, since the one stored is refused too: kube-apiserver 1.37 refuses it: jwt[0].claimValidationRules[0].expression: Invalid value: \"claims.tenant ==\"")
 	expectAReplicaLoads(t, cp)
 	if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
 		t.Errorf("the restart hashes are %v, then %v", hashed, after)
+	}
+}
+
+func TestATenantThatNeverHadAJWTAuthenticatorIsNotToldItsAreRemoved(t *testing.T) {
+	cp := running(t)
+	stored := authenticationConfig(t, cp)
+	if authn := stored.Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
+		t.Fatalf("without JWT authenticators Workloads writes\n%s", authn)
+	}
+	seen := conditionsWhile(t, cp, func() { update(t, cp, withJWT(oidc("user.nope == 'x'"))) }, func() error {
+		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal)
+	})
+	reconcileNow(t, cp)
+	seen = append(seen, *condition(t, cp))
+	for _, c := range seen {
+		if strings.Contains(c.Message, "JWT authenticators are removed") {
+			t.Errorf("APIServerReady said %q", c.Message)
+		}
+	}
+	if after := authenticationConfig(t, cp); after.ResourceVersion != stored.ResourceVersion {
+		t.Errorf("the ConfigMap was written:\n%s", after.Data["authentication-config.yaml"])
 	}
 }
 
@@ -452,7 +530,7 @@ func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {
 			update(t, cp, withJWT(oidc("user.nope == 'x'")))
 			g := get(t, cp).Generation
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready; "+nopeRefusal+"; the API server's JWT authenticators are removed")
+				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready; "+nopeRefusal)
 			})
 
 			trigger(t, cp)
