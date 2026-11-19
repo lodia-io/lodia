@@ -735,3 +735,29 @@ func TestAWaitAtALaterGenerationCountsUnderTheRefusalOfTheGenerationItNames(t *t
 		t.Errorf("a wait at generation %d once the API server has no ready replica: %v", g+1, err)
 	}
 }
+
+func TestAWaitAtALaterGenerationThatFixesTheFieldKeepsTheRefusal(t *testing.T) {
+	cp := running(t, withJWT(oidc()))
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
+	g := get(t, cp).Generation
+	testenv.Eventually(t, func() error {
+		return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal)
+	})
+
+	changeSpec(t, cp, withJWT(oidc("user.username != 'x'")))
+	reconcileNow(t, cp)
+	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal); err != nil {
+		t.Errorf("a wait at generation %d, whose spec fixes the field: %v", g+1, err)
+	}
+}
+
+func TestAWaitAtALaterRefusedGenerationCountsTheValidOneItNamesAsItWas(t *testing.T) {
+	cp := running(t, withJWT(oidc()))
+	ready := *condition(t, cp)
+
+	changeSpec(t, cp, withJWT(oidc("user.nope == 'x'")))
+	reconcileNow(t, cp)
+	if err := expectAt(cp, ready.ObservedGeneration, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, ready.Message); err != nil {
+		t.Errorf("a wait at generation %d, whose spec is refused, over generation %d, whose file is written: %v", get(t, cp).Generation, ready.ObservedGeneration, err)
+	}
+}
