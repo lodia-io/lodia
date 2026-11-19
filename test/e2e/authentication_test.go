@@ -46,8 +46,8 @@ const (
 	oidcHost    = oidcIssuer + "." + oidcIssuer + ".svc"
 )
 
-// testIssuers are two OIDC issuers at two paths of one Service in the
-// tenant, each with a key of the test's.
+// testIssuers are OIDC issuers at paths of one Service in the tenant, each
+// with a key of the test's.
 type testIssuers struct {
 	ca   *certs.Certificate
 	keys map[string]*ecdsa.PrivateKey
