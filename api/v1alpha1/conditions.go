@@ -17,6 +17,7 @@ const (
 	ConditionControllersLeading    = "ControllersLeading"    // Health
 	ConditionControllerManagerHeld = "ControllerManagerHeld" // Health
 	ConditionBackupReady           = "BackupReady"           // Datastore
+	ConditionRehearsed             = "Rehearsed"             // Workloads' rehearsal
 	ConditionProgressing           = "Progressing"           // Lifecycle
 	ConditionReady                 = "Ready"                 // Lifecycle
 )
@@ -168,6 +169,18 @@ const (
 	ReasonTooManyNodes = "TooManyNodes"
 )
 
+// Rehearsed: Rehearsing and RehearsalLimit, Unknown, while a copy runs or
+// waits for a place; Passed, True; APIServerFailed, ListFailed and
+// CopyFailed, False; Refused and ObjectsControlledElsewhere as above.
+const (
+	ReasonRehearsing      = "Rehearsing"
+	ReasonRehearsalLimit  = "RehearsalLimit"
+	ReasonPassed          = "Passed"
+	ReasonAPIServerFailed = "APIServerFailed"
+	ReasonListFailed      = "ListFailed"
+	ReasonCopyFailed      = "CopyFailed"
+)
+
 // Progressing and Ready.
 const (
 	ReasonIdle                        = "Idle"
@@ -235,6 +248,9 @@ var WarningReasons = map[string]WarningGroup{
 	ReasonHoldBlocked:              WarningFailure,
 	ReasonRequestInvalid:           WarningFailure,
 	ReasonPolicyNotEnforced:        WarningFailure,
+	ReasonAPIServerFailed:          WarningFailure,
+	ReasonListFailed:               WarningFailure,
+	ReasonCopyFailed:               WarningFailure,
 
 	ReasonQuorumLost:                  WarningLoss,
 	ReasonUnavailable:                 WarningLoss,

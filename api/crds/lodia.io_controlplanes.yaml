@@ -1758,10 +1758,12 @@ spec:
                         type: string
                       step:
                         description: |-
-                          Step is Backup while a minor step's pre-upgrade Backup is taken,
+                          Step is Rehearsal while a minor step is rehearsed on a copy of the
+                          API server, then Backup while its pre-upgrade Backup is taken, both
                           before the target moves, then the first of the others not at the
                           target yet.
                         enum:
+                        - Rehearsal
                         - Backup
                         - APIServer
                         - ControllerManager
@@ -1843,6 +1845,18 @@ spec:
                   has been reported for.
                 format: int64
                 type: integer
+              rehearsal:
+                description: Rehearsal is the minor step the condition Rehearsed is
+                  about.
+                properties:
+                  version:
+                    description: Version is the Kubernetes version the step goes to.
+                    maxLength: 16
+                    minLength: 1
+                    type: string
+                required:
+                - version
+                type: object
               restore:
                 description: |-
                   Restore is the restore this ControlPlane's data came from. The Datastore
