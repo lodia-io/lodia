@@ -10,7 +10,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -516,5 +518,87 @@ func TestThisControlPlanesOwnValidFileIsKeptWithoutARoll(t *testing.T) {
 	}
 	if after := generationsOf(t, cp); fmt.Sprint(after) != fmt.Sprint(generations) {
 		t.Errorf("a refused configuration rolled the Deployments: generations %v, then %v", generations, after)
+	}
+}
+
+func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {
+	for name, trigger := range map[string]func(*testing.T, *lodiav1alpha1.ControlPlane){
+		"a held pass": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { setTargetAt(t, cp, version, next) },
+		"a held pass whose target the table does not hold": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			setTargetAt(t, cp, "v1.34.1", next)
+		},
+		"a held pass that counts a report outside the table": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			setTargetAt(t, cp, version, next)
+			testenv.Eventually(t, func() error {
+				d := deployment(t, cp, "kube-apiserver")
+				d.Spec.Template.Spec.Containers[0].Image = "registry.k8s.io/kube-apiserver:v1.33.2"
+				return k8s.Update(t.Context(), d)
+			})
+			markAvailable(t, deployment(t, cp, "kube-apiserver"))
+			testenv.Eventually(t, func() error {
+				if got := reportedAPIServer(t, cp); got != "v1.33.2" {
+					return fmt.Errorf("the API server reports %q", got)
+				}
+				return nil
+			})
+		},
+		"a wait on a Secret's data hash": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "")
+		},
+		"a wait on the datastore": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
+				"type": lodiav1alpha1.ConditionDatastoreReady, "status": "False", "reason": "Unavailable", "message": "etcd has no quorum",
+				"observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+			}}})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cp := running(t)
+			valid := authenticationConfig(t, cp).Data["authentication-config.yaml"]
+			setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
+			testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable) })
+			update(t, cp, withJWT(oidc("user.nope == 'x'")))
+			g := get(t, cp).Generation
+			testenv.Eventually(t, func() error {
+				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready")
+			})
+
+			trigger(t, cp)
+			markAvailable(t, deployment(t, cp, "kube-apiserver"))
+			invalid := func() error {
+				if c := condition(t, cp); c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonAuthenticationInvalid || c.ObservedGeneration != g ||
+					!strings.Contains(c.Message, "jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\"") {
+					return fmt.Errorf("APIServerReady is %+v, want False AuthenticationInvalid at generation %d", c, g)
+				}
+				return nil
+			}
+			testenv.Eventually(t, invalid)
+			reconcileNow(t, cp)
+			if err := invalid(); err != nil {
+				t.Errorf("the pass after: %v", err)
+			}
+			if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; authn != valid {
+				t.Errorf("the ConfigMap changed:\n%s", authn)
+			}
+		})
+	}
+}
+
+func TestAWaitAtALaterGenerationCountsUnderTheRefusalOfTheGenerationItNames(t *testing.T) {
+	cp := running(t)
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
+	g := get(t, cp).Generation
+	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, "Invalid value: \"user.nope == 'x'\"") })
+	refused := *condition(t, cp)
+
+	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+	reconcileNow(t, cp)
+	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refused.Message); err != nil {
+		t.Errorf("a wait at generation %d: %v", g+1, err)
+	}
+	setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
+	reconcileNow(t, cp)
+	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready"); err != nil {
+		t.Errorf("a wait at generation %d once the API server has no ready replica: %v", g+1, err)
 	}
 }

@@ -277,12 +277,16 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesO
 		t.Run(c.name, func(t *testing.T) {
 			fake := fake.NewClientBuilder().WithScheme(scheme).WithObjects(c.stored...).Build()
 			r := &Reconciler{Client: fake, Reader: fake}
-			written, message, err := r.validated(t.Context(), cp, endpoint, config, hashed)
+			refusal, err := r.refusal(cp, endpoint, config)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if message != c.message {
-				t.Errorf("the message is\n%s\nwant\n%s", message, c.message)
+			written, removed, err := r.validated(t.Context(), cp, endpoint, refusal, config, hashed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if message := refusal + removed; message != c.message {
+				t.Errorf("the message is\n%s\nwant\n%s", refusal+removed, c.message)
 			}
 			switch {
 			case c.kept && len(written) != 1:
