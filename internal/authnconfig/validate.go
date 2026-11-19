@@ -9,15 +9,15 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
-	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	"k8s.io/apiserver/pkg/apis/apiserver/install"
 	"k8s.io/apiserver/pkg/apis/apiserver/validation"
-	"k8s.io/apiserver/pkg/features"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
 )
 
 const (
+	// minor is the Kubernetes minor of the k8s.io/apiserver the operator links.
+	minor = "1.37"
 	// shown is how many of a refusal's errors its message names.
 	shown = 3
 	// cut is the most of an error its message holds, in bytes.
@@ -54,16 +54,11 @@ func (i *Invalid) Error() string {
 	return "kube-apiserver " + i.Minor + " refuses it: " + strings.Join(parts, "; ")
 }
 
-// Validate decodes data as strictly as kube-apiserver decodes its
-// --authentication-config, and runs upstream's validation of it for each of
-// minors with the CEL libraries of that minor and the operator's cel-go, which
-// emulates the parsing and the name resolution of the cel-go of 1.35 and 1.36;
-// no JWT authenticator may name one of issuers, the ServiceAccount issuers, and
-// gates are the API server's --feature-gates. On the corpus of
-// kubeapiserver_test.go, expressions and whole files, it agrees with each
-// minor's own validation but for the refusals that test lists; a difference
-// outside the corpus can remain.
-func Validate(data []byte, minors, issuers []string, gates map[string]bool) error {
+// Validate loads data as kube-apiserver of minor loads its
+// --authentication-config: decoded as strictly, then validated by upstream's
+// validation with the default compiler and the operator's feature gates, no
+// JWT authenticator naming one of issuers, the ServiceAccount issuers.
+func Validate(data []byte, issuers []string) error {
 	decoded, err := runtime.Decode(codecs.UniversalDecoder(), data)
 	if err != nil {
 		return &Invalid{Errors: []string{err.Error()}}
@@ -72,36 +67,13 @@ func Validate(data []byte, minors, issuers []string, gates map[string]bool) erro
 	if !ok {
 		return &Invalid{Errors: []string{fmt.Sprintf("it decodes as %T", decoded)}}
 	}
-	for _, minor := range minors {
-		c, err := compilerOf(minor)
-		if err != nil {
-			return err
-		}
-		if errs := append(validation.ValidateAuthenticationConfiguration(c, config, issuers), egressGated(config, gates)...); len(errs) > 0 {
-			invalid := &Invalid{Minor: minor}
-			for _, e := range errs {
-				invalid.Errors = append(invalid.Errors, e.Error())
-			}
-			return invalid
-		}
-	}
-	return nil
-}
-
-// egressGated refuses an egress selector, as upstream's validation does, when
-// gates turn StructuredAuthenticationConfigurationEgressSelector off: that
-// validation reads the gate of the process it runs in, the operator's.
-// @todo: mirrors upstream's check of the gate (pkg/apis/apiserver/validation/validation.go L230-L232 at v0.37.1); drop it for upstream's validation of a given version and gates once k8s.io/apiserver has one (todo.md).
-func egressGated(config *apiserver.AuthenticationConfiguration, gates map[string]bool) field.ErrorList {
-	gate := features.StructuredAuthenticationConfigurationEgressSelector
-	if on, set := gates[string(gate)]; !set || on || !utilfeature.DefaultFeatureGate.Enabled(gate) {
+	errs := validation.ValidateAuthenticationConfiguration(authenticationcel.NewDefaultCompiler(), config, issuers)
+	if len(errs) == 0 {
 		return nil
 	}
-	var errs field.ErrorList
-	for i, a := range config.JWT {
-		if a.Issuer.EgressSelectorType != "" {
-			errs = append(errs, field.Invalid(field.NewPath("jwt").Index(i).Child("issuer", "egressSelectorType"), a.Issuer.EgressSelectorType, "egress selector is not supported when "+string(gate)+" feature gate is disabled"))
-		}
+	invalid := &Invalid{Minor: minor}
+	for _, e := range errs {
+		invalid.Errors = append(invalid.Errors, e.Error())
 	}
-	return errs
+	return invalid
 }

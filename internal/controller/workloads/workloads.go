@@ -100,9 +100,9 @@ type Reconciler struct {
 	validations map[types.NamespacedName][]validation
 }
 
-// validation is the outcome of validating one authentication configuration
-// for the minors that read it. A pass validates the spec's and, when that
-// fails, the one stored, so a ControlPlane keeps the last two.
+// validation is the outcome of validating one authentication configuration.
+// A pass validates the spec's and, when that fails, the one stored, so a
+// ControlPlane keeps the last two.
 type validation struct {
 	key string
 	err error
@@ -431,11 +431,11 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	}, nil, nil
 }
 
-// refusal says why kube-apiserver of a minor that reads it would refuse the
-// spec's authentication configuration under the ServiceAccount issuer the pass
-// renders, empty when none would.
+// refusal says why kube-apiserver would refuse the spec's authentication
+// configuration under the ServiceAccount issuer the pass renders, empty when it
+// would not.
 func (r *Reconciler) refusal(cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, config []*corev1.ConfigMap) (string, error) {
-	err := r.validate(cp, config[1].Data[authenticationFile], readers(cp), []string{issuer(cp, endpoint.APIServer)})
+	err := r.validate(cp, config[1].Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)})
 	var invalid *authnconfig.Invalid
 	if !errors.As(err, &invalid) {
 		return "", err
@@ -445,9 +445,9 @@ func (r *Reconciler) refusal(cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1al
 
 // validated is config with the authentication configuration Workloads writes:
 // the spec's unless refused, and otherwise the one stored while this
-// ControlPlane controls it and kube-apiserver of every minor that reads it
-// would load it under the ServiceAccount issuer the pass renders, or else one
-// without JWT authenticators. The second result says that the API server is
+// ControlPlane controls it and kube-apiserver would load it under the
+// ServiceAccount issuer the pass renders, or else one without JWT
+// authenticators. The second result says that the API server is
 // left without JWT authenticators, and why on the pass that writes the file.
 func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, refused string, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
 	if refused == "" {
@@ -465,7 +465,7 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	case !metav1.IsControlledBy(stored, cp):
 		why = "the one stored is not this ControlPlane's"
 	default:
-		err := r.validate(cp, stored.Data[authenticationFile], readers(cp), []string{issuer(cp, endpoint.APIServer)})
+		err := r.validate(cp, stored.Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)})
 		var invalid *authnconfig.Invalid
 		if !errors.As(err, &invalid) {
 			if err != nil {
@@ -481,13 +481,11 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	return []*corev1.ConfigMap{config[0], hashed[1]}, removed + ", since " + why, nil
 }
 
-// validate is authnconfig.Validate under the API server's feature gates, kept
-// per ControlPlane for the content, minors, issuers and gates of its last two
-// validations.
-func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, minors, issuers []string) error {
-	gates := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{}).FeatureGates
+// validate is authnconfig.Validate, kept per ControlPlane for the content and
+// issuers of its last two validations.
+func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, issuers []string) error {
 	sum := sha256.Sum256([]byte(data))
-	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(minors, ",") + "/" + strings.Join(issuers, ",") + "/" + fmt.Sprint(gates)
+	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(issuers, ",")
 	name := client.ObjectKeyFromObject(cp)
 	r.validating.Lock()
 	kept := r.validations[name]
@@ -496,7 +494,7 @@ func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, minor
 	if i >= 0 {
 		return kept[i].err
 	}
-	err := authnconfig.Validate([]byte(data), minors, issuers, gates)
+	err := authnconfig.Validate([]byte(data), issuers)
 	r.validating.Lock()
 	defer r.validating.Unlock()
 	if r.validations == nil {
@@ -504,27 +502,6 @@ func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, minor
 	}
 	r.validations[name] = append([]validation{{key: key, err: err}}, r.validations[name][:min(len(r.validations[name]), 1)]...)
 	return err
-}
-
-// readers are the minors of the API servers that read the authentication
-// configuration: the one status.components.apiServer reports and the
-// target's.
-func readers(cp *lodiav1alpha1.ControlPlane) []string {
-	var reported []string
-	if t := cp.Status.Target; t != nil {
-		reported = append(reported, t.Version)
-	}
-	if c := cp.Status.Components; c != nil && c.APIServer != nil {
-		reported = append(reported, c.APIServer.Version)
-	}
-	var minors []string
-	for _, v := range reported {
-		if minor, ok := versions.Minor(v); ok && !slices.Contains(minors, minor) {
-			minors = append(minors, minor)
-		}
-	}
-	slices.Sort(minors)
-	return minors
 }
 
 // imagesOf renders the controller manager and the scheduler at the version the

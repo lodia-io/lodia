@@ -222,7 +222,7 @@ func TestAControlPlaneGoneTakesItsValidationAlong(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cp := range []*lodiav1alpha1.ControlPlane{gone, kept} {
-		if err := r.validate(cp, written[1].Data[authenticationFile], []string{"1.37"}, []string{"https://203.0.113.10"}); err != nil {
+		if err := r.validate(cp, written[1].Data[authenticationFile], []string{"https://203.0.113.10"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -240,7 +240,6 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesO
 		t.Fatal(err)
 	}
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "dev-uid"}}
-	cp.Status.Target = &lodiav1alpha1.Target{Version: "v1.37.1"}
 	endpoint := &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: lodiav1alpha1.APIServerServicePort}}
 	jwt := acceptance()
 	cp.Spec.APIServer = &lodiav1alpha1.APIServer{Authentication: &lodiav1alpha1.Authentication{JWT: jwt}}

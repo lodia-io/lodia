@@ -17,7 +17,6 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/authnconfig"
-	"go.lodia.io/lodia/internal/versions"
 )
 
 func authenticators(t *testing.T, o *unstructured.Unstructured) []any {
@@ -267,7 +266,7 @@ func issuerOf(t *testing.T, o *unstructured.Unstructured) map[string]any {
 	return under(first(t, o), "issuer")
 }
 
-func TestTheSchemaAcceptsWhatKubeAPIServerOfEveryMinorAccepts(t *testing.T) {
+func TestTheSchemaAcceptsWhatKubeAPIServerAccepts(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	issuer := func(o map[string]any) map[string]any { return under(o, "issuer") }
@@ -348,7 +347,7 @@ func TestTheSchemaAcceptsWhatKubeAPIServerOfEveryMinorAccepts(t *testing.T) {
 			if sa, found, _ := unstructured.NestedString(obj.Object, "spec", "serviceAccount", "issuer"); found {
 				issuers = []string{sa}
 			}
-			if err := authnconfig.Validate(file, versions.Minors(), issuers, nil); err != nil {
+			if err := authnconfig.Validate(file, issuers); err != nil {
 				t.Errorf("kube-apiserver's validation refuses it: %v", err)
 			}
 		})

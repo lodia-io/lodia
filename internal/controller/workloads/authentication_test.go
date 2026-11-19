@@ -129,25 +129,6 @@ func TestAJWTEditReloadsAndAnInvalidOneIsNeverWritten(t *testing.T) {
 	unchanged("the configuration fixed")
 }
 
-func TestATenantOfAnOlderMinorGetsNoExpressionOfANewerOne(t *testing.T) {
-	cp := controlPlane(t, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
-		s.Version = "v1.35.0"
-		withJWT(oidc("!user.groups.includes('oidc:suspended')"))(s)
-	})
-	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	setTargetAt(t, cp, "v1.35.0", revision)
-	inputsReadyBesidesTheTarget(t, cp)
-	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
-		markAvailable(t, eventuallyDeployment(t, cp, component))
-	}
-	testenv.Eventually(t, func() error {
-		return expectAuthenticationInvalid(cp, "kube-apiserver 1.35 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"!user.groups.includes('oidc:suspended')\": compilation failed: ERROR: <input>:1:22: undeclared reference to 'includes'")
-	})
-	if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") || strings.Contains(authn, "includes") {
-		t.Errorf("a 1.35 tenant's API server gets\n%s", authn)
-	}
-}
-
 func withoutRule(t *testing.T, crd *unstructured.Unstructured, containing string, path ...string) {
 	t.Helper()
 	versions, _, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
@@ -220,101 +201,12 @@ func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns string, probe fun
 	})
 }
 
-func TestAControlPlaneStoredWithTheEgressGateOffGetsNoJWTFile(t *testing.T) {
-	head := controlPlanesCRD(t)
-	const refused = "kube-apiserver refuses the egressSelectorType Lodia renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector"
-	gateOff := func(s *lodiav1alpha1.ControlPlaneSpec) {
-		s.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}}
-	}
-	relaxed := head.DeepCopy()
-	withoutRule(t, relaxed, "StructuredAuthenticationConfigurationEgressSelector", "properties", "apiServer", "properties", "featureGates")
-	ns := namespace(t)
-	t.Cleanup(func() {
-		if err := updateCRD(context.Background(), head.DeepCopy()); err != nil {
-			t.Error(err)
-		}
-	})
-	serveCRD(t, relaxed, ns, gateOff, "")
-	cp := create(t, ns, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
-		withJWT(oidc())(s)
-		s.APIServer.FeatureGates = map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}
-	})
-	serveCRD(t, head.DeepCopy(), ns, gateOff, refused)
-
-	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	inputsReady(t, cp)
-	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
-		markAvailable(t, eventuallyDeployment(t, cp, component))
-	}
-	testenv.Eventually(t, func() error {
-		return expectAuthenticationInvalid(cp, "kube-apiserver 1.37 refuses it: jwt[0].issuer.egressSelectorType: Invalid value: \"cluster\": egress selector is not supported when StructuredAuthenticationConfigurationEgressSelector feature gate is disabled")
-	})
-	if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") || strings.Contains(authn, "login.example.com") {
-		t.Errorf("a ControlPlane whose API server runs without the egress selector gets\n%s", authn)
-	}
-
-	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.FeatureGates = nil })
-	testenv.Eventually(t, func() error {
-		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "url: https://login.example.com/realms/team-a") {
-			return errors.New("with the gate back the authentication configuration is\n" + authn)
-		}
-		return nil
-	})
-}
-
 func reportedAPIServer(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
 	t.Helper()
 	if c := get(t, cp).Status.Components; c != nil && c.APIServer != nil {
 		return c.APIServer.Version
 	}
 	return ""
-}
-
-func TestAMinorStepGetsAnExpressionOfTheNewerMinorOnceTheAPIServerReportsIt(t *testing.T) {
-	cp := controlPlane(t, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
-		s.Version = "v1.36.6"
-		withJWT(oidc())(s)
-	})
-	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
-	setTargetAt(t, cp, "v1.36.6", revision)
-	inputsReadyBesidesTheTarget(t, cp)
-	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
-		markAvailable(t, eventuallyDeployment(t, cp, component))
-	}
-	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
-	if got := reportedAPIServer(t, cp); got != "v1.36.6" {
-		t.Fatalf("the API server reports %q, want v1.36.6", got)
-	}
-
-	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
-		s.Version = "v1.37.1"
-		withJWT(oidc("!user.groups.includes('oidc:suspended')"))(s)
-	})
-	setTargetAt(t, cp, "v1.37.1", revision)
-	testenv.Eventually(t, func() error {
-		if image := deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Image; !strings.HasSuffix(image, ":v1.37.1") {
-			return fmt.Errorf("the API server's image is %s", image)
-		}
-		return expectAuthenticationInvalid(cp, "kube-apiserver 1.36 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"!user.groups.includes('oidc:suspended')\"")
-	})
-	if got := reportedAPIServer(t, cp); got != "v1.36.6" {
-		t.Errorf("mid-step the API server reports %q, want v1.36.6", got)
-	}
-	if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; strings.Contains(authn, "includes") {
-		t.Errorf("mid-step the 1.36 API server gets\n%s", authn)
-	}
-	expectAReplicaLoads(t, cp)
-
-	markAvailable(t, deployment(t, cp, "kube-apiserver"))
-	testenv.Eventually(t, func() error {
-		if got := reportedAPIServer(t, cp); got != "v1.37.1" {
-			return fmt.Errorf("the API server reports %q", got)
-		}
-		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "includes") {
-			return errors.New("once the API server reports 1.37 the authentication configuration is\n" + authn)
-		}
-		return nil
-	})
 }
 
 func flagValue(command []string, name string) string {
@@ -334,18 +226,11 @@ func expectAReplicaLoads(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 		t.Fatalf("the API server's image %s has no version", container.Image)
 	}
 	issuer := flagValue(container.Command, "service-account-issuer")
-	gates := map[string]bool{}
-	if pairs := flagValue(container.Command, "feature-gates"); pairs != "" {
-		for pair := range strings.SplitSeq(pairs, ",") {
-			name, value, _ := strings.Cut(pair, "=")
-			gates[name] = value == "true"
-		}
-	}
 	file := authenticationConfig(t, cp).Data["authentication-config.yaml"]
-	if err := authnconfig.Validate([]byte(file), []string{minor}, []string{issuer}, gates); err != nil {
-		t.Errorf("a new replica of kube-apiserver %s with --service-account-issuer=%s refuses the file Workloads keeps: %v\n%s", minor, issuer, err, file)
+	if err := authnconfig.Validate([]byte(file), []string{issuer}); err != nil {
+		t.Errorf("with --service-account-issuer=%s Validate refuses the file Workloads keeps: %v\n%s", issuer, err, file)
 	}
-	if minor != envtestMinor(t) || len(gates) > 0 {
+	if minor != envtestMinor(t) {
 		return
 	}
 	if s, err := startTenantAPIServer(t, []byte(file), issuer); err != nil {
@@ -426,9 +311,11 @@ func TestALoadBalancerAddressMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *t
 }
 
 func TestAPredecessorsOrphanedFileIsReplacedForATenantWhoseAPIServerRefusesIt(t *testing.T) {
-	const includes = "!user.groups.includes('oidc:suspended')"
-	predecessor := running(t, withJWT(oidc(includes)))
-	written := string(authenticationData(t, predecessor, "includes"))
+	const address = "203.0.113.20"
+	jwt := oidc()
+	jwt[0].Issuer.URL = "https://" + address
+	predecessor := running(t, withJWT(jwt))
+	written := string(authenticationData(t, predecessor, "url: https://"+address))
 
 	ns := namespace(t)
 	orphan := &corev1.ConfigMap{
@@ -440,9 +327,9 @@ func TestAPredecessorsOrphanedFileIsReplacedForATenantWhoseAPIServerRefusesIt(t 
 	}
 	cp := create(t, ns, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
 		s.Version = "v1.35.0"
-		withJWT(oidc(includes))(s)
+		withJWT(jwt)(s)
 	})
-	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: address})
 	setTargetAt(t, cp, "v1.35.0", revision)
 	inputsReadyBesidesTheTarget(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
@@ -452,7 +339,7 @@ func TestAPredecessorsOrphanedFileIsReplacedForATenantWhoseAPIServerRefusesIt(t 
 		if c := authenticationConfig(t, cp); !strings.Contains(c.Data["authentication-config.yaml"], "jwt: []") || !metav1.IsControlledBy(c, get(t, cp)) {
 			return fmt.Errorf("the authentication configuration, controlled by %v, is\n%s", metav1.GetControllerOf(c), c.Data["authentication-config.yaml"])
 		}
-		if err := expectAuthenticationInvalid(cp, "kube-apiserver 1.35 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \""+includes+"\": compilation failed: ERROR: <input>:1:22: undeclared reference to 'includes'"); err != nil {
+		if err := expectAuthenticationInvalid(cp, "kube-apiserver 1.37 refuses it: jwt[0].issuer.url: Invalid value: \"https://"+address+"\": URL must not overlap with disallowed issuers: [https://"+address+"]"); err != nil {
 			return err
 		}
 		return expectAuthenticationInvalid(cp, "; the API server's JWT authenticators are removed")

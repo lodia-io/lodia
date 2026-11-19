@@ -330,7 +330,7 @@ func TestWhatWouldStopKubeAPIServerNeverReachesTheConfigMap(t *testing.T) {
 	minor := envtestMinor(t)
 
 	unknown := regexp.MustCompile(`(?m)^jwt:$`).ReplaceAll(written, []byte("notAField: 1\njwt:"))
-	if err := authnconfig.Validate(unknown, []string{minor}, nil, nil); err == nil || !strings.Contains(err.Error(), `unknown field "notAField"`) {
+	if err := authnconfig.Validate(unknown, nil); err == nil || !strings.Contains(err.Error(), `unknown field "notAField"`) {
 		t.Errorf("the file with an unknown field validates: %v", err)
 	}
 	tenant, err := startTenantAPIServer(t, unknown, "")
@@ -340,30 +340,5 @@ func TestWhatWouldStopKubeAPIServerNeverReachesTheConfigMap(t *testing.T) {
 		t.Errorf("kube-apiserver stops for another reason than the unknown field:\n%s", tenant.log)
 	} else {
 		t.Logf("kube-apiserver %s stops on an unknown field: %s", minor, failure)
-	}
-
-	newer := withJWT(is.authenticators())
-	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
-		newer(s)
-		s.APIServer.Authentication.JWT[0].UserValidationRules = append(s.APIServer.Authentication.JWT[0].UserValidationRules, lodiav1alpha1.UserValidationRule{Expression: "!user.groups.includes('banned')"})
-	})
-	includes := authenticationData(t, cp, "includes")
-	refused := authnconfig.Validate(includes, []string{minor}, nil, nil)
-	tenant, err = startTenantAPIServer(t, includes, "")
-	if supported := utilversion.MustParseGeneric(minor).AtLeast(utilversion.MajorMinor(1, 37)); supported {
-		if err != nil || refused != nil {
-			t.Errorf("kube-apiserver %s refuses includes: %v, %v", minor, err, refused)
-		}
-		return
-	}
-	if refused == nil || !strings.Contains(refused.Error(), "undeclared reference to 'includes'") {
-		t.Errorf("a file with includes validates at %s: %v", minor, refused)
-	}
-	if err == nil {
-		t.Errorf("kube-apiserver %s starts on a file with includes", minor)
-	} else if failure := tenant.failure(); !strings.Contains(failure, "undeclared reference to 'includes'") {
-		t.Errorf("kube-apiserver %s stops for another reason than includes:\n%s", minor, tenant.log)
-	} else {
-		t.Logf("kube-apiserver %s stops on includes: %s", minor, failure)
 	}
 }
