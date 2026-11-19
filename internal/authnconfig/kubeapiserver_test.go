@@ -25,20 +25,43 @@ var reference = filepath.Join("..", "..", "test", "kubeauthn")
 
 type difference struct{ minor, where, expression string }
 
-var refusedOnlyByLodia = func() map[difference]bool {
-	known := map[difference]bool{}
-	for _, minor := range []string{"1.35", "1.36"} {
-		for _, d := range []struct {
-			expression string
-			where      []string
-		}{
-			{"duration(int(claims.n))", []string{"username", "extra"}},
-			{"duration(1 + 1)", []string{"username", "extra"}},
-			{"duration(int(claims.n)) > duration('1s')", []string{"username", "claim rule", "extra"}},
-			{"timestamp(claims.iat) + duration(int(claims.ttl)) > timestamp(claims.exp)", []string{"username", "claim rule", "extra"}},
-		} {
-			for _, where := range d.where {
-				known[difference{minor, where, d.expression}] = true
+var refusedOnlyByLodia = func() map[difference]string {
+	claims := []string{"username", "claim rule", "extra"}
+	known := map[difference]string{}
+	for _, class := range []struct {
+		name        string
+		minors      []string
+		expressions map[string][]string
+	}{
+		{"duration() of an int, which cel-go v0.28.1 removed (google/cel-go#1300)", []string{"1.35", "1.36"}, map[string][]string{
+			"duration(int(claims.n))":                  {"username", "extra"},
+			"duration(1 + 1)":                          {"username", "extra"},
+			"duration(int(claims.n)) > duration('1s')": claims,
+			"timestamp(claims.iat) + duration(int(claims.ttl)) > timestamp(claims.exp)": claims,
+		}},
+		{"a dot-prefixed identifier that names a comprehension variable around it, which cel-go v0.26.0 resolves to the variable (google/cel-go#1256)", []string{"1.35", "1.36"}, map[string][]string{
+			"[[1]].exists(claims, .claims.all(c, c == 1))":                          claims,
+			"[{'sub': 'a'}].exists(claims, .claims.sub == claims.sub)":              claims,
+			"[1].exists(google, .google.protobuf.Duration == type(duration('1s')))": claims,
+			"[1].exists(x, .x > 0)":                                                 claims,
+			"{'a': 1}.all(k, v, .v > 0)":                                            claims,
+			"string([{'a': 1}].map(claims, .claims.email)[0])":                      {"extra"},
+			"[{'a': 1}].map(claims, string(.claims.email))[0]":                      {"extra"},
+			"[{'email': 'a'}].map(claims, .claims.email)[0]":                        {"extra"},
+			"[{'email': 'a'}].map(claims, string(.claims.?email.orValue('')))[0]":   {"extra"},
+			"[{'username': 'a'}].exists(user, .user.username == user.username)":     {"user rule"},
+			"[{'username': 1}].exists(user, .user.username == 1)":                   {"user rule"},
+			"optional.of({'sub': 'a'}).optMap(claims, .claims.sub).orValue('')":     {"username", "extra"},
+		}},
+		{"a qualified name whose first part names a comprehension variable around it, which cel-go v0.29.2 resolves through the variable and v0.26.0 as the whole name (google/cel-go#1256)", []string{"1.35", "1.36"}, map[string][]string{
+			"[1].exists(google, google.protobuf.Duration == type(duration('1s')))": claims,
+		}},
+	} {
+		for _, minor := range class.minors {
+			for expression, places := range class.expressions {
+				for _, where := range places {
+					known[difference{minor, where, expression}] = class.name
+				}
 			}
 		}
 	}
@@ -183,17 +206,17 @@ func TestValidateAgreesWithTheKubeAPIServerOfEveryMinorOnTheCorpus(t *testing.T)
 			switch {
 			case lodia == nil && upstream != "":
 				t.Errorf("Lodia accepts at %s the %s %q, which kube-apiserver %s refuses: %s", minor, c.where, c.expression, minor, upstream)
-			case lodia != nil && upstream == "" && !refusedOnlyByLodia[d]:
+			case lodia != nil && upstream == "" && refusedOnlyByLodia[d] == "":
 				t.Errorf("Lodia refuses at %s the %s %q, which kube-apiserver %s accepts, and it is no known difference: %v", minor, c.where, c.expression, minor, lodia)
-			case (lodia == nil) == (upstream == "") && refusedOnlyByLodia[d]:
-				t.Errorf("the known difference %+v is none: both %s it", d, map[bool]string{true: "accept", false: "refuse"}[lodia == nil])
+			case (lodia == nil) == (upstream == "") && refusedOnlyByLodia[d] != "":
+				t.Errorf("the known difference %+v, %s, is none: both %s it", d, refusedOnlyByLodia[d], map[bool]string{true: "accept", false: "refuse"}[lodia == nil])
 			}
 		}
 		t.Logf("kube-apiserver %s accepts %d of %d", minor, accepted, len(files))
 	}
-	for d := range refusedOnlyByLodia {
+	for d, class := range refusedOnlyByLodia {
 		if !seen[d] {
-			t.Errorf("the known difference %+v is not in the corpus", d)
+			t.Errorf("the known difference %+v, %s, is not in the corpus", d, class)
 		}
 	}
 }

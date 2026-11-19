@@ -56,11 +56,12 @@ func (i *Invalid) Error() string {
 
 // Validate decodes data as strictly as kube-apiserver decodes its
 // --authentication-config, and runs upstream's validation of it for each of
-// minors with the CEL libraries and the parser of that minor; no JWT
-// authenticator may name one of issuers, the ServiceAccount issuers, and gates
-// are the API server's --feature-gates. On the expressions of
-// testdata/corpus.txt it agrees with each minor's own validation, but refuses
-// duration() of an int, which 1.35 and 1.36 accept.
+// minors with the CEL libraries of that minor and the operator's cel-go, which
+// emulates the parsing and the name resolution of the cel-go of 1.35 and 1.36;
+// no JWT authenticator may name one of issuers, the ServiceAccount issuers, and
+// gates are the API server's --feature-gates. On testdata/corpus.txt it agrees
+// with each minor's own validation but for the refusals kubeapiserver_test.go
+// lists; a difference outside the corpus can remain.
 func Validate(data []byte, minors, issuers []string, gates map[string]bool) error {
 	decoded, err := runtime.Decode(codecs.UniversalDecoder(), data)
 	if err != nil {
