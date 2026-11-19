@@ -173,15 +173,18 @@ func TestNoControllerWritesAStatusOlderThanItsOwnLast(t *testing.T) {
 
 	f.createOnly(1, 1)
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: controlPlaneName}}
+	patch := func(body string) int64 {
+		t.Helper()
+		if err := f.admin.Patch(t.Context(), cp, client.RawPatch(types.MergePatchType, []byte(body))); err != nil {
+			t.Fatal(err)
+		}
+		return cp.Generation
+	}
 	hold := true
 	edit := func() int64 {
 		t.Helper()
 		hold = !hold
-		patch := fmt.Appendf(nil, `{"spec":{"health":{"holdControllerManager":%t}}}`, hold)
-		if err := f.admin.Patch(t.Context(), cp, client.RawPatch(types.MergePatchType, patch)); err != nil {
-			t.Fatal(err)
-		}
-		return cp.Generation
+		return patch(fmt.Sprintf(`{"spec":{"health":{"holdControllerManager":%t}}}`, hold))
 	}
 	for i := range 40 {
 		edit()
@@ -215,14 +218,24 @@ func TestNoControllerWritesAStatusOlderThanItsOwnLast(t *testing.T) {
 
 	stub := f.tenants.tenant(ns)
 	stub.slow.Store(true)
-	for range 2 {
-		generation := edit()
-		o.until(t, fmt.Sprintf("PKI writes AccessReady at generation %d", generation), describes(lodiav1alpha1.ConditionAccessReady, generation))
-		edit()
+	for _, replicas := range []int{3, 4} {
+		coreDNS, scaled := "apps/deployments/kube-system/coredns", fmt.Sprintf(`"replicas":%d`, replicas)
+		held := &tenantApply{key: coreDNS, contains: scaled, seen: make(chan struct{}), release: make(chan struct{})}
+		stub.matching.Store(held)
+		generation := patch(fmt.Sprintf(`{"spec":{"addons":{"coreDNS":{"replicas":%d}}}}`, replicas))
+		select {
+		case <-held.seen:
+		case <-time.After(2 * time.Minute):
+			t.Fatalf("Tenant applies no CoreDNS of %d replicas within 2 minutes", replicas)
+		}
+		next := edit()
+		o.until(t, fmt.Sprintf("PKI writes AccessReady at generation %d", next), describes(lodiav1alpha1.ConditionAccessReady, next))
+		time.Sleep(2 * lag)
+		stub.matching.Store(&tenantApply{key: coreDNS, contains: scaled, refuse: true})
+		close(held.release)
 		o.until(t, fmt.Sprintf("Tenant writes AddonsAvailable at generation %d", generation), describes(lodiav1alpha1.ConditionAddonsAvailable, generation))
-		stub.refusing.Store(true)
 		o.until(t, "Tenant is refused", reports(lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonRefused))
-		stub.refusing.Store(false)
+		stub.matching.Store(nil)
 		f.waitReady(time.Now(), 2*time.Minute)
 	}
 	stub.slow.Store(false)
