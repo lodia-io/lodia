@@ -316,7 +316,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if in.unknownReport != "" {
 		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, in.unknownReport)), nil
 	}
-	return report(authenticated(availability(deployments, in.note, controllerManagerHeld(cp)), in.refused+in.removed)), nil
+	return report(authenticated(availability(deployments, in.note, controllerManagerHeld(cp)), in.refused)), nil
 }
 
 // authenticated is c, or AuthenticationInvalid with refused in its place unless
@@ -353,9 +353,9 @@ type inputs struct {
 	// unknownReport says that only the API server's Deployment is written.
 	unknownReport string
 	// refused says why the spec's authentication configuration is not
-	// written, empty when it is, and removed what the pass writes in its
-	// place.
-	refused, removed string
+	// written and what the API server serves instead, empty when it is
+	// written.
+	refused string
 }
 
 // inputs waits, in this order, for the target, the two conditions, the
@@ -411,7 +411,7 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	if err != nil {
 		return nil, nil, err
 	}
-	config, removed, err := r.validated(ctx, cp, endpoint, refused, config, hashed)
+	config, served, err := r.validated(ctx, cp, endpoint, refused, config, hashed)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -442,8 +442,7 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		config:        config,
 		note:          note,
 		unknownReport: unknownReport,
-		refused:       refused,
-		removed:       removed,
+		refused:       refused + served,
 	}, nil, nil
 }
 
@@ -459,15 +458,19 @@ func (r *Reconciler) refusal(cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1al
 	return notWritten + invalid.Error(), nil
 }
 
-const notWritten = "the authentication configuration of spec.apiServer.authentication is not written: "
+const (
+	notWritten = "the authentication configuration of spec.apiServer.authentication is not written: "
+	servesLast = "; the API server serves its last valid configuration"
+	servesNone = "; the API server serves no JWT authenticator"
+)
 
 // validated is config with the authentication configuration Workloads writes:
 // the spec's unless refused, and otherwise the one stored while this
 // ControlPlane controls it and kube-apiserver would load it under the
 // ServiceAccount issuer and the egress selector configuration the pass
-// renders, or else one without JWT authenticators. The second result says
-// that the API server's JWT authenticators are removed, and why, when the
-// pass writes that one over a file that lists some.
+// renders, or else one without JWT authenticators. The second result ends a
+// refusal with what the API server serves: the stored file when it is kept and
+// lists JWT authenticators, and otherwise none.
 func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, refused string, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
 	if refused == "" {
 		return config, "", nil
@@ -475,32 +478,28 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	written := []*corev1.ConfigMap{config[0], hashed[1]}
 	stored := &corev1.ConfigMap{}
 	err := r.Reader.Get(ctx, client.ObjectKeyFromObject(hashed[1]), stored)
-	var why string
 	switch {
 	case apierrors.IsNotFound(err):
-		return written, "", nil
+		return written, servesNone, nil
 	case err != nil:
 		return nil, "", fmt.Errorf("read ConfigMap %s: %w", hashed[1].Name, err)
 	case !metav1.IsControlledBy(stored, cp):
-		why = "the one stored is not this ControlPlane's"
-	default:
-		err := r.validate(cp, stored.Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)}, config[0].Data[egressFile])
-		var invalid *authnconfig.Invalid
-		if !errors.As(err, &invalid) {
-			if err != nil {
-				return nil, "", err
-			}
-			return config[:1], "", nil
-		}
-		why = "the one stored is refused too: " + invalid.Error()
+		return written, servesNone, nil
+	}
+	err = r.validate(cp, stored.Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)}, config[0].Data[egressFile])
+	if _, invalid := errors.AsType[*authnconfig.Invalid](err); invalid {
+		return written, servesNone, nil
+	}
+	if err != nil {
+		return nil, "", err
 	}
 	var file struct {
 		JWT []any `json:"jwt"`
 	}
 	if yaml.Unmarshal([]byte(stored.Data[authenticationFile]), &file) == nil && len(file.JWT) > 0 {
-		return written, "; the API server's JWT authenticators are removed, since " + why, nil
+		return config[:1], servesLast, nil
 	}
-	return written, "", nil
+	return config[:1], servesNone, nil
 }
 
 // validate is authnconfig.Validate, kept per ControlPlane for the content,

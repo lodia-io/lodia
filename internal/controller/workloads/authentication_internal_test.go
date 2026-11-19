@@ -200,15 +200,17 @@ func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t 
 				deployments = append(deployments, d)
 			}
 			count := availability(deployments, "", false)
-			got := authenticated(count, refused)
-			if got.Status != c.status || got.Reason != c.reason {
-				t.Errorf("APIServerReady is %s %s %q, want %s %s", got.Status, got.Reason, got.Message, c.status, c.reason)
-			}
-			if got.Reason != lodiav1alpha1.ReasonAuthenticationInvalid && got.Message != count.Message+"; "+refused {
-				t.Errorf("APIServerReady %s says %q, want its count's message and the refusal", got.Reason, got.Message)
-			}
-			if carried := carried(got); carried != refused {
-				t.Errorf("APIServerReady %s %q carries %q, want the refusal", got.Reason, got.Message, carried)
+			for _, served := range []string{servesLast, servesNone} {
+				got := authenticated(count, refused+served)
+				if got.Status != c.status || got.Reason != c.reason {
+					t.Errorf("APIServerReady is %s %s %q, want %s %s", got.Status, got.Reason, got.Message, c.status, c.reason)
+				}
+				if got.Reason != lodiav1alpha1.ReasonAuthenticationInvalid && got.Message != count.Message+"; "+refused+served {
+					t.Errorf("APIServerReady %s says %q, want its count's message and the refusal", got.Reason, got.Message)
+				}
+				if carried := carried(got); carried != refused+served {
+					t.Errorf("APIServerReady %s %q carries %q, want the refusal", got.Reason, got.Message, carried)
+				}
 			}
 			valid := authenticated(count, "")
 			if valid.Reason == lodiav1alpha1.ReasonAuthenticationInvalid || valid.Message != count.Message || carried(valid) != "" {
@@ -243,7 +245,7 @@ func TestAControlPlaneGoneTakesItsValidationAlong(t *testing.T) {
 	}
 }
 
-func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesOne(t *testing.T) {
+func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhatTheAPIServerServes(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -262,7 +264,6 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesO
 		t.Fatal(err)
 	}
 	const refused = "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed: ERROR: <input>:1:5: undefined field 'nope'\n | user.nope == 'x'\n | ....^"
-	const removed = "; the API server's JWT authenticators are removed"
 	stored := func(data string, owners ...metav1.OwnerReference) *corev1.ConfigMap {
 		c := hashed[1].DeepCopy()
 		c.OwnerReferences = owners
@@ -277,13 +278,14 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesO
 		kept    bool
 		message string
 	}{
-		{"none stored", nil, false, refused},
-		{"a predecessor's orphan", []client.Object{stored(valid[1].Data[authenticationFile])}, false, refused + removed + ", since the one stored is not this ControlPlane's"},
-		{"a predecessor's orphan without JWT authenticators", []client.Object{stored(withoutJWT)}, false, refused},
-		{"this ControlPlane's, refused", []client.Object{stored(config[1].Data[authenticationFile], own)}, false, refused + removed + ", since the one stored is refused too: " + refused[len("the authentication configuration of spec.apiServer.authentication is not written: "):]},
-		{"this ControlPlane's, refused, without JWT authenticators", []client.Object{stored(withoutJWT+"unknown: 1\n", own)}, false, refused},
-		{"this ControlPlane's, loaded", []client.Object{stored(valid[1].Data[authenticationFile], own)}, true, refused},
-		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, refused},
+		{"none stored", nil, false, refused + servesNone},
+		{"a predecessor's orphan", []client.Object{stored(valid[1].Data[authenticationFile])}, false, refused + servesNone},
+		{"a predecessor's orphan without JWT authenticators", []client.Object{stored(withoutJWT)}, false, refused + servesNone},
+		{"this ControlPlane's, refused", []client.Object{stored(config[1].Data[authenticationFile], own)}, false, refused + servesNone},
+		{"this ControlPlane's, refused, without JWT authenticators", []client.Object{stored(withoutJWT+"unknown: 1\n", own)}, false, refused + servesNone},
+		{"this ControlPlane's, undecodable", []client.Object{stored("jwt: [", own)}, false, refused + servesNone},
+		{"this ControlPlane's, loaded", []client.Object{stored(valid[1].Data[authenticationFile], own)}, true, refused + servesLast},
+		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, refused + servesNone},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fake := fake.NewClientBuilder().WithScheme(scheme).WithObjects(c.stored...).Build()
@@ -292,12 +294,12 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhyItRemovesO
 			if err != nil {
 				t.Fatal(err)
 			}
-			written, removed, err := r.validated(t.Context(), cp, endpoint, refusal, config, hashed)
+			written, served, err := r.validated(t.Context(), cp, endpoint, refusal, config, hashed)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if message := refusal + removed; message != c.message {
-				t.Errorf("the message is\n%s\nwant\n%s", refusal+removed, c.message)
+			if message := refusal + served; message != c.message {
+				t.Errorf("the message is\n%s\nwant\n%s", message, c.message)
 			}
 			switch {
 			case c.kept && len(written) != 1:
