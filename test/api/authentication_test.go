@@ -266,6 +266,11 @@ func TestEveryBoundOfAJWTAuthenticatorHoldsAtItsLimit(t *testing.T) {
 	userRules := func(n int) []any {
 		return list(n, func(i int) any { return map[string]any{"expression": fmt.Sprintf("user.username != '%d'", i)} })
 	}
+	extra := func(n int) []any {
+		return list(n, func(i int) any { return map[string]any{"key": fmt.Sprintf("example.com/k%d", i), "valueExpression": "claims.k"} })
+	}
+	claimRules := func(n int) []any { return list(n, func(i int) any { return map[string]any{"claim": fmt.Sprintf("c%d", i)} }) }
+	url := func(prefix string, n int) string { return prefix + text(n-len(prefix)) }
 	mapping := func(name string, value map[string]any) func(map[string]any) {
 		return func(o map[string]any) { under(o, "claimMappings")[name] = value }
 	}
@@ -336,10 +341,30 @@ func TestEveryBoundOfAJWTAuthenticatorHoldsAtItsLimit(t *testing.T) {
 				under(o, "claimMappings")["extra"] = []any{map[string]any{"key": "example.com/tenant", "valueExpression": ""}}
 			},
 			empty("claimMappings.extra[0].valueExpression")},
+		{"extra[].key at most 512",
+			func(o map[string]any) {
+				under(o, "claimMappings")["extra"] = []any{map[string]any{"key": url("example.com/", 512), "valueExpression": "claims.k"}}
+			},
+			func(o map[string]any) {
+				under(o, "claimMappings")["extra"] = []any{map[string]any{"key": url("example.com/", 513), "valueExpression": "claims.k"}}
+			},
+			tooLong("claimMappings.extra[0].key", 512)},
+		{"extra at most 8",
+			func(o map[string]any) { under(o, "claimMappings")["extra"] = extra(8) },
+			func(o map[string]any) { under(o, "claimMappings")["extra"] = extra(9) },
+			at + "claimMappings.extra: Too many: 9: must have at most 8 items"},
+		{"claimValidationRules[].claim at most 253",
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"claim": text(253)}} },
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"claim": text(254)}} },
+			tooLong("claimValidationRules[0].claim", 253)},
 		{"claimValidationRules[].claim at least 1",
 			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"claim": text(1)}} },
 			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"claim": ""}} },
 			empty("claimValidationRules[0].claim")},
+		{"claimValidationRules[].expression at most 2048",
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"expression": text(2048)}} },
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"expression": text(2049)}} },
+			tooLong("claimValidationRules[0].expression", 2048)},
 		{"claimValidationRules[].expression at least 1",
 			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"expression": text(1)}} },
 			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"expression": ""}} },
@@ -360,6 +385,10 @@ func TestEveryBoundOfAJWTAuthenticatorHoldsAtItsLimit(t *testing.T) {
 				o["claimValidationRules"] = []any{map[string]any{"claim": "hd", "requiredValue": text(1025)}}
 			},
 			tooLong("claimValidationRules[0].requiredValue", 1024)},
+		{"claimValidationRules at most 8",
+			func(o map[string]any) { o["claimValidationRules"] = claimRules(8) },
+			func(o map[string]any) { o["claimValidationRules"] = claimRules(9) },
+			at + "claimValidationRules: Too many: 9: must have at most 8 items"},
 		{"userValidationRules[].expression at most 2048",
 			func(o map[string]any) { o["userValidationRules"] = []any{map[string]any{"expression": text(2048)}} },
 			func(o map[string]any) { o["userValidationRules"] = []any{map[string]any{"expression": text(2049)}} },
@@ -380,6 +409,14 @@ func TestEveryBoundOfAJWTAuthenticatorHoldsAtItsLimit(t *testing.T) {
 			func(o map[string]any) { o["userValidationRules"] = userRules(8) },
 			func(o map[string]any) { o["userValidationRules"] = userRules(9) },
 			at + "userValidationRules: Too many: 9: must have at most 8 items"},
+		{"issuer.url at most 512",
+			func(o map[string]any) { under(o, "issuer")["url"] = url("https://login.example.com/", 512) },
+			func(o map[string]any) { under(o, "issuer")["url"] = url("https://login.example.com/", 513) },
+			tooLong("issuer.url", 512)},
+		{"issuer.discoveryURL at most 512",
+			func(o map[string]any) { under(o, "issuer")["discoveryURL"] = url("https://10.96.0.50/", 512) },
+			func(o map[string]any) { under(o, "issuer")["discoveryURL"] = url("https://10.96.0.50/", 513) },
+			tooLong("issuer.discoveryURL", 512)},
 		{"issuer.audiences[] at most 512",
 			func(o map[string]any) { under(o, "issuer")["audiences"] = []any{text(512)} },
 			func(o map[string]any) { under(o, "issuer")["audiences"] = []any{text(513)} },
