@@ -1812,7 +1812,7 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 3 of 3 members ready")
 
 	policy := getPolicy(t, ns, cp)
-	if want := "[from 1 peers to [2379] from 1 peers to [2379 2380] from 1 peers to [2379] from 1 peers to [2379]]"; describeIngress(policy) != want {
+	if want := "[from 1 peers to [2379] from 1 peers to [2379] from 1 peers to [2379 2380] from 1 peers to [2379] from 1 peers to [2379]]"; describeIngress(policy) != want {
 		t.Errorf("the NetworkPolicy of three members admits %s, want %s", describeIngress(policy), want)
 	}
 
@@ -2932,6 +2932,7 @@ func policySpec(cp string, store bool) networkingv1.NetworkPolicySpec {
 		"app.kubernetes.io/managed-by": "etcd-druid", "app.kubernetes.io/part-of": cp + "-etcd", "app.kubernetes.io/name": cp + "-etcd",
 	}}
 	apiServer := &metav1.LabelSelector{MatchLabels: map[string]string{"lodia.io/control-plane": cp, "app.kubernetes.io/name": "kube-apiserver"}}
+	rehearsal := &metav1.LabelSelector{MatchLabels: map[string]string{"lodia.io/control-plane": cp, "app.kubernetes.io/name": "rehearsal"}}
 	tcp := func(port int32) networkingv1.NetworkPolicyPort {
 		return networkingv1.NetworkPolicyPort{Protocol: new(corev1.ProtocolTCP), Port: new(intstr.FromInt32(port))}
 	}
@@ -2945,6 +2946,7 @@ func policySpec(cp string, store bool) networkingv1.NetworkPolicySpec {
 		PodSelector: *members,
 		Ingress: []networkingv1.NetworkPolicyIngressRule{
 			{From: []networkingv1.NetworkPolicyPeer{{PodSelector: apiServer}}, Ports: []networkingv1.NetworkPolicyPort{tcp(2379)}},
+			{From: []networkingv1.NetworkPolicyPeer{{PodSelector: rehearsal}}, Ports: []networkingv1.NetworkPolicyPort{tcp(2379)}},
 			{From: []networkingv1.NetworkPolicyPeer{{PodSelector: members}}, Ports: memberPorts},
 			{
 				From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": druidNamespace}}}},

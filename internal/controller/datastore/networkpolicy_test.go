@@ -4,6 +4,7 @@
 package datastore
 
 import (
+	"maps"
 	"slices"
 	"testing"
 
@@ -40,5 +41,29 @@ func TestTheOperatorsNamespaceIsAdmittedOnce(t *testing.T) {
 		if !slices.Equal(namespaces, row.want) {
 			t.Errorf("with the operator in %s the policy admits the namespaces %v, want %v", row.operator, namespaces, row.want)
 		}
+	}
+}
+
+func TestTheRehearsalsCopyReachesTheClientPortAlone(t *testing.T) {
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}}
+	etcd := &druidv1alpha1.Etcd{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev-etcd", Namespace: "team-a"},
+		Spec:       druidv1alpha1.EtcdSpec{Backup: druidv1alpha1.BackupSpec{Store: &druidv1alpha1.StoreSpec{}}},
+	}
+	copyPods := map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev", lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}
+	var rules int
+	for _, rule := range networkPolicy(cp, etcd, "druid-system", "lodia-system").Spec.Ingress {
+		for _, peer := range rule.From {
+			if peer.PodSelector == nil || !maps.Equal(peer.PodSelector.MatchLabels, copyPods) {
+				continue
+			}
+			rules++
+			if len(rule.From) != 1 || len(rule.Ports) != 1 || rule.Ports[0].Port.IntValue() != 2379 || *rule.Ports[0].Protocol != corev1.ProtocolTCP {
+				t.Errorf("the copy's rule admits %d peers to %+v, want it alone to the client port", len(rule.From), rule.Ports)
+			}
+		}
+	}
+	if rules != 1 {
+		t.Errorf("%d rules admit the copy's pods, want 1", rules)
 	}
 }
