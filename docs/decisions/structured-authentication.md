@@ -6,7 +6,7 @@ Built; `api/v1alpha1/authentication_types.go`, `internal/authnconfig` and Worklo
 ## Decision
 
 - **`spec.apiServer.authentication.jwt` is a copy of kube-apiserver's `apiserver.config.k8s.io/v1` `JWTAuthenticator`**, field for field, with Lodia's bounds and the CEL rules a schema can see ([field reference](../api/controlplane.md#spec)).
-  A test holds every JSON path of upstream's type, in the `k8s.io/apiserver` the operator links, to a path of the copy of the same kind, and finds none more; a filled object of either type survives a strict decode into the other and back.
+  A test holds every JSON path of upstream's type, in the `k8s.io/apiserver` the operator links, to a path of the copy of the same kind through the same pointers, and finds none more; a filled object of either type survives a strict decode into the other and back.
   A bump of `k8s.io/apiserver` that changes the type fails it, and the pull request that bumps adds the field with its bounds and the first minor that knows it ([rule](../../.claude/rules/upstream-types.md)).
 - **Workloads renders the list into the `AuthenticationConfiguration` it already writes**, `<cp>-authentication-config`, beside its own anonymous section, converted to upstream's type by a case-sensitive strict decode of its JSON, as kube-apiserver decodes the file ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L873-L915)).
 - **Every issuer is reached through konnectivity**: Workloads sets `egressSelectorType: cluster` on each authenticator, and the schema admits `cluster` alone, defaults to it, and refuses `StructuredAuthenticationConfigurationEgressSelector: false`.

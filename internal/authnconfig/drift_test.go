@@ -32,10 +32,10 @@ func paths(t reflect.Type, prefix string, out map[string]string) {
 			if name == "" || name == "-" {
 				continue
 			}
-			paths(f.Type, prefix+"."+name, out)
+			paths(f.Type, prefix+pointer+"."+name, out)
 		}
 	case reflect.Slice:
-		paths(t.Elem(), prefix+"[]", out)
+		paths(t.Elem(), prefix+pointer+"[]", out)
 	default:
 		out[prefix] = pointer + t.Kind().String()
 	}
