@@ -448,10 +448,10 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 }
 
 // refusal says why kube-apiserver would refuse the spec's authentication
-// configuration under the ServiceAccount issuer the pass renders, empty when it
-// would not.
+// configuration under the ServiceAccount issuer and the egress selector
+// configuration the pass renders, empty when it would not.
 func (r *Reconciler) refusal(cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, config []*corev1.ConfigMap) (string, error) {
-	err := r.validate(cp, config[1].Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)})
+	err := r.validate(cp, config[1].Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)}, config[0].Data[egressFile])
 	var invalid *authnconfig.Invalid
 	if !errors.As(err, &invalid) {
 		return "", err
@@ -464,10 +464,10 @@ const notWritten = "the authentication configuration of spec.apiServer.authentic
 // validated is config with the authentication configuration Workloads writes:
 // the spec's unless refused, and otherwise the one stored while this
 // ControlPlane controls it and kube-apiserver would load it under the
-// ServiceAccount issuer the pass renders, or else one without JWT
-// authenticators. The second result says that the API server's JWT
-// authenticators are removed, and why, when the pass writes that one over a
-// file that lists some.
+// ServiceAccount issuer and the egress selector configuration the pass
+// renders, or else one without JWT authenticators. The second result says
+// that the API server's JWT authenticators are removed, and why, when the
+// pass writes that one over a file that lists some.
 func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, refused string, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
 	if refused == "" {
 		return config, "", nil
@@ -484,7 +484,7 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	case !metav1.IsControlledBy(stored, cp):
 		why = "the one stored is not this ControlPlane's"
 	default:
-		err := r.validate(cp, stored.Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)})
+		err := r.validate(cp, stored.Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)}, config[0].Data[egressFile])
 		var invalid *authnconfig.Invalid
 		if !errors.As(err, &invalid) {
 			if err != nil {
@@ -503,11 +503,11 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	return written, "", nil
 }
 
-// validate is authnconfig.Validate, kept per ControlPlane for the content and
-// issuers of its last two validations.
-func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, issuers []string) error {
-	sum := sha256.Sum256([]byte(data))
-	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(issuers, ",")
+// validate is authnconfig.Validate, kept per ControlPlane for the content,
+// issuers and egress of its last two validations.
+func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, issuers []string, egress string) error {
+	sum, egressSum := sha256.Sum256([]byte(data)), sha256.Sum256([]byte(egress))
+	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(issuers, ",") + "/" + hex.EncodeToString(egressSum[:])
 	name := client.ObjectKeyFromObject(cp)
 	r.validating.Lock()
 	kept := r.validations[name]
@@ -516,7 +516,7 @@ func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, issue
 	if i >= 0 {
 		return kept[i].err
 	}
-	err := authnconfig.Validate([]byte(data), issuers)
+	err := authnconfig.Validate([]byte(data), issuers, []byte(egress))
 	r.validating.Lock()
 	defer r.validating.Unlock()
 	if r.validations == nil {

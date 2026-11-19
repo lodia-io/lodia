@@ -123,7 +123,8 @@ func (is *issuer) authenticators() []lodiav1alpha1.JWTAuthenticator {
 }
 
 // tenantAPIServer is a kube-apiserver started on the file Workloads wrote,
-// its cluster egress dialing directly, as konnectivity would from a node.
+// beside the egress selections Workloads wrote, each dialing directly, as
+// konnectivity would from a node.
 type tenantAPIServer struct {
 	file   string
 	config *rest.Config
@@ -157,20 +158,24 @@ func writeAtomically(t *testing.T, path string, data []byte) {
 	}
 }
 
-func startTenantAPIServer(t *testing.T, authentication []byte, issuer string) (*tenantAPIServer, error) {
+func startTenantAPIServer(t *testing.T, egress, authentication []byte, issuer string) (*tenantAPIServer, error) {
 	t.Helper()
 	dir := t.TempDir()
 	s := &tenantAPIServer{file: filepath.Join(dir, "authentication-config.yaml"), log: &syncBuffer{}}
 	writeAtomically(t, s.file, authentication)
-	egress, err := yaml.Marshal(apiserverv1beta1.EgressSelectorConfiguration{
-		TypeMeta:         metav1.TypeMeta{APIVersion: apiserverv1beta1.SchemeGroupVersion.String(), Kind: "EgressSelectorConfiguration"},
-		EgressSelections: []apiserverv1beta1.EgressSelection{{Name: "cluster", Connection: apiserverv1beta1.Connection{ProxyProtocol: apiserverv1beta1.ProtocolDirect}}},
-	})
+	var direct apiserverv1beta1.EgressSelectorConfiguration
+	if err := yaml.UnmarshalStrict(egress, &direct); err != nil {
+		t.Fatal(err)
+	}
+	for i := range direct.EgressSelections {
+		direct.EgressSelections[i].Connection = apiserverv1beta1.Connection{ProxyProtocol: apiserverv1beta1.ProtocolDirect}
+	}
+	data, err := yaml.Marshal(direct)
 	if err != nil {
 		t.Fatal(err)
 	}
 	egressFile := filepath.Join(dir, "egress-selector.yaml")
-	writeAtomically(t, egressFile, egress)
+	writeAtomically(t, egressFile, data)
 	env := &envtest.Environment{UseExistingCluster: new(false)}
 	api := env.ControlPlane.GetAPIServer()
 	api.Err = s.log
@@ -265,7 +270,7 @@ func TestARealAPIServerLoadsAndReloadsTheRenderedConfiguration(t *testing.T) {
 	cp := running(t, withJWT(first.authenticators()))
 	hashed := hashes(t, cp)
 	written := authenticationData(t, cp, first.server.URL)
-	tenant, err := startTenantAPIServer(t, written, "")
+	tenant, err := startTenantAPIServer(t, egressData(t, cp), written, "")
 	if err != nil {
 		t.Fatalf("kube-apiserver %s does not start on the file Workloads wrote: %v\n%s", envtestMinor(t), err, tenant.log)
 	}
@@ -327,13 +332,14 @@ func TestWhatWouldStopKubeAPIServerNeverReachesTheConfigMap(t *testing.T) {
 	is := newIssuer(t)
 	cp := running(t, withJWT(is.authenticators()))
 	written := authenticationData(t, cp, is.server.URL)
+	egress := egressData(t, cp)
 	minor := envtestMinor(t)
 
 	unknown := regexp.MustCompile(`(?m)^jwt:$`).ReplaceAll(written, []byte("notAField: 1\njwt:"))
-	if err := authnconfig.Validate(unknown, nil); err == nil || !strings.Contains(err.Error(), `unknown field "notAField"`) {
+	if err := authnconfig.Validate(unknown, nil, egress); err == nil || !strings.Contains(err.Error(), `unknown field "notAField"`) {
 		t.Errorf("the file with an unknown field validates: %v", err)
 	}
-	tenant, err := startTenantAPIServer(t, unknown, "")
+	tenant, err := startTenantAPIServer(t, egress, unknown, "")
 	if err == nil {
 		t.Error("kube-apiserver starts on a file with an unknown field")
 	} else if failure := tenant.failure(); !strings.Contains(failure, `strict decoding error: unknown field \"notAField\"`) {
@@ -343,15 +349,28 @@ func TestWhatWouldStopKubeAPIServerNeverReachesTheConfigMap(t *testing.T) {
 	}
 
 	overlap := "URL must not overlap with disallowed issuers: [" + is.server.URL + "]"
-	if err := authnconfig.Validate(written, []string{is.server.URL}); err == nil || !strings.Contains(err.Error(), overlap) {
+	if err := authnconfig.Validate(written, []string{is.server.URL}, egress); err == nil || !strings.Contains(err.Error(), overlap) {
 		t.Errorf("the file validates with its JWT issuer as the ServiceAccount issuer: %v", err)
 	}
-	tenant, err = startTenantAPIServer(t, written, is.server.URL)
+	tenant, err = startTenantAPIServer(t, egress, written, is.server.URL)
 	if err == nil {
 		t.Error("kube-apiserver starts with its ServiceAccount issuer as a JWT issuer")
 	} else if failure := tenant.failure(); !strings.Contains(failure, overlap) {
 		t.Errorf("kube-apiserver stops for another reason than the issuer overlap:\n%s", tenant.log)
 	} else {
 		t.Logf("kube-apiserver %s stops with its ServiceAccount issuer as a JWT issuer: %s", minor, failure)
+	}
+
+	controlPlane := bytes.ReplaceAll(written, []byte("egressSelectorType: cluster"), []byte("egressSelectorType: controlplane"))
+	if err := authnconfig.Validate(controlPlane, nil, egress); err == nil || !strings.Contains(err.Error(), `jwt[0].issuer.egressSelectorType: Invalid value: "controlplane": egress lookup for "controlplane" is not configured`) {
+		t.Errorf("the file whose issuer is reached through an egress Workloads does not configure validates: %v", err)
+	}
+	tenant, err = startTenantAPIServer(t, egress, controlPlane, "")
+	if err == nil {
+		t.Error("kube-apiserver starts with an issuer reached through an egress it is not given")
+	} else if failure := tenant.failure(); !strings.Contains(failure, `egress lookup for \"controlplane\" is not configured`) {
+		t.Errorf("kube-apiserver stops for another reason than the egress it is not given:\n%s", tenant.log)
+	} else {
+		t.Logf("kube-apiserver %s stops with an issuer reached through an egress it is not given: %s", minor, failure)
 	}
 }

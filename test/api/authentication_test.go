@@ -266,6 +266,8 @@ func issuerOf(t *testing.T, o *unstructured.Unstructured) map[string]any {
 	return under(first(t, o), "issuer")
 }
 
+const clusterEgress = "apiVersion: apiserver.k8s.io/v1beta1\nkind: EgressSelectorConfiguration\negressSelections:\n- name: cluster\n  connection: {proxyProtocol: Direct}\n"
+
 func TestTheSchemaAcceptsWhatKubeAPIServerAccepts(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
@@ -347,7 +349,7 @@ func TestTheSchemaAcceptsWhatKubeAPIServerAccepts(t *testing.T) {
 			if sa, found, _ := unstructured.NestedString(obj.Object, "spec", "serviceAccount", "issuer"); found {
 				issuers = []string{sa}
 			}
-			if err := authnconfig.Validate(file, issuers); err != nil {
+			if err := authnconfig.Validate(file, issuers, []byte(clusterEgress)); err != nil {
 				t.Errorf("kube-apiserver's validation refuses it: %v", err)
 			}
 		})

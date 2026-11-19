@@ -231,7 +231,7 @@ func TestAControlPlaneGoneTakesItsValidationAlong(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cp := range []*lodiav1alpha1.ControlPlane{gone, kept} {
-		if err := r.validate(cp, written[1].Data[authenticationFile], []string{"https://203.0.113.10"}); err != nil {
+		if err := r.validate(cp, written[1].Data[authenticationFile], []string{"https://203.0.113.10"}, written[0].Data[egressFile]); err != nil {
 			t.Fatal(err)
 		}
 	}

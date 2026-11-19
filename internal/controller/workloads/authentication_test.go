@@ -69,6 +69,15 @@ func authenticationConfig(t *testing.T, cp *lodiav1alpha1.ControlPlane) *corev1.
 	return c
 }
 
+func egressData(t *testing.T, cp *lodiav1alpha1.ControlPlane) []byte {
+	t.Helper()
+	c := &corev1.ConfigMap{}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-egress-selector"}, c); err != nil {
+		t.Fatal(err)
+	}
+	return []byte(c.Data["egress-selector.yaml"])
+}
+
 func expectAuthenticationInvalid(cp *lodiav1alpha1.ControlPlane, message string) error {
 	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
@@ -235,13 +244,14 @@ func expectAReplicaLoads(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	}
 	issuer := serviceAccountIssuer(container.Command)
 	file := authenticationConfig(t, cp).Data["authentication-config.yaml"]
-	if err := authnconfig.Validate([]byte(file), []string{issuer}); err != nil {
+	egress := egressData(t, cp)
+	if err := authnconfig.Validate([]byte(file), []string{issuer}, egress); err != nil {
 		t.Errorf("with --service-account-issuer=%s Validate refuses the file Workloads keeps: %v\n%s", issuer, err, file)
 	}
 	if minor != envtestMinor(t) {
 		return
 	}
-	if s, err := startTenantAPIServer(t, []byte(file), issuer); err != nil {
+	if s, err := startTenantAPIServer(t, egress, []byte(file), issuer); err != nil {
 		t.Errorf("kube-apiserver %s with --service-account-issuer=%s does not start on the file Workloads keeps: %v; %s", minor, issuer, err, s.failure())
 		return
 	}
@@ -421,28 +431,37 @@ func TestAPredecessorsOrphanedFileIsReplacedForATenantWhoseAPIServerRefusesIt(t 
 }
 
 func TestAStoredFileEditedByHandIntoOneTheMinorRefusesIsReplaced(t *testing.T) {
-	cp := running(t, withJWT(oidc()))
-	authenticationData(t, cp, "claims.tenant == 'team-a'")
-	hashed := hashes(t, cp)
-	update(t, cp, withJWT(oidc("user.nope == 'x'")))
-	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, "jwt[0].userValidationRules[0].expression") })
+	for _, c := range []struct {
+		name, from, to, refused string
+	}{
+		{"a claim rule that does not compile", "claims.tenant == 'team-a'", "claims.tenant ==", "jwt[0].claimValidationRules[0].expression: Invalid value: \"claims.tenant ==\""},
+		{"an issuer reached through an egress Workloads does not configure", "egressSelectorType: cluster", "egressSelectorType: controlplane", "jwt[0].issuer.egressSelectorType: Invalid value: \"controlplane\": egress lookup for \"controlplane\" is not configured"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := running(t, withJWT(oidc()))
+			authenticationData(t, cp, c.from)
+			hashed := hashes(t, cp)
+			update(t, cp, withJWT(oidc("user.nope == 'x'")))
+			testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, "jwt[0].userValidationRules[0].expression") })
 
-	edited := authenticationConfig(t, cp)
-	edited.Data["authentication-config.yaml"] = strings.Replace(edited.Data["authentication-config.yaml"], "claims.tenant == 'team-a'", "claims.tenant ==", 1)
-	seen := conditionsWhile(t, cp, func() {
-		if err := k8s.Update(t.Context(), edited); err != nil {
-			t.Fatal(err)
-		}
-	}, func() error {
-		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
-			return errors.New("the authentication configuration is\n" + authn)
-		}
-		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal)
-	})
-	expectSaid(t, seen, nopeRefusal+"; the API server's JWT authenticators are removed, since the one stored is refused too: kube-apiserver 1.37 refuses it: jwt[0].claimValidationRules[0].expression: Invalid value: \"claims.tenant ==\"")
-	expectAReplicaLoads(t, cp)
-	if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
-		t.Errorf("the restart hashes are %v, then %v", hashed, after)
+			edited := authenticationConfig(t, cp)
+			edited.Data["authentication-config.yaml"] = strings.Replace(edited.Data["authentication-config.yaml"], c.from, c.to, 1)
+			seen := conditionsWhile(t, cp, func() {
+				if err := k8s.Update(t.Context(), edited); err != nil {
+					t.Fatal(err)
+				}
+			}, func() error {
+				if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
+					return errors.New("the authentication configuration is\n" + authn)
+				}
+				return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal)
+			})
+			expectSaid(t, seen, nopeRefusal+"; the API server's JWT authenticators are removed, since the one stored is refused too: kube-apiserver 1.37 refuses it: "+c.refused)
+			expectAReplicaLoads(t, cp)
+			if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
+				t.Errorf("the restart hashes are %v, then %v", hashed, after)
+			}
+		})
 	}
 }
 
