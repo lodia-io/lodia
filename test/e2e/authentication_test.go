@@ -60,7 +60,7 @@ func newTestIssuers(t *testing.T) *testIssuers {
 		t.Fatal(err)
 	}
 	is := &testIssuers{ca: ca, keys: map[string]*ecdsa.PrivateKey{}}
-	for _, path := range []string{"first", "second"} {
+	for _, path := range []string{"first", "second", "verbatim"} {
 		if is.keys[path], err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader); err != nil {
 			t.Fatal(err)
 		}
@@ -147,6 +147,23 @@ func (is *testIssuers) authenticators(t *testing.T, path string) []lodiav1alpha1
 		},
 		UserValidationRules: []lodiav1alpha1.UserValidationRule{{Expression: "!('oidc:suspended' in user.groups)", Message: "the user is suspended"}},
 	}}
+}
+
+// verbatim is an authenticator of the issuer verbatim that maps the claims
+// sub and groups as they are.
+func (is *testIssuers) verbatim(t *testing.T) lodiav1alpha1.JWTAuthenticator {
+	t.Helper()
+	ca, err := certs.CertPEM(is.ca.Cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lodiav1alpha1.JWTAuthenticator{
+		Issuer: lodiav1alpha1.Issuer{URL: issuerURL("verbatim"), CertificateAuthority: string(ca), Audiences: []string{"lodia"}},
+		ClaimMappings: lodiav1alpha1.ClaimMappings{
+			Username: lodiav1alpha1.PrefixedClaimOrExpression{Claim: "sub", Prefix: new("")},
+			Groups:   lodiav1alpha1.PrefixedClaimOrExpression{Claim: "groups", Prefix: new("")},
+		},
+	}
 }
 
 // deploy runs the issuer in the tenant, on node, behind the Service
@@ -294,7 +311,7 @@ func TestStructuredAuthenticationOnKind(t *testing.T) {
 			k8s = newClient(t, cfg)
 			issuers = newTestIssuers(t)
 			createTenant(ctx, t, k8s, key, authnClass, func(s *lodiav1alpha1.ControlPlaneSpec) {
-				s.APIServer = &lodiav1alpha1.APIServer{Authentication: &lodiav1alpha1.Authentication{JWT: issuers.authenticators(t, "first")}}
+				s.APIServer = &lodiav1alpha1.APIServer{Authentication: &lodiav1alpha1.Authentication{JWT: append(issuers.authenticators(t, "first"), issuers.verbatim(t))}}
 			})
 			built, err := build(ctx, cfg.KubeconfigFile(), "./test/"+oidcIssuer)
 			if err != nil {
@@ -333,6 +350,25 @@ func TestStructuredAuthenticationOnKind(t *testing.T) {
 			} {
 				if refused, err := login(ctx, access, issuers.token(t, "first", claims)); err == nil {
 					t.Errorf("%s lets %+v in", rule, refused)
+				}
+			}
+			var plain authenticationv1.UserInfo
+			until(ctx, t, 3*time.Minute, "a token of the issuer that maps claims as they are logs in", func(ctx context.Context) error {
+				var err error
+				plain, err = login(ctx, access, issuers.token(t, "verbatim", map[string]any{"sub": "bob", "groups": []string{"dev"}}))
+				return err
+			})
+			if want := (authenticationv1.UserInfo{Username: "bob", Groups: []string{"dev", "system:authenticated"}}); fmt.Sprint(plain) != fmt.Sprint(want) {
+				t.Errorf("the plain token logs in as %+v, want %+v", plain, want)
+			}
+			for name, claims := range map[string]map[string]any{
+				"the username system:admin":      {"sub": "system:admin"},
+				"the username lodia:user:alice":  {"sub": "lodia:user:alice"},
+				"the group system:masters":       {"sub": "bob", "groups": []string{"system:masters"}},
+				"the group lodia:cluster-admins": {"sub": "bob", "groups": []string{"lodia:cluster-admins"}},
+			} {
+				if refused, err := login(ctx, access, issuers.token(t, "verbatim", claims)); err == nil {
+					t.Errorf("the reserved names let a token mapped to %s in as %+v", name, refused)
 				}
 			}
 			return ctx
