@@ -275,8 +275,19 @@ func conditionsWhile(t *testing.T, cp *lodiav1alpha1.ControlPlane, do func(), do
 		t.Fatal(err)
 	}
 	defer events.Stop()
+	listed := ""
+	for _, item := range list.Items {
+		if item.Name == cp.Name {
+			listed = item.ResourceVersion
+		}
+	}
 	do()
-	testenv.Eventually(t, done)
+	testenv.Eventually(t, func() error {
+		if get(t, cp).ResourceVersion == listed {
+			return errors.New("no write of the ControlPlane since the list")
+		}
+		return done()
+	})
 	current := get(t, cp).ResourceVersion
 	var seen []metav1.Condition
 	for last := ""; last != current; {
