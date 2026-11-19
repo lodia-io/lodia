@@ -318,9 +318,10 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 }
 
 // authenticated is c, or AuthenticationInvalid with refused in its place unless
-// c says that a component is unavailable or its rollout is past its deadline.
+// c is False: Unavailable, or ProgressDeadlineExceeded with a component
+// unavailable, says more.
 func authenticated(c metav1.Condition, refused string) metav1.Condition {
-	if refused == "" || c.Reason == lodiav1alpha1.ReasonUnavailable || c.Reason == lodiav1alpha1.ReasonProgressDeadlineExceeded {
+	if refused == "" || c.Status == metav1.ConditionFalse {
 		return c
 	}
 	return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refused)

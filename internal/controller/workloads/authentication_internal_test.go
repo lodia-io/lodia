@@ -10,6 +10,7 @@ import (
 	"slices"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
@@ -160,4 +161,45 @@ func TestEveryJWTAuthenticatorGoesThroughKonnectivityAndKeepsTheReservedNames(t 
 
 func equalAnonymous(a, b *apiserverv1.AnonymousAuthConfig) bool {
 	return a != nil && b != nil && a.Enabled == b.Enabled && slices.Equal(a.Conditions, b.Conditions)
+}
+
+func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t *testing.T) {
+	const refused = "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.35 refuses it"
+	ready := func(d *appsv1.Deployment) { d.Status.ReadyReplicas = 1 }
+	stalled := func(d *appsv1.Deployment) {
+		d.Status.Conditions = []appsv1.DeploymentCondition{{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: timedOutReason}}
+	}
+	for _, c := range []struct {
+		name      string
+		apiServer []func(*appsv1.Deployment)
+		status    metav1.ConditionStatus
+		reason    string
+	}{
+		{"every component ready", []func(*appsv1.Deployment){ready}, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid},
+		{"a rollout past its deadline that still serves", []func(*appsv1.Deployment){ready, stalled}, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid},
+		{"a rollout past its deadline with no ready replica", []func(*appsv1.Deployment){stalled}, metav1.ConditionFalse, lodiav1alpha1.ReasonProgressDeadlineExceeded},
+		{"no ready replica", nil, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var deployments []*appsv1.Deployment
+			for _, component := range components {
+				d := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component, Generation: 2, Labels: map[string]string{lodiav1alpha1.ComponentLabel: component}}}
+				d.Status.ObservedGeneration = 2
+				ready(d)
+				if component == apiServer {
+					d.Status.ReadyReplicas = 0
+					for _, change := range c.apiServer {
+						change(d)
+					}
+				}
+				deployments = append(deployments, d)
+			}
+			if got := authenticated(availability(deployments, "", false), refused); got.Status != c.status || got.Reason != c.reason {
+				t.Errorf("APIServerReady is %s %s %q, want %s %s", got.Status, got.Reason, got.Message, c.status, c.reason)
+			}
+			if got := authenticated(availability(deployments, "", false), ""); got.Reason == lodiav1alpha1.ReasonAuthenticationInvalid {
+				t.Errorf("a valid configuration gives %s", got.Reason)
+			}
+		})
+	}
 }
