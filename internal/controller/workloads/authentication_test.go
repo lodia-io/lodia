@@ -248,3 +248,84 @@ func TestAControlPlaneStoredWithTheEgressGateOffGetsNoJWTFile(t *testing.T) {
 		return nil
 	})
 }
+
+func reportedAPIServer(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
+	t.Helper()
+	if c := get(t, cp).Status.Components; c != nil && c.APIServer != nil {
+		return c.APIServer.Version
+	}
+	return ""
+}
+
+func TestAMinorStepGetsAnExpressionOfTheNewerMinorOnceTheAPIServerReportsIt(t *testing.T) {
+	cp := controlPlane(t, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
+		s.Version = "v1.36.6"
+		withJWT(oidc())(s)
+	})
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	setTargetAt(t, cp, "v1.36.6", revision)
+	inputsReadyBesidesTheTarget(t, cp)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
+	if got := reportedAPIServer(t, cp); got != "v1.36.6" {
+		t.Fatalf("the API server reports %q, want v1.36.6", got)
+	}
+
+	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+		s.Version = "v1.37.1"
+		withJWT(oidc("!user.groups.includes('oidc:suspended')"))(s)
+	})
+	setTargetAt(t, cp, "v1.37.1", revision)
+	testenv.Eventually(t, func() error {
+		if image := deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Image; !strings.HasSuffix(image, ":v1.37.1") {
+			return fmt.Errorf("the API server's image is %s", image)
+		}
+		return expectAuthenticationInvalid(cp, "kube-apiserver 1.36 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"!user.groups.includes('oidc:suspended')\"")
+	})
+	if got := reportedAPIServer(t, cp); got != "v1.36.6" {
+		t.Errorf("mid-step the API server reports %q, want v1.36.6", got)
+	}
+	if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; strings.Contains(authn, "includes") {
+		t.Errorf("mid-step the 1.36 API server gets\n%s", authn)
+	}
+
+	markAvailable(t, deployment(t, cp, "kube-apiserver"))
+	testenv.Eventually(t, func() error {
+		if got := reportedAPIServer(t, cp); got != "v1.37.1" {
+			return fmt.Errorf("the API server reports %q", got)
+		}
+		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "includes") {
+			return errors.New("once the API server reports 1.37 the authentication configuration is\n" + authn)
+		}
+		return nil
+	})
+}
+
+func TestNoJWTIssuerIsTheServiceAccountIssuer(t *testing.T) {
+	const shared = "https://login.example.com/realms/team-a"
+	cp := controlPlane(t, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
+		withJWT(oidc())(s)
+		s.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: shared}
+	})
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	testenv.Eventually(t, func() error {
+		return expectAuthenticationInvalid(cp, "kube-apiserver 1.37 refuses it: jwt[0].issuer.url: Invalid value: \""+shared+"\": URL must not overlap with disallowed issuers: ["+shared+"]")
+	})
+	if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
+		t.Errorf("a JWT issuer that is the ServiceAccount issuer gets\n%s", authn)
+	}
+
+	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.ServiceAccount = nil })
+	testenv.Eventually(t, func() error {
+		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "url: "+shared) {
+			return errors.New("with the ServiceAccount issuer moved the authentication configuration is\n" + authn)
+		}
+		return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
+	})
+}

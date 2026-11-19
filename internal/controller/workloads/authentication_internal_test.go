@@ -5,6 +5,7 @@ package workloads
 
 import (
 	"bytes"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,7 +14,11 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -201,5 +206,30 @@ func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t 
 				t.Errorf("a valid configuration gives %s", got.Reason)
 			}
 		})
+	}
+}
+
+func TestAControlPlaneGoneTakesItsValidationAlong(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := lodiav1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	r := &Reconciler{Client: fake.NewClientBuilder().WithScheme(scheme).Build()}
+	gone := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}}
+	kept := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-b"}}
+	written, _, err := configMaps(gone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cp := range []*lodiav1alpha1.ControlPlane{gone, kept} {
+		if err := r.validate(cp, written[1].Data[authenticationFile], []string{"1.37"}, []string{"https://203.0.113.10"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(gone)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := r.validations[client.ObjectKeyFromObject(gone)]; found || len(r.validations) != 1 {
+		t.Errorf("after a pass that finds no ControlPlane team-a/dev Workloads keeps the validations of %v", slices.Collect(maps.Keys(r.validations)))
 	}
 }
