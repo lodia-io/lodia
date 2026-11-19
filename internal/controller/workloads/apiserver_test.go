@@ -341,4 +341,17 @@ func TestWhatWouldStopKubeAPIServerNeverReachesTheConfigMap(t *testing.T) {
 	} else {
 		t.Logf("kube-apiserver %s stops on an unknown field: %s", minor, failure)
 	}
+
+	overlap := "URL must not overlap with disallowed issuers: [" + is.server.URL + "]"
+	if err := authnconfig.Validate(written, []string{is.server.URL}); err == nil || !strings.Contains(err.Error(), overlap) {
+		t.Errorf("the file validates with its JWT issuer as the ServiceAccount issuer: %v", err)
+	}
+	tenant, err = startTenantAPIServer(t, written, is.server.URL)
+	if err == nil {
+		t.Error("kube-apiserver starts with its ServiceAccount issuer as a JWT issuer")
+	} else if failure := tenant.failure(); !strings.Contains(failure, overlap) {
+		t.Errorf("kube-apiserver stops for another reason than the issuer overlap:\n%s", tenant.log)
+	} else {
+		t.Logf("kube-apiserver %s stops with its ServiceAccount issuer as a JWT issuer: %s", minor, failure)
+	}
 }
