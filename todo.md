@@ -258,3 +258,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
   It keeps its end-of-support date too, which the metric, the alert and `Progressing`'s notice read for the tenants still on it: without the date their series ends, and the alert resolves for the tenants nearing or past it.
+
+## From structured authentication (2026-11-19)
+
+- Workloads compiles a tenant's claim and user expressions with the CEL libraries of each minor that reads the file, through a mirror of `k8s.io/apiserver`'s unexported compiler (the `@todo` in `internal/authnconfig/compiler.go`, [structured-authentication](docs/decisions/structured-authentication.md#workaround-the-compiler-of-a-minor)).
+  Remove it once `k8s.io/apiserver` builds a compiler of a given version; until then each bump of `k8s.io/apiserver` checks it against upstream's `compile.go`.

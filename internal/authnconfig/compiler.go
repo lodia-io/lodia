@@ -1,0 +1,102 @@
+// Copyright 2026 The Lodia Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package authnconfig
+
+import (
+	"fmt"
+	"sync"
+
+	"github.com/google/cel-go/cel"
+	"k8s.io/apimachinery/pkg/util/version"
+	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
+	apiservercel "k8s.io/apiserver/pkg/cel"
+	"k8s.io/apiserver/pkg/cel/environment"
+)
+
+// compiler compiles claim and user expressions with the CEL libraries of one
+// Kubernetes minor, the NewExpressions environment at that minor: upstream's
+// compiler offers only every library of the release it is built from, and an
+// older API server knows fewer.
+// @todo: mirrors k8s.io/apiserver's unexported compiler, mustBuildEnvs and buildUserType (pkg/authentication/cel/compile.go at v0.37.1); drop it for upstream's compiler of a given version once k8s.io/apiserver has one (todo.md).
+type compiler struct {
+	claims, user *cel.Env
+}
+
+var compilers sync.Map
+
+// compilerOf is the compiler of minor, "1.35", built once.
+func compilerOf(minor string) (authenticationcel.Compiler, error) {
+	if c, ok := compilers.Load(minor); ok {
+		return c.(compiler), nil
+	}
+	v, err := version.ParseMajorMinor(minor)
+	if err != nil {
+		return nil, err
+	}
+	base := environment.MustBaseEnvSet(v)
+	extend := func(name string, declType *apiservercel.DeclType) (*cel.Env, error) {
+		set, err := base.Extend(environment.VersionedOptions{
+			IntroducedVersion: version.MajorMinor(1, 0),
+			EnvOptions:        []cel.EnvOption{cel.Variable(name, declType.CelType())},
+			DeclTypes:         []*apiservercel.DeclType{declType},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return set.Env(environment.NewExpressions)
+	}
+	field := func(name string, declType *apiservercel.DeclType) *apiservercel.DeclField {
+		return apiservercel.NewDeclField(name, declType, false, nil, nil)
+	}
+	user := apiservercel.NewObjectType("kubernetes.UserInfo", map[string]*apiservercel.DeclField{
+		"username": field("username", apiservercel.StringType),
+		"uid":      field("uid", apiservercel.StringType),
+		"groups":   field("groups", apiservercel.NewListType(apiservercel.StringType, -1)),
+		"extra":    field("extra", apiservercel.NewMapType(apiservercel.StringType, apiservercel.NewListType(apiservercel.StringType, -1), -1)),
+	})
+	claims, err := extend("claims", apiservercel.NewMapType(apiservercel.StringType, apiservercel.AnyType, -1))
+	if err != nil {
+		return nil, err
+	}
+	users, err := extend("user", user)
+	if err != nil {
+		return nil, err
+	}
+	c, _ := compilers.LoadOrStore(minor, compiler{claims: claims, user: users})
+	return c.(compiler), nil
+}
+
+func (c compiler) CompileClaimsExpression(a authenticationcel.ExpressionAccessor) (authenticationcel.CompilationResult, error) {
+	return compile(c.claims, a)
+}
+
+func (c compiler) CompileUserExpression(a authenticationcel.ExpressionAccessor) (authenticationcel.CompilationResult, error) {
+	return compile(c.user, a)
+}
+
+func compile(env *cel.Env, a authenticationcel.ExpressionAccessor) (authenticationcel.CompilationResult, error) {
+	failed := func(detail string, errorType apiservercel.ErrorType) (authenticationcel.CompilationResult, error) {
+		return authenticationcel.CompilationResult{}, &apiservercel.Error{Type: errorType, Detail: detail}
+	}
+	ast, issues := env.Compile(a.GetExpression())
+	if issues != nil {
+		return failed("compilation failed: "+issues.String(), apiservercel.ErrorTypeInvalid)
+	}
+	returns := a.ReturnTypes()
+	found := false
+	for _, t := range returns {
+		found = found || ast.OutputType() == t || t == cel.AnyType
+	}
+	if !found {
+		if len(returns) == 1 {
+			return failed(fmt.Sprintf("must evaluate to %v", returns[0].String()), apiservercel.ErrorTypeInvalid)
+		}
+		return failed(fmt.Sprintf("must evaluate to one of %v", returns), apiservercel.ErrorTypeInvalid)
+	}
+	program, err := env.Program(ast)
+	if err != nil {
+		return failed("program instantiation failed: "+err.Error(), apiservercel.ErrorTypeInternal)
+	}
+	return authenticationcel.CompilationResult{Program: program, AST: ast, ExpressionAccessor: a}, nil
+}

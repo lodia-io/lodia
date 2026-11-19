@@ -1,7 +1,7 @@
 # A tenant's JWT authenticators are upstream's `JWTAuthenticator`, reached through the tenant's nodes and reloaded without a restart
 
 Decided 2026-11-19.
-Built; `api/v1alpha1/authentication_types.go`, `internal/authnconfig` and Workloads hold it.
+Built; `api/v1alpha1/authentication_types.go`, `internal/authnconfig` and Workloads hold it, with one workaround, the [compiler of a minor](#workaround-the-compiler-of-a-minor).
 
 ## Decision
 
@@ -13,6 +13,12 @@ Built; `api/v1alpha1/authentication_types.go`, `internal/authnconfig` and Worklo
   kube-apiserver then sends every request for that issuer, discovery and keys, through the dialer of the egress selection `cluster` ([oidc.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/plugin/pkg/authenticator/token/oidc/oidc.go#L317-L340)), which Lodia's egress configuration sends through konnectivity-server's socket to the agents on the tenant's nodes ([api-exposure](api-exposure.md)).
 - **Every authenticator ends with a user validation rule of Lodia's**: `!user.username.startsWith('system:') && !user.username.startsWith('lodia:') && !user.groups.exists(g, g.startsWith('system:') || g.startsWith('lodia:'))`, with the message `system: and lodia: names are reserved`.
   An authenticator whose spec holds that expression keeps its own rule, since kube-apiserver refuses an expression twice ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/apis/apiserver/validation/validation.go#L546-L566)).
+- **Workloads writes no file that kube-apiserver would refuse.**
+  It decodes the bytes it renders as kube-apiserver decodes them, and runs upstream's validation as the API server of each minor that reads the file does: those of `status.components.apiServer.version` and `status.target.version`, each with the CEL libraries of that minor, and with the issuer Workloads renders for ServiceAccounts as the one no authenticator may name ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L602-L604)).
+  A file that fails is not written: the ConfigMap stays as it is, or is created without JWT authenticators while it is missing, every other object of the pass is applied, and `APIServerReady` is False, `AuthenticationInvalid`, unless it is `ProgressDeadlineExceeded` or `Unavailable`, with the minor and the first three errors ([reasons](../api/controlplane.md#conditions-and-their-reasons)).
+  The outcome is kept for each `ControlPlane` with the bytes, minors and issuer it was found for, so a pass that changes nothing compiles nothing.
+- **The CEL libraries of a minor are its `NewExpressions` environment**: `environment.MustBaseEnvSet(minor)` of the `k8s.io/apiserver` the operator links, with the `claims` and `user` variables as upstream declares them.
+  kube-apiserver compiles in its `StoredExpressions` environment, every library its release knows ([compile.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/cel/compile.go#L75)), and 1.37 adds the lists library v1 ([base.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/cel/environment/base.go#L182-L187)), so an expression with `includes` starts 1.37 and stops 1.35.
 - **A JWT edit reloads, and only the anonymous section restarts the API server.**
   The API server's restart hash reads the authentication configuration rendered without JWT authenticators, which are the bytes it read before this decision, so the release that brings it rolls no tenant and an edit of `jwt` rolls nothing.
   kube-apiserver watches the file and polls it every minute, and swaps in new bytes once they decode, validate and every issuer in them answers, within a minute; it refuses a changed anonymous section ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L760-L815), [config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/authenticator/config.go#L314-L337)), so an operator revision that changes that section rolls the API server.
@@ -28,6 +34,10 @@ Built; `api/v1alpha1/authentication_types.go`, `internal/authnconfig` and Worklo
   The reserved names keep a token from being a node, a ServiceAccount or a member of `system:masters`, and from holding the bindings of a person's short-lived kubeconfig ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)), so the two credential systems stay apart.
   kube-apiserver adds `system:authenticated` after the rule, so the rule does not refuse every token.
 - **kube-apiserver takes a JWT edit without a restart**, so a roll for each would cost every replica for nothing.
+- **kube-apiserver stops at start on a file it cannot decode or validate**, and refuses the same file at a reload and keeps the authenticators it has ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L787-L806)).
+  Written, such a file would stop the next replica that starts, in a rollout or after a node is lost.
+  No CRD rule compiles CEL or parses PEM, and no admission webhook may ([no-admission-webhooks](no-admission-webhooks.md)), so the check runs before the write, seconds after the edit, and leaves the cluster on its last valid authenticators.
+- **`Ready` True at a generation means every change of it taken up** ([field reference](../api/controlplane.md#conditions-and-their-reasons)), which a configuration not written is not; `Refused` already makes `APIServerReady` False for a render the management API server refuses while the tenant's API server serves.
 
 ## Rejected
 
@@ -35,6 +45,8 @@ Built; `api/v1alpha1/authentication_types.go`, `internal/authnconfig` and Worklo
 - **A reference to a ConfigMap of the tenant's**: without admission webhooks ([no-admission-webhooks](no-admission-webhooks.md)) nothing would check it before a reconcile, and the operator's cache holds only labelled objects ([independent-controllers](independent-controllers.md)).
 - **A dialect of Lodia's own**: a third shape for one file, with fields upstream has and it lacks.
 - **A roll on every edit**: kube-apiserver needs none.
+- **Validation at the newest minor alone**, upstream's compiler as it is: an expression with a function of 1.37 would pass for a 1.35 tenant, whose API server would then refuse the file at its next start.
+- **A condition outside `Ready` for an invalid configuration**: `Ready` would claim an edit taken up that was not.
 - **A direct dial from the API server's pod**: it reaches the management network; one limited to public networks is a loosening for later, with the egress policy that would enforce it.
 
 What the neighbours do is in [analysis](../analysis.md).
@@ -44,9 +56,22 @@ What the neighbours do is in [analysis](../analysis.md).
 - Before a tenant's first node joins, no agent is connected: a token's login fails and an edit does not load, while the admin kubeconfig and `KubeconfigRequest`s work ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
 - An issuer that does not answer holds back every edit of the file while it stays in it, and kube-apiserver logs `failed to update authentication config`.
 - A platform that wants OIDC administrators binds a group of its own inside the tenant; `lodia:cluster-admins` stays the certificates' group.
+- During a minor step both minors read the file, so an expression of the newer minor is refused until the API server reports it, and then written.
+  A file valid at one minor and refused by the next is what a rehearsal of the step would find; nothing checks the next minor before its step starts.
+- `Ready` at a generation says that the file is written and valid, not that every replica has loaded it (`todo.md`): an issuer that does not answer holds the load back, which kube-apiserver's metrics and log tell ([operations](../operations.md#logging-in-with-an-oidc-provider)).
+
+## Workaround: the compiler of a minor
+
+`internal/authnconfig/compiler.go` mirrors the unexported compiler of `k8s.io/apiserver` and the two functions that build its environments ([compile.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/cel/compile.go#L34-L161)), since upstream builds a compiler only over every library of its own release.
+`TestTheMinorCompilerAgreesWithUpstreamsAtTheNewestMinor` holds it to upstream's compiler at the newest minor Lodia runs, on a corpus of every library; the real API server of `ENVTEST_K8S_VERSION`, the oldest minor, loads the file Workloads renders.
+It goes, with its `@todo`, once `k8s.io/apiserver` builds a compiler of a given version, and is checked against each bump of `k8s.io/apiserver` until then.
+
+Upstream issue: (filed by the coordinator)
+Notion task: (filed by the coordinator)
 
 ## Code
 
 - `api/v1alpha1/authentication_types.go` — the copy; `test/api/authentication_test.go` holds each CEL rule, the default egress and the feature gate.
-- `internal/authnconfig` — `Upstream`, the conversion; `drift_test.go` holds the shape and the round trips.
+- `internal/authnconfig` — `Upstream`, the conversion; `drift_test.go` holds the shape and the round trips. `Validate` and `compiler.go`, the validation of each minor; `validate_test.go` holds the compiler against upstream's, `includes` from 1.37, an unknown field, a CA, the ServiceAccount issuer and the bounds of the message.
+- `internal/controller/workloads/workloads.go` — `validated`, `validate` and `readers`; `authentication_test.go` holds an edit that reloads, an invalid one never written beside an edit that rolls out, and a 1.35 tenant that gets no expression of 1.37.
 - `internal/controller/workloads/render.go` — `jwtAuthenticators` and `configMaps`; `authentication_internal_test.go` holds the egress and the reserved names once on every authenticator, the restart hash of before for any `jwt` and its change with the anonymous section, and the golden `testdata/render/authentication.yaml`.

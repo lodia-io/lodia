@@ -45,6 +45,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/authnconfig"
 	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
@@ -94,6 +95,16 @@ type Reconciler struct {
 
 	writes   sync.Mutex
 	gateways map[types.NamespacedName]*fence.Fence
+
+	validating  sync.Mutex
+	validations map[types.NamespacedName]validation
+}
+
+// validation is the outcome of validating one authentication configuration
+// for the minors that read it.
+type validation struct {
+	key string
+	err error
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -172,6 +183,11 @@ func restartOnlyNames(cp string) []string {
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.validating.Lock()
+			delete(r.validations, req.NamespacedName)
+			r.validating.Unlock()
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
@@ -298,7 +314,16 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if in.unknownReport != "" {
 		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, in.unknownReport)), nil
 	}
-	return report(availability(deployments, in.note, controllerManagerHeld(cp))), nil
+	return report(authenticated(availability(deployments, in.note, controllerManagerHeld(cp)), in.refused)), nil
+}
+
+// authenticated is c, or AuthenticationInvalid with refused in its place unless
+// c says that a component is unavailable or its rollout is past its deadline.
+func authenticated(c metav1.Condition, refused string) metav1.Condition {
+	if refused == "" || c.Reason == lodiav1alpha1.ReasonUnavailable || c.Reason == lodiav1alpha1.ReasonProgressDeadlineExceeded {
+		return c
+	}
+	return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refused)
 }
 
 type inputs struct {
@@ -308,6 +333,9 @@ type inputs struct {
 	note string
 	// unknownReport says that only the API server's Deployment is written.
 	unknownReport string
+	// refused says why the spec's authentication configuration is not
+	// written, empty when it is.
+	refused string
 }
 
 // inputs waits, in this order, for the target, the two conditions, the
@@ -359,6 +387,10 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message))
 		return nil, waiting, err
 	}
+	config, refused, err := r.validated(ctx, cp, endpoint, config, hashed)
+	if err != nil {
+		return nil, nil, err
+	}
 	unmet, note, err := r.release(ctx, cp)
 	if err != nil {
 		return nil, nil, err
@@ -386,7 +418,72 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		config:        config,
 		note:          note,
 		unknownReport: unknownReport,
+		refused:       refused,
 	}, nil, nil
+}
+
+// validated is config with the authentication configuration Workloads writes:
+// the spec's once kube-apiserver of every minor that reads it would load it,
+// and otherwise, with the reason, the one stored, or one without JWT
+// authenticators while this ControlPlane has none.
+func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
+	err := r.validate(cp, config[1].Data[authenticationFile], readers(cp), []string{issuer(cp, endpoint.APIServer)})
+	var invalid *authnconfig.Invalid
+	if !errors.As(err, &invalid) {
+		return config, "", err
+	}
+	refused := "the authentication configuration of spec.apiServer.authentication is not written: " + invalid.Error()
+	stored, err := r.stored(ctx, cp, hashed[1].DeepCopy())
+	if err != nil {
+		return nil, "", err
+	}
+	if stored {
+		return config[:1], refused, nil
+	}
+	return []*corev1.ConfigMap{config[0], hashed[1]}, refused, nil
+}
+
+// validate is authnconfig.Validate, kept per ControlPlane for the content,
+// minors and issuers it last validated.
+func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, minors, issuers []string) error {
+	sum := sha256.Sum256([]byte(data))
+	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(minors, ",") + "/" + strings.Join(issuers, ",")
+	name := client.ObjectKeyFromObject(cp)
+	r.validating.Lock()
+	kept, ok := r.validations[name]
+	r.validating.Unlock()
+	if ok && kept.key == key {
+		return kept.err
+	}
+	err := authnconfig.Validate([]byte(data), minors, issuers)
+	r.validating.Lock()
+	defer r.validating.Unlock()
+	if r.validations == nil {
+		r.validations = map[types.NamespacedName]validation{}
+	}
+	r.validations[name] = validation{key: key, err: err}
+	return err
+}
+
+// readers are the minors of the API servers that read the authentication
+// configuration: the one status.components.apiServer reports and the
+// target's.
+func readers(cp *lodiav1alpha1.ControlPlane) []string {
+	var reported []string
+	if t := cp.Status.Target; t != nil {
+		reported = append(reported, t.Version)
+	}
+	if c := cp.Status.Components; c != nil && c.APIServer != nil {
+		reported = append(reported, c.APIServer.Version)
+	}
+	var minors []string
+	for _, v := range reported {
+		if minor, ok := versions.Minor(v); ok && !slices.Contains(minors, minor) {
+			minors = append(minors, minor)
+		}
+	}
+	slices.Sort(minors)
+	return minors
 }
 
 // imagesOf renders the controller manager and the scheduler at the version the
