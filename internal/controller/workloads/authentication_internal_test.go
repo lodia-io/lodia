@@ -169,7 +169,7 @@ func equalAnonymous(a, b *apiserverv1.AnonymousAuthConfig) bool {
 }
 
 func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t *testing.T) {
-	const refused = "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.35 refuses it"
+	const refused = "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"'; the authentication configuration of spec.apiServer.authentication is not written: ' == user.username\""
 	ready := func(d *appsv1.Deployment) { d.Status.ReadyReplicas = 1 }
 	stalled := func(d *appsv1.Deployment) {
 		d.Status.Conditions = []appsv1.DeploymentCondition{{Type: appsv1.DeploymentProgressing, Status: corev1.ConditionFalse, Reason: timedOutReason}}
@@ -199,11 +199,20 @@ func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t 
 				}
 				deployments = append(deployments, d)
 			}
-			if got := authenticated(availability(deployments, "", false), refused); got.Status != c.status || got.Reason != c.reason {
+			count := availability(deployments, "", false)
+			got := authenticated(count, refused)
+			if got.Status != c.status || got.Reason != c.reason {
 				t.Errorf("APIServerReady is %s %s %q, want %s %s", got.Status, got.Reason, got.Message, c.status, c.reason)
 			}
-			if got := authenticated(availability(deployments, "", false), ""); got.Reason == lodiav1alpha1.ReasonAuthenticationInvalid {
-				t.Errorf("a valid configuration gives %s", got.Reason)
+			if got.Reason != lodiav1alpha1.ReasonAuthenticationInvalid && got.Message != count.Message+"; "+refused {
+				t.Errorf("APIServerReady %s says %q, want its count's message and the refusal", got.Reason, got.Message)
+			}
+			if carried := carried(got); carried != refused {
+				t.Errorf("APIServerReady %s %q carries %q, want the refusal", got.Reason, got.Message, carried)
+			}
+			valid := authenticated(count, "")
+			if valid.Reason == lodiav1alpha1.ReasonAuthenticationInvalid || valid.Message != count.Message || carried(valid) != "" {
+				t.Errorf("a valid configuration gives %s %q", valid.Reason, valid.Message)
 			}
 		})
 	}

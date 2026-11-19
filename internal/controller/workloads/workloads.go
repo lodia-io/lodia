@@ -306,7 +306,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		if in.unknownReport != "" {
 			count = func() (metav1.Condition, error) { return r.count(ctx, cp) }
 		}
-		kept, err := r.keep(ctx, cp, r.holding(cp), count, in.refused)
+		kept, err := r.keep(ctx, cp, r.holding(cp), count)
 		if err != nil {
 			return nil, err
 		}
@@ -320,12 +320,28 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 
 // authenticated is c, or AuthenticationInvalid with refused in its place unless
 // c is False: Unavailable, or ProgressDeadlineExceeded with a component
-// unavailable, says more.
+// unavailable, says more, and carries refused after its own message.
 func authenticated(c metav1.Condition, refused string) metav1.Condition {
-	if refused == "" || c.Status == metav1.ConditionFalse {
+	switch {
+	case refused == "":
+		return c
+	case c.Status == metav1.ConditionFalse:
+		c.Message += "; " + refused
 		return c
 	}
 	return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refused)
+}
+
+// carried is the refusal c reports: AuthenticationInvalid's message, or what
+// authenticated put after the message of a False count.
+func carried(c metav1.Condition) string {
+	if c.Reason == lodiav1alpha1.ReasonAuthenticationInvalid {
+		return c.Message
+	}
+	if i := strings.Index(c.Message, "; "+notWritten); i >= 0 {
+		return c.Message[i+len("; "):]
+	}
+	return ""
 }
 
 type inputs struct {
@@ -344,24 +360,15 @@ type inputs struct {
 // inputs waits, in this order, for the target, the two conditions, the
 // Datastore's endpoints and the hashes, and returns what the pods render from
 // or the condition that says what it waits for. A held pass whose target the
-// table does not hold reports what runs, as the waits do, and every one of
-// them counts no refused authentication configuration as available.
+// table does not hold reports what runs, as the waits do.
 func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus) (*inputs, *metav1.Condition, error) {
 	if granted(cp) == "" {
 		return nil, new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, "waiting for Lifecycle to set status.target.operatorRevision")), nil
 	}
-	config, hashed, err := configMaps(cp)
-	if err != nil {
-		return nil, nil, err
-	}
-	refused, err := r.refusal(cp, endpoint, config)
-	if err != nil {
-		return nil, nil, err
-	}
 	images, message, unknownReport := imagesOf(cp)
 	if message != "" {
 		if r.held(cp) {
-			waiting, err := r.wait(ctx, cp, r.holding(cp), refused)
+			waiting, err := r.wait(ctx, cp, r.holding(cp))
 			return nil, waiting, err
 		}
 		return nil, new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, message)), nil
@@ -378,13 +385,17 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	} {
 		if !statusapply.TrueAt(cp, input.condition) {
 			message := fmt.Sprintf("%s is not True for generation %d", input.condition, cp.Generation)
-			waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, input.reason, message), refused)
+			waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, input.reason, message))
 			return nil, waiting, err
 		}
 	}
 	if cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
-		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), refused)
+		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"))
 		return nil, waiting, err
+	}
+	config, hashed, err := configMaps(cp)
+	if err != nil {
+		return nil, nil, err
 	}
 	hashes, unhashed, err := r.hashes(ctx, cp, hashed)
 	if err != nil {
@@ -392,8 +403,12 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	}
 	if len(unhashed) > 0 {
 		message := "waiting for PKI to write the Secrets the control plane reads once, with their data hash: " + strings.Join(unhashed, ", ")
-		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message), refused)
+		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message))
 		return nil, waiting, err
+	}
+	refused, err := r.refusal(cp, endpoint, config)
+	if err != nil {
+		return nil, nil, err
 	}
 	config, removed, err := r.validated(ctx, cp, endpoint, refused, config, hashed)
 	if err != nil {
@@ -440,8 +455,10 @@ func (r *Reconciler) refusal(cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1al
 	if !errors.As(err, &invalid) {
 		return "", err
 	}
-	return "the authentication configuration of spec.apiServer.authentication is not written: " + invalid.Error(), nil
+	return notWritten + invalid.Error(), nil
 }
+
+const notWritten = "the authentication configuration of spec.apiServer.authentication is not written: "
 
 // validated is config with the authentication configuration Workloads writes:
 // the spec's unless refused, and otherwise the one stored while this
@@ -640,15 +657,15 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 // reports availability, AuthenticationInvalid included, it counts the
 // Deployments this ControlPlane controls at the generation the condition
 // names, and passes the count through authenticated with the refusal that
-// condition reports, or else with refused when it names cp's generation;
-// otherwise it keeps a condition of an older generation and returns waiting
-// for one of cp's.
-func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, refused string) (*metav1.Condition, error) {
-	return r.keep(ctx, cp, waiting, func() (metav1.Condition, error) { return r.count(ctx, cp) }, refused)
+// condition carries, which the pass that wrote it judged under the inputs it
+// rendered; otherwise it keeps a condition of an older generation and returns
+// waiting for one of cp's.
+func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition) (*metav1.Condition, error) {
+	return r.keep(ctx, cp, waiting, func() (metav1.Condition, error) { return r.count(ctx, cp) })
 }
 
 // keep is wait's decision, with count giving the availability it reports.
-func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, count func() (metav1.Condition, error), refused string) (*metav1.Condition, error) {
+func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, count func() (metav1.Condition, error)) (*metav1.Condition, error) {
 	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		return nil, err
 	}
@@ -661,12 +678,7 @@ func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, w
 		if err != nil {
 			return nil, err
 		}
-		switch {
-		case previous.Reason == lodiav1alpha1.ReasonAuthenticationInvalid:
-			counted = authenticated(counted, previous.Message)
-		case previous.ObservedGeneration == cp.Generation:
-			counted = authenticated(counted, refused)
-		}
+		counted = authenticated(counted, carried(*previous))
 		counted.ObservedGeneration = previous.ObservedGeneration
 		return &counted, nil
 	}
