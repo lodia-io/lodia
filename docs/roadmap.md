@@ -156,7 +156,7 @@ Gate (a feature of the last stage adds its check here with its design):
 - e2e: a `ControlPlane` restored from a `Backup` with its identity kept: its nodes stay `Ready` without joining again and every pod keeps its UID; a move to another management cluster loses no acknowledged write.
 - Measured: the operator with 1,000 `ControlPlane`s on envtest, its memory and how long a spec change takes to reconcile; the numbers set the chart's memory request and limit.
 
-Done: Health's bounded reads, with the tenant clients of [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md); the gates that say what they test.
+Done: Health's bounded reads, with the tenant clients of [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md); the gates that say what they test; structured authentication ([structured-authentication](decisions/structured-authentication.md)), its e2e gate above written and not yet seen in CI.
 
 ## Phase 4 · Scale and community
 

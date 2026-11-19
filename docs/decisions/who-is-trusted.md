@@ -35,6 +35,7 @@ The bounded reads of a tenant, Health's, Tenant's and PKI's, are built; the conf
   Health's, Tenant's and PKI's are, through one client ([controller-manager-hold](controller-manager-hold.md), [tenant-clients-speak-http1](tenant-clients-speak-http1.md), [one-client-for-a-tenant](one-client-for-a-tenant.md)).
 - The platform's RBAC on the management cluster is the boundary: Secrets in tenant namespaces are readable by Lodia and the platform's administrators only ([Identity and tenancy](../README.md#identity-and-tenancy)).
 - A compromised control plane pod reaches the management network, since its egress is not denied yet (`todo.md`).
+- The issuers of a tenant's JWT authenticators, which its administrator may name, are fetched through the tenant's nodes, never from the management network ([structured-authentication](structured-authentication.md)).
 - Item 10 of the [review checklist](../review-checklist.md) checks every change against it.
 
 ## Code
