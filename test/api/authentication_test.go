@@ -96,6 +96,15 @@ func TestJWTAuthenticators(t *testing.T) {
 		{"an issuer with a long s in its upper-case scheme", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["url"] = "HTTPſ://login.example.com/realms/team-a"
 		}, https},
+		{"a discovery URL with a user", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = "https://alice@10.96.0.50/.well-known/openid-configuration"
+		}, https},
+		{"a discovery URL with a query", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = "https://10.96.0.50/.well-known/openid-configuration?realm=a"
+		}, https},
+		{"a discovery URL with a fragment", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = "https://10.96.0.50/.well-known/openid-configuration#a"
+		}, https},
 		{"a discovery URL with a long s in its scheme", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["discoveryURL"] = "httpſ://10.96.0.50/.well-known/openid-configuration"
 		}, https},
@@ -277,6 +286,9 @@ func TestTheSchemaAcceptsWhatKubeAPIServerOfEveryMinorAccepts(t *testing.T) {
 		}},
 		{"an empty fragment", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["url"] = "https://login.example.com/realms/team-a#"
+		}},
+		{"an upper-case scheme in the discovery URL", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = "HTTPS://10.96.0.50/.well-known/openid-configuration"
 		}},
 		{"an @ in the discovery URL's path", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["discoveryURL"] = "https://10.96.0.50/realms/team-a@acme/.well-known/openid-configuration"
