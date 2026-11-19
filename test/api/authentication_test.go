@@ -90,6 +90,15 @@ func TestJWTAuthenticators(t *testing.T) {
 		{"an issuer with a user and a port", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["url"] = "HTTPS://alice:secret@login.example.com:8443/realms/team-a"
 		}, https},
+		{"an issuer with a long s in its scheme", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "httpſ://login.example.com/realms/team-a"
+		}, https},
+		{"an issuer with a long s in its upper-case scheme", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["url"] = "HTTPſ://login.example.com/realms/team-a"
+		}, https},
+		{"a discovery URL with a long s in its scheme", func(t *testing.T, o *unstructured.Unstructured) {
+			issuer(first(t, o))["discoveryURL"] = "httpſ://10.96.0.50/.well-known/openid-configuration"
+		}, https},
 		{"an https issuer without a host", func(t *testing.T, o *unstructured.Unstructured) {
 			issuer(first(t, o))["url"] = "https:login.example.com"
 		}, https},

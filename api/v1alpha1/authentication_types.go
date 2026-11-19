@@ -50,14 +50,14 @@ type Issuer struct {
 	// URL is the issuer, the iss claim of its tokens.
 	// +required
 	// +kubebuilder:validation:MaxLength=512
-	// +kubebuilder:validation:XValidation:rule="self.matches('^(?i:https)://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
+	// +kubebuilder:validation:XValidation:rule="self.matches('^[hH][tT][tT][pP][sS]://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
 	URL string `json:"url"`
 
 	// DiscoveryURL is where the discovery document is fetched from, when not
 	// under url.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
-	// +kubebuilder:validation:XValidation:rule="size(self) == 0 || self.matches('^(?i:https)://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
+	// +kubebuilder:validation:XValidation:rule="size(self) == 0 || self.matches('^[hH][tT][tT][pP][sS]://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
 	DiscoveryURL *string `json:"discoveryURL,omitempty"`
 
 	// CertificateAuthority is the PEM bundle the issuer's serving certificate

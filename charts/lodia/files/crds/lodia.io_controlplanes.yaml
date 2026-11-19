@@ -355,7 +355,7 @@ spec:
                                   x-kubernetes-validations:
                                   - message: must be an https URL without a user,
                                       a query or a fragment
-                                    rule: size(self) == 0 || self.matches('^(?i:https)://[^/?#@]*([/?#].*)?$')
+                                    rule: size(self) == 0 || self.matches('^[hH][tT][tT][pP][sS]://[^/?#@]*([/?#].*)?$')
                                       && !self.matches('[?][^#]') && !self.matches('#.')
                                 egressSelectorType:
                                   default: cluster
@@ -374,7 +374,7 @@ spec:
                                   x-kubernetes-validations:
                                   - message: must be an https URL without a user,
                                       a query or a fragment
-                                    rule: self.matches('^(?i:https)://[^/?#@]*([/?#].*)?$')
+                                    rule: self.matches('^[hH][tT][tT][pP][sS]://[^/?#@]*([/?#].*)?$')
                                       && !self.matches('[?][^#]') && !self.matches('#.')
                               required:
                               - audiences
