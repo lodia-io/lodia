@@ -10,6 +10,9 @@ import (
 	"testing"
 
 	authenticationcel "k8s.io/apiserver/pkg/authentication/cel"
+	"k8s.io/apiserver/pkg/features"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -60,23 +63,26 @@ func TestValidateIsKubeAPIServersAtEveryMinor(t *testing.T) {
 	for _, c := range []struct {
 		name, issuer, rule string
 		minors             []string
+		gates              map[string]bool
 		want               string
 	}{
-		{"the acceptance case", "", ok, all, ""},
-		{"includes for every minor", "", "!user.groups.includes('x')", all, "kube-apiserver 1.35 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"!user.groups.includes('x')\": compilation failed: ERROR: <input>:1:22: undeclared reference to 'includes'"},
-		{"includes for a 1.36 tenant moving to 1.37", "", "!user.groups.includes('x')", []string{"1.36", "1.37"}, "kube-apiserver 1.36 refuses it"},
-		{"includes for 1.37", "", "!user.groups.includes('x')", []string{"1.37"}, ""},
-		{"a rule that is not a condition", "", "user.username", all, "must evaluate to bool"},
-		{"the ServiceAccount issuer", "", ok, []string{"1.35"}, "jwt[0].issuer.url: Invalid value: \"https://login.example.com\": URL must not overlap with disallowed issuers: [https://login.example.com]"},
-		{"an unknown field", "\n    notAField: 1", ok, all, `it does not decode: strict decoding error: unknown field "jwt[0].issuer.notAField"`},
-		{"a CA that does not parse", "\n    certificateAuthority: not a certificate", ok, all, "jwt[0].issuer.certificateAuthority: Invalid value: \"<omitted>\": data does not contain any valid RSA or ECDSA certificates"},
+		{"the acceptance case", "", ok, all, nil, ""},
+		{"includes for every minor", "", "!user.groups.includes('x')", all, nil, "kube-apiserver 1.35 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"!user.groups.includes('x')\": compilation failed: ERROR: <input>:1:22: undeclared reference to 'includes'"},
+		{"includes for a 1.36 tenant moving to 1.37", "", "!user.groups.includes('x')", []string{"1.36", "1.37"}, nil, "kube-apiserver 1.36 refuses it"},
+		{"includes for 1.37", "", "!user.groups.includes('x')", []string{"1.37"}, nil, ""},
+		{"a rule that is not a condition", "", "user.username", all, nil, "must evaluate to bool"},
+		{"the ServiceAccount issuer", "", ok, []string{"1.35"}, nil, "jwt[0].issuer.url: Invalid value: \"https://login.example.com\": URL must not overlap with disallowed issuers: [https://login.example.com]"},
+		{"an unknown field", "\n    notAField: 1", ok, all, nil, `it does not decode: strict decoding error: unknown field "jwt[0].issuer.notAField"`},
+		{"the egress selector's gate off", "", ok, all, map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}, "kube-apiserver 1.35 refuses it: jwt[0].issuer.egressSelectorType: Invalid value: \"cluster\": egress selector is not supported when StructuredAuthenticationConfigurationEgressSelector feature gate is disabled"},
+		{"the egress selector's gate on", "", ok, all, map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": true, "ExternalServiceAccountTokenSigner": false}, ""},
+		{"a CA that does not parse", "\n    certificateAuthority: not a certificate", ok, all, nil, "jwt[0].issuer.certificateAuthority: Invalid value: \"<omitted>\": data does not contain any valid RSA or ECDSA certificates"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var issuers []string
 			if c.name == "the ServiceAccount issuer" {
 				issuers = []string{"https://login.example.com"}
 			}
-			err := Validate(fmt.Appendf(nil, file, c.issuer, c.rule), c.minors, issuers)
+			err := Validate(fmt.Appendf(nil, file, c.issuer, c.rule), c.minors, issuers, c.gates)
 			switch {
 			case c.want == "" && err != nil:
 				t.Fatalf("refused: %v", err)
@@ -88,6 +94,17 @@ func TestValidateIsKubeAPIServersAtEveryMinor(t *testing.T) {
 				t.Errorf("%v is not an *Invalid", err)
 			}
 		})
+	}
+}
+
+func TestTheAPIServersEgressGateRefusesAsUpstreamsValidationOfAProcessWithoutIt(t *testing.T) {
+	data := fmt.Appendf(nil, file, "", "!('oidc:suspended' in user.groups)")
+	gate := features.StructuredAuthenticationConfigurationEgressSelector
+	ours := Validate(data, versions.Minors(), nil, map[string]bool{string(gate): false})
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, gate, false)
+	upstream := Validate(data, versions.Minors(), nil, nil)
+	if ours == nil || upstream == nil || ours.Error() != upstream.Error() {
+		t.Errorf("with the gate off for the API server Validate says %v, and in a process without it %v", ours, upstream)
 	}
 }
 

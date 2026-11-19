@@ -7,12 +7,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -139,4 +142,109 @@ func TestATenantOfAnOlderMinorGetsNoExpressionOfANewerOne(t *testing.T) {
 	if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") || strings.Contains(authn, "includes") {
 		t.Errorf("a 1.35 tenant's API server gets\n%s", authn)
 	}
+}
+
+func withoutTheEgressGateRule(t *testing.T, crd *unstructured.Unstructured) {
+	t.Helper()
+	versions, _, err := unstructured.NestedSlice(crd.Object, "spec", "versions")
+	if err != nil || len(versions) != 1 {
+		t.Fatalf("the CRD has versions %v: %v", versions, err)
+	}
+	path := []string{"schema", "openAPIV3Schema", "properties", "spec", "properties", "apiServer", "properties", "featureGates", "x-kubernetes-validations"}
+	version := versions[0].(map[string]any)
+	rules, _, err := unstructured.NestedSlice(version, path...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := slices.DeleteFunc(rules, func(r any) bool {
+		return strings.Contains(r.(map[string]any)["rule"].(string), "StructuredAuthenticationConfigurationEgressSelector")
+	})
+	if len(kept) == len(rules) {
+		t.Fatal("the CRD has no rule on StructuredAuthenticationConfigurationEgressSelector")
+	}
+	if err := unstructured.SetNestedSlice(version, kept, path...); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedSlice(crd.Object, versions, "spec", "versions"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func updateCRD(ctx context.Context, crd *unstructured.Unstructured) error {
+	current := &unstructured.Unstructured{}
+	current.SetGroupVersionKind(crd.GroupVersionKind())
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(crd), current); err != nil {
+		return err
+	}
+	crd.SetResourceVersion(current.GetResourceVersion())
+	return k8s.Update(ctx, crd)
+}
+
+func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns, refused string) {
+	t.Helper()
+	if err := updateCRD(t.Context(), crd); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		cp := &lodiav1alpha1.ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns},
+			Spec: lodiav1alpha1.ControlPlaneSpec{
+				Version:   version,
+				Endpoint:  loadBalancer(),
+				Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+				APIServer: &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}},
+			},
+		}
+		got := ""
+		if err := k8s.Create(t.Context(), cp, client.DryRunAll); err != nil {
+			got = err.Error()
+		}
+		if (got == "") != (refused == "") || !strings.Contains(got, refused) {
+			return fmt.Errorf("a ControlPlane with the egress gate off gets %q, want %q", got, refused)
+		}
+		return nil
+	})
+}
+
+func TestAControlPlaneStoredWithTheEgressGateOffGetsNoJWTFile(t *testing.T) {
+	head := &unstructured.Unstructured{}
+	head.SetGroupVersionKind(schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"})
+	if err := k8s.Get(t.Context(), client.ObjectKey{Name: "controlplanes.lodia.io"}, head); err != nil {
+		t.Fatal(err)
+	}
+	const refused = "kube-apiserver refuses the egressSelectorType Lodia renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector"
+	relaxed := head.DeepCopy()
+	withoutTheEgressGateRule(t, relaxed)
+	ns := namespace(t)
+	t.Cleanup(func() {
+		if err := updateCRD(context.Background(), head.DeepCopy()); err != nil {
+			t.Error(err)
+		}
+	})
+	serveCRD(t, relaxed, ns, "")
+	cp := create(t, ns, loadBalancer(), func(s *lodiav1alpha1.ControlPlaneSpec) {
+		withJWT(oidc())(s)
+		s.APIServer.FeatureGates = map[string]bool{"StructuredAuthenticationConfigurationEgressSelector": false}
+	})
+	serveCRD(t, head.DeepCopy(), ns, refused)
+
+	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	inputsReady(t, cp)
+	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+		markAvailable(t, eventuallyDeployment(t, cp, component))
+	}
+	testenv.Eventually(t, func() error {
+		return expectAuthenticationInvalid(cp, "kube-apiserver 1.37 refuses it: jwt[0].issuer.egressSelectorType: Invalid value: \"cluster\": egress selector is not supported when StructuredAuthenticationConfigurationEgressSelector feature gate is disabled")
+	})
+	if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") || strings.Contains(authn, "login.example.com") {
+		t.Errorf("a ControlPlane whose API server runs without the egress selector gets\n%s", authn)
+	}
+
+	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.FeatureGates = nil })
+	testenv.Eventually(t, func() error {
+		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "url: https://login.example.com/realms/team-a") {
+			return errors.New("with the gate back the authentication configuration is\n" + authn)
+		}
+		return nil
+	})
 }

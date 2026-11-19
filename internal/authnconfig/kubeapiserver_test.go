@@ -175,7 +175,7 @@ func TestValidateAgreesWithTheKubeAPIServerOfEveryMinorOnTheCorpus(t *testing.T)
 		for i, c := range checks {
 			d := difference{minor, c.where, c.expression}
 			seen[d] = true
-			lodia := authnconfig.Validate(c.file, []string{minor}, nil)
+			lodia := authnconfig.Validate(c.file, []string{minor}, nil, nil)
 			upstream := k.Errors[i]
 			if upstream == "" {
 				accepted++

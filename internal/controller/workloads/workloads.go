@@ -444,11 +444,13 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	return []*corev1.ConfigMap{config[0], hashed[1]}, refused, nil
 }
 
-// validate is authnconfig.Validate, kept per ControlPlane for the content,
-// minors and issuers it last validated.
+// validate is authnconfig.Validate under the API server's feature gates, kept
+// per ControlPlane for the content, minors, issuers and gates it last
+// validated.
 func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, minors, issuers []string) error {
+	gates := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{}).FeatureGates
 	sum := sha256.Sum256([]byte(data))
-	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(minors, ",") + "/" + strings.Join(issuers, ",")
+	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(minors, ",") + "/" + strings.Join(issuers, ",") + "/" + fmt.Sprint(gates)
 	name := client.ObjectKeyFromObject(cp)
 	r.validating.Lock()
 	kept, ok := r.validations[name]
@@ -456,7 +458,7 @@ func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, minor
 	if ok && kept.key == key {
 		return kept.err
 	}
-	err := authnconfig.Validate([]byte(data), minors, issuers)
+	err := authnconfig.Validate([]byte(data), minors, issuers, gates)
 	r.validating.Lock()
 	defer r.validating.Unlock()
 	if r.validations == nil {
