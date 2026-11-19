@@ -217,9 +217,9 @@ func reportedAPIServer(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
 	return ""
 }
 
-func flagValue(command []string, name string) string {
+func serviceAccountIssuer(command []string) string {
 	for _, arg := range command {
-		if value, found := strings.CutPrefix(arg, "--"+name+"="); found {
+		if value, found := strings.CutPrefix(arg, "--service-account-issuer="); found {
 			return value
 		}
 	}
@@ -233,7 +233,7 @@ func expectAReplicaLoads(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	if !ok {
 		t.Fatalf("the API server's image %s has no version", container.Image)
 	}
-	issuer := flagValue(container.Command, "service-account-issuer")
+	issuer := serviceAccountIssuer(container.Command)
 	file := authenticationConfig(t, cp).Data["authentication-config.yaml"]
 	if err := authnconfig.Validate([]byte(file), []string{issuer}); err != nil {
 		t.Errorf("with --service-account-issuer=%s Validate refuses the file Workloads keeps: %v\n%s", issuer, err, file)
@@ -323,7 +323,7 @@ func TestAServiceAccountIssuerMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *
 			s.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: shared}
 		})
 	}, func() error {
-		if issuer := flagValue(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "service-account-issuer"); issuer != shared {
+		if issuer := serviceAccountIssuer(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command); issuer != shared {
 			return errors.New("the API server's Deployment runs --service-account-issuer=" + issuer)
 		}
 		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
@@ -356,7 +356,7 @@ func TestALoadBalancerAddressMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *t
 	hashed := hashes(t, cp)
 
 	seen := conditionsWhile(t, cp, func() { setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved}) }, func() error {
-		if issuer := flagValue(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "service-account-issuer"); issuer != "https://"+moved {
+		if issuer := serviceAccountIssuer(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command); issuer != "https://"+moved {
 			return errors.New("the API server's Deployment runs --service-account-issuer=" + issuer)
 		}
 		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
@@ -704,7 +704,7 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 			}
 
 			testenv.Eventually(t, func() error {
-				if issuer := flagValue(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "service-account-issuer"); issuer != "https://"+moved {
+				if issuer := serviceAccountIssuer(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command); issuer != "https://"+moved {
 					return errors.New("the API server's Deployment runs --service-account-issuer=" + issuer)
 				}
 				if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
