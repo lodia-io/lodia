@@ -59,9 +59,10 @@ func (i *Invalid) Error() string {
 // minors with the CEL libraries of that minor and the operator's cel-go, which
 // emulates the parsing and the name resolution of the cel-go of 1.35 and 1.36;
 // no JWT authenticator may name one of issuers, the ServiceAccount issuers, and
-// gates are the API server's --feature-gates. On testdata/corpus.txt it agrees
-// with each minor's own validation but for the refusals kubeapiserver_test.go
-// lists; a difference outside the corpus can remain.
+// gates are the API server's --feature-gates. On the corpus of
+// kubeapiserver_test.go, expressions and whole files, it agrees with each
+// minor's own validation but for the refusals that test lists; a difference
+// outside the corpus can remain.
 func Validate(data []byte, minors, issuers []string, gates map[string]bool) error {
 	decoded, err := runtime.Decode(codecs.UniversalDecoder(), data)
 	if err != nil {

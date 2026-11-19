@@ -22,11 +22,13 @@ import (
 // compiler compiles claim and user expressions in the NewExpressions
 // environment of one minor, since upstream's compiler offers only every
 // library of its own release, with the operator's cel-go. Before escapesFrom
-// it also refuses what cel-go v0.26.0 reads otherwise: a backtick-escaped
-// identifier, which its parser refuses (google/cel-go#1295), and a
-// dot-prefixed identifier that names a comprehension variable around it, which
-// its checker resolves to that variable and later versions to a global
-// (google/cel-go#1256).
+// it emulates cel-go v0.26.0 on it, refusing what v0.26.0 reads otherwise: a
+// backtick-escaped identifier, which its parser refuses (google/cel-go#1295),
+// and a dot-prefixed identifier that names a comprehension variable around it,
+// which its checker resolves to that variable and later versions to a global
+// (google/cel-go#1256). It agrees with each minor's kube-apiserver on the
+// corpus of kubeapiserver_test.go but for the refusals that test lists; a
+// difference outside the corpus can remain.
 // @todo: mirrors k8s.io/apiserver's unexported compiler, mustBuildEnvs and buildUserType (pkg/authentication/cel/compile.go at v0.37.1), and the parser and the name resolution of cel-go v0.26.0, which 1.35 and 1.36 link; drop it for upstream's validation of a given version and gates once k8s.io/apiserver has one (todo.md).
 type compiler struct {
 	claims, user *cel.Env
