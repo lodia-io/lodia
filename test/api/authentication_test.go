@@ -6,6 +6,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -248,6 +250,182 @@ func TestJWTAuthenticators(t *testing.T) {
 	}
 }
 
+func TestEveryBoundOfAJWTAuthenticatorHoldsAtItsLimit(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const at = "spec.apiServer.authentication.jwt[0]."
+	text := func(n int) string { return strings.Repeat("a", n) }
+	list := func(n int, item func(int) any) []any {
+		out := []any{}
+		for i := range n {
+			out = append(out, item(i))
+		}
+		return out
+	}
+	audiences := func(n int) []any { return list(n, func(i int) any { return fmt.Sprintf("aud-%d", i) }) }
+	userRules := func(n int) []any {
+		return list(n, func(i int) any { return map[string]any{"expression": fmt.Sprintf("user.username != '%d'", i)} })
+	}
+	mapping := func(name string, value map[string]any) func(map[string]any) {
+		return func(o map[string]any) { under(o, "claimMappings")[name] = value }
+	}
+	tooLong := func(field string, limit int) string {
+		return fmt.Sprintf("%s%s: Too long: may not be more than %d bytes", at, field, limit)
+	}
+	empty := func(field string) string { return at + field + " in body should be at least 1 chars long" }
+	for _, c := range []struct {
+		name        string
+		limit, past func(map[string]any)
+		want        string
+	}{
+		{"username.claim at most 253",
+			mapping("username", map[string]any{"claim": text(253), "prefix": ""}), mapping("username", map[string]any{"claim": text(254), "prefix": ""}),
+			tooLong("claimMappings.username.claim", 253)},
+		{"username.claim at least 1",
+			mapping("username", map[string]any{"claim": text(1), "prefix": ""}), mapping("username", map[string]any{"claim": "", "prefix": ""}),
+			empty("claimMappings.username.claim")},
+		{"username.expression at most 2048",
+			mapping("username", map[string]any{"expression": text(2048)}), mapping("username", map[string]any{"expression": text(2049)}),
+			tooLong("claimMappings.username.expression", 2048)},
+		{"username.expression at least 1",
+			mapping("username", map[string]any{"expression": text(1)}), mapping("username", map[string]any{"expression": ""}),
+			empty("claimMappings.username.expression")},
+		{"username.prefix at most 256",
+			mapping("username", map[string]any{"claim": "sub", "prefix": text(256)}), mapping("username", map[string]any{"claim": "sub", "prefix": text(257)}),
+			tooLong("claimMappings.username.prefix", 256)},
+		{"groups.claim at most 253",
+			mapping("groups", map[string]any{"claim": text(253), "prefix": ""}), mapping("groups", map[string]any{"claim": text(254), "prefix": ""}),
+			tooLong("claimMappings.groups.claim", 253)},
+		{"groups.claim at least 1",
+			mapping("groups", map[string]any{"claim": text(1), "prefix": ""}), mapping("groups", map[string]any{"claim": "", "prefix": ""}),
+			empty("claimMappings.groups.claim")},
+		{"groups.expression at most 2048",
+			mapping("groups", map[string]any{"expression": text(2048)}), mapping("groups", map[string]any{"expression": text(2049)}),
+			tooLong("claimMappings.groups.expression", 2048)},
+		{"groups.expression at least 1",
+			mapping("groups", map[string]any{"expression": text(1)}), mapping("groups", map[string]any{"expression": ""}),
+			empty("claimMappings.groups.expression")},
+		{"groups.prefix at most 256",
+			mapping("groups", map[string]any{"claim": "roles", "prefix": text(256)}), mapping("groups", map[string]any{"claim": "roles", "prefix": text(257)}),
+			tooLong("claimMappings.groups.prefix", 256)},
+		{"uid.claim at most 253",
+			mapping("uid", map[string]any{"claim": text(253)}), mapping("uid", map[string]any{"claim": text(254)}),
+			tooLong("claimMappings.uid.claim", 253)},
+		{"uid.claim at least 1",
+			mapping("uid", map[string]any{"claim": text(1)}), mapping("uid", map[string]any{"claim": ""}),
+			empty("claimMappings.uid.claim")},
+		{"uid.expression at most 2048",
+			mapping("uid", map[string]any{"expression": text(2048)}), mapping("uid", map[string]any{"expression": text(2049)}),
+			tooLong("claimMappings.uid.expression", 2048)},
+		{"uid.expression at least 1",
+			mapping("uid", map[string]any{"expression": text(1)}), mapping("uid", map[string]any{"expression": ""}),
+			empty("claimMappings.uid.expression")},
+		{"extra[].valueExpression at most 2048",
+			func(o map[string]any) {
+				under(o, "claimMappings")["extra"] = []any{map[string]any{"key": "example.com/tenant", "valueExpression": text(2048)}}
+			},
+			func(o map[string]any) {
+				under(o, "claimMappings")["extra"] = []any{map[string]any{"key": "example.com/tenant", "valueExpression": text(2049)}}
+			},
+			tooLong("claimMappings.extra[0].valueExpression", 2048)},
+		{"extra[].valueExpression at least 1",
+			func(o map[string]any) {
+				under(o, "claimMappings")["extra"] = []any{map[string]any{"key": "example.com/tenant", "valueExpression": text(1)}}
+			},
+			func(o map[string]any) {
+				under(o, "claimMappings")["extra"] = []any{map[string]any{"key": "example.com/tenant", "valueExpression": ""}}
+			},
+			empty("claimMappings.extra[0].valueExpression")},
+		{"claimValidationRules[].claim at least 1",
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"claim": text(1)}} },
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"claim": ""}} },
+			empty("claimValidationRules[0].claim")},
+		{"claimValidationRules[].expression at least 1",
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"expression": text(1)}} },
+			func(o map[string]any) { o["claimValidationRules"] = []any{map[string]any{"expression": ""}} },
+			empty("claimValidationRules[0].expression")},
+		{"claimValidationRules[].message at most 256",
+			func(o map[string]any) {
+				o["claimValidationRules"] = []any{map[string]any{"expression": "true", "message": text(256)}}
+			},
+			func(o map[string]any) {
+				o["claimValidationRules"] = []any{map[string]any{"expression": "true", "message": text(257)}}
+			},
+			tooLong("claimValidationRules[0].message", 256)},
+		{"claimValidationRules[].requiredValue at most 1024",
+			func(o map[string]any) {
+				o["claimValidationRules"] = []any{map[string]any{"claim": "hd", "requiredValue": text(1024)}}
+			},
+			func(o map[string]any) {
+				o["claimValidationRules"] = []any{map[string]any{"claim": "hd", "requiredValue": text(1025)}}
+			},
+			tooLong("claimValidationRules[0].requiredValue", 1024)},
+		{"userValidationRules[].expression at most 2048",
+			func(o map[string]any) { o["userValidationRules"] = []any{map[string]any{"expression": text(2048)}} },
+			func(o map[string]any) { o["userValidationRules"] = []any{map[string]any{"expression": text(2049)}} },
+			tooLong("userValidationRules[0].expression", 2048)},
+		{"userValidationRules[].expression at least 1",
+			func(o map[string]any) { o["userValidationRules"] = []any{map[string]any{"expression": text(1)}} },
+			func(o map[string]any) { o["userValidationRules"] = []any{map[string]any{"expression": ""}} },
+			empty("userValidationRules[0].expression")},
+		{"userValidationRules[].message at most 256",
+			func(o map[string]any) {
+				o["userValidationRules"] = []any{map[string]any{"expression": "true", "message": text(256)}}
+			},
+			func(o map[string]any) {
+				o["userValidationRules"] = []any{map[string]any{"expression": "true", "message": text(257)}}
+			},
+			tooLong("userValidationRules[0].message", 256)},
+		{"userValidationRules at most 8",
+			func(o map[string]any) { o["userValidationRules"] = userRules(8) },
+			func(o map[string]any) { o["userValidationRules"] = userRules(9) },
+			at + "userValidationRules: Too many: 9: must have at most 8 items"},
+		{"issuer.audiences[] at most 512",
+			func(o map[string]any) { under(o, "issuer")["audiences"] = []any{text(512)} },
+			func(o map[string]any) { under(o, "issuer")["audiences"] = []any{text(513)} },
+			tooLong("issuer.audiences[0]", 512)},
+		{"issuer.audiences at most 8",
+			func(o map[string]any) {
+				under(o, "issuer")["audiences"] = audiences(8)
+				under(o, "issuer")["audienceMatchPolicy"] = "MatchAny"
+			},
+			func(o map[string]any) {
+				under(o, "issuer")["audiences"] = audiences(9)
+				under(o, "issuer")["audienceMatchPolicy"] = "MatchAny"
+			},
+			at + "issuer.audiences: Too many: 9: must have at most 8 items"},
+		{"issuer.audiences at least 1",
+			func(o map[string]any) {
+				under(o, "issuer")["audiences"] = audiences(1)
+				under(o, "issuer")["audienceMatchPolicy"] = "MatchAny"
+			},
+			func(o map[string]any) {
+				under(o, "issuer")["audiences"] = audiences(0)
+				under(o, "issuer")["audienceMatchPolicy"] = "MatchAny"
+			},
+			at + "issuer.audiences in body should have at least 1 items"},
+		{"issuer.audienceMatchPolicy is MatchAny or empty",
+			func(o map[string]any) { under(o, "issuer")["audienceMatchPolicy"] = "MatchAny" },
+			func(o map[string]any) { under(o, "issuer")["audienceMatchPolicy"] = "MatchAll" },
+			at + `issuer.audienceMatchPolicy: Unsupported value: "MatchAll"`},
+		{"issuer.certificateAuthority at most 16384",
+			func(o map[string]any) { under(o, "issuer")["certificateAuthority"] = text(16384) },
+			func(o map[string]any) { under(o, "issuer")["certificateAuthority"] = text(16385) },
+			tooLong("issuer.certificateAuthority", 16384)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, step := range []struct {
+				set  func(map[string]any)
+				want string
+			}{{c.limit, ""}, {c.past, c.want}} {
+				obj := example(t, "controlplane-oidc.yaml", "bounds")
+				step.set(first(t, obj))
+				expect(t, k8s.Create(context.Background(), obj, client.DryRunAll, client.FieldValidation("Strict")), step.want)
+			}
+		})
+	}
+}
+
 func TestTheSchemaDefaultsTheIssuersEgressToCluster(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
@@ -317,6 +495,9 @@ func TestTheSchemaAcceptsWhatKubeAPIServerAccepts(t *testing.T) {
 		}},
 		{"the ServiceAccount issuer with a slash more than an issuer", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, issuer(first(t, o))["url"].(string)+"/", "spec", "serviceAccount", "issuer")
+		}},
+		{"an issuer under the ServiceAccount issuer's path", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "https://login.example.com/realms", "spec", "serviceAccount", "issuer")
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
