@@ -31,6 +31,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/controller/tenant"
 )
 
 const (
@@ -43,6 +44,10 @@ const (
 // hangFor is how long a hanging tenant holds a connection: past any Timeout
 // of the operator's.
 const hangFor = 15 * time.Second
+
+// slowApply is how long a slow tenant takes to answer each of Tenant's
+// applies.
+const slowApply = 150 * time.Millisecond
 
 type tenantServer struct {
 	admin     client.Client
@@ -71,6 +76,8 @@ type stubTenant struct {
 	namespace string
 	hanging   atomic.Bool
 	bounded   atomic.Bool
+	refusing  atomic.Bool
+	slow      atomic.Bool
 
 	mu      sync.Mutex
 	objects map[string]stored
@@ -459,6 +466,15 @@ func (s *tenantServer) serveResource(w http.ResponseWriter, r *http.Request, t *
 			s.unexpected.Add(1)
 			writeStatus(w, http.StatusUnsupportedMediaType, metav1.StatusReasonUnsupportedMediaType, "only an apply is served")
 			return
+		}
+		if r.URL.Query().Get("fieldManager") == tenant.FieldManager {
+			if t.slow.Load() {
+				time.Sleep(slowApply)
+			}
+			if t.refusing.Load() {
+				writeStatus(w, http.StatusUnprocessableEntity, metav1.StatusReasonInvalid, "refused by the test")
+				return
+			}
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
