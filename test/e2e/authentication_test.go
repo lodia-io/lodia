@@ -272,15 +272,11 @@ func loadedHash(ctx context.Context, t *testing.T, cfg *envconf.Config, access *
 	if err != nil {
 		t.Fatal(err)
 	}
-	for line := range strings.Lines(string(body)) {
-		if strings.HasPrefix(line, "apiserver_authentication_config_controller_last_config_info{") {
-			_, hash, _ := strings.Cut(line, `hash="`)
-			hash, _, _ = strings.Cut(hash, `"`)
-			return hash
-		}
+	hash, err := loadedConfigHash(string(body))
+	if err != nil {
+		t.Fatalf("pod %s: %v", pod.Name, err)
 	}
-	t.Fatalf("pod %s serves no apiserver_authentication_config_controller_last_config_info", pod.Name)
-	return ""
+	return hash
 }
 
 func TestStructuredAuthenticationOnKind(t *testing.T) {
