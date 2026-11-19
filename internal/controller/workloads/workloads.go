@@ -307,7 +307,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		if in.unknownReport != "" {
 			count = func() (metav1.Condition, error) { return r.count(ctx, cp) }
 		}
-		kept, err := r.keep(ctx, cp, r.holding(cp), count)
+		kept, err := r.keep(ctx, cp, r.holding(cp), in.served, count)
 		if err != nil {
 			return nil, err
 		}
@@ -316,7 +316,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if in.unknownReport != "" {
 		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, in.unknownReport)), nil
 	}
-	return report(authenticated(availability(deployments, in.note, controllerManagerHeld(cp)), in.refused)), nil
+	return report(authenticated(availability(deployments, in.note, controllerManagerHeld(cp)), in.refused+in.served)), nil
 }
 
 // authenticated is c, or AuthenticationInvalid with refused in its place unless
@@ -345,6 +345,14 @@ func carried(c metav1.Condition) string {
 	return ""
 }
 
+// serving is refusal ending with served in place of what it says is served.
+func serving(refusal, served string) string {
+	if before, found := strings.CutSuffix(refusal, servesLast); found {
+		return before + served
+	}
+	return strings.TrimSuffix(refusal, servesNone) + served
+}
+
 type inputs struct {
 	rendering rendering
 	config    []*corev1.ConfigMap
@@ -353,9 +361,11 @@ type inputs struct {
 	// unknownReport says that only the API server's Deployment is written.
 	unknownReport string
 	// refused says why the spec's authentication configuration is not
-	// written and what the API server serves instead, empty when it is
-	// written.
+	// written, empty when it is written.
 	refused string
+	// served ends refused with what the API server serves, empty when the
+	// pass cannot tell.
+	served string
 }
 
 // inputs waits, in this order, for the target, the two conditions, the
@@ -442,7 +452,8 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		config:        config,
 		note:          note,
 		unknownReport: unknownReport,
-		refused:       refused + served,
+		refused:       refused,
+		served:        served,
 	}, nil, nil
 }
 
@@ -470,12 +481,17 @@ const (
 // ServiceAccount issuer and the egress selector configuration the pass
 // renders, or else one without JWT authenticators. The second result ends a
 // refusal with what the API server serves: the stored file when it is kept and
-// lists JWT authenticators, and otherwise none.
+// lists JWT authenticators, and otherwise none. A held pass writes over no
+// stored file, so it says nothing of one it would replace.
 func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, refused string, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
 	if refused == "" {
 		return config, "", nil
 	}
 	written := []*corev1.ConfigMap{config[0], hashed[1]}
+	replaced := servesNone
+	if r.held(cp) {
+		replaced = ""
+	}
 	stored := &corev1.ConfigMap{}
 	err := r.Reader.Get(ctx, client.ObjectKeyFromObject(hashed[1]), stored)
 	switch {
@@ -484,11 +500,11 @@ func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	case err != nil:
 		return nil, "", fmt.Errorf("read ConfigMap %s: %w", hashed[1].Name, err)
 	case !metav1.IsControlledBy(stored, cp):
-		return written, servesNone, nil
+		return written, replaced, nil
 	}
 	err = r.validate(cp, stored.Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)}, config[0].Data[egressFile])
 	if _, invalid := errors.AsType[*authnconfig.Invalid](err); invalid {
-		return written, servesNone, nil
+		return written, replaced, nil
 	}
 	if err != nil {
 		return nil, "", err
@@ -665,11 +681,12 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 // rendered; otherwise it keeps a condition of an older generation and returns
 // waiting for one of cp's.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition) (*metav1.Condition, error) {
-	return r.keep(ctx, cp, waiting, func() (metav1.Condition, error) { return r.count(ctx, cp) })
+	return r.keep(ctx, cp, waiting, "", func() (metav1.Condition, error) { return r.count(ctx, cp) })
 }
 
-// keep is wait's decision, with count giving the availability it reports.
-func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, count func() (metav1.Condition, error)) (*metav1.Condition, error) {
+// keep is wait's decision, with count giving the availability it reports, and
+// the refusal it carries ending with served when served is set.
+func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, served string, count func() (metav1.Condition, error)) (*metav1.Condition, error) {
 	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		return nil, err
 	}
@@ -682,7 +699,11 @@ func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, w
 		if err != nil {
 			return nil, err
 		}
-		counted = authenticated(counted, carried(*previous))
+		refusal := carried(*previous)
+		if refusal != "" && served != "" {
+			refusal = serving(refusal, served)
+		}
+		counted = authenticated(counted, refusal)
 		counted.ObservedGeneration = previous.ObservedGeneration
 		return &counted, nil
 	}

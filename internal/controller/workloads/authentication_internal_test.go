@@ -200,16 +200,23 @@ func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t 
 				deployments = append(deployments, d)
 			}
 			count := availability(deployments, "", false)
-			for _, served := range []string{servesLast, servesNone} {
-				got := authenticated(count, refused+served)
-				if got.Status != c.status || got.Reason != c.reason {
-					t.Errorf("APIServerReady is %s %s %q, want %s %s", got.Status, got.Reason, got.Message, c.status, c.reason)
-				}
-				if got.Reason != lodiav1alpha1.ReasonAuthenticationInvalid && got.Message != count.Message+"; "+refused+served {
-					t.Errorf("APIServerReady %s says %q, want its count's message and the refusal", got.Reason, got.Message)
-				}
-				if carried := carried(got); carried != refused+served {
-					t.Errorf("APIServerReady %s %q carries %q, want the refusal", got.Reason, got.Message, carried)
+			for _, refusal := range []string{refused, refused + servesNone, refused + servesLast} {
+				for _, served := range []string{servesLast, servesNone} {
+					got := authenticated(count, refusal+served)
+					if got.Status != c.status || got.Reason != c.reason {
+						t.Errorf("APIServerReady is %s %s %q, want %s %s", got.Status, got.Reason, got.Message, c.status, c.reason)
+					}
+					if got.Reason != lodiav1alpha1.ReasonAuthenticationInvalid && got.Message != count.Message+"; "+refusal+served {
+						t.Errorf("APIServerReady %s says %q, want its count's message and the refusal", got.Reason, got.Message)
+					}
+					if carried := carried(got); carried != refusal+served {
+						t.Errorf("APIServerReady %s %q carries %q, want the refusal", got.Reason, got.Message, carried)
+					}
+					for _, now := range []string{servesLast, servesNone} {
+						if again := authenticated(count, serving(carried(got), now)); carried(again) != refusal+now {
+							t.Errorf("APIServerReady %s %q carries %q, want the refusal ending with %q", again.Reason, again.Message, carried(again), now)
+						}
+					}
 				}
 			}
 			valid := authenticated(count, "")
@@ -273,39 +280,45 @@ func TestARefusedPassKeepsOnlyThisControlPlanesFileThatLoadsAndSaysWhatTheAPISer
 	own := hashed[1].OwnerReferences[0]
 	const withoutJWT = "apiVersion: apiserver.config.k8s.io/v1\nkind: AuthenticationConfiguration\n"
 	for _, c := range []struct {
-		name    string
-		stored  []client.Object
-		kept    bool
-		message string
+		name         string
+		stored       []client.Object
+		kept         bool
+		served, held string
 	}{
-		{"none stored", nil, false, refused + servesNone},
-		{"a predecessor's orphan", []client.Object{stored(valid[1].Data[authenticationFile])}, false, refused + servesNone},
-		{"a predecessor's orphan without JWT authenticators", []client.Object{stored(withoutJWT)}, false, refused + servesNone},
-		{"this ControlPlane's, refused", []client.Object{stored(config[1].Data[authenticationFile], own)}, false, refused + servesNone},
-		{"this ControlPlane's, refused, without JWT authenticators", []client.Object{stored(withoutJWT+"unknown: 1\n", own)}, false, refused + servesNone},
-		{"this ControlPlane's, undecodable", []client.Object{stored("jwt: [", own)}, false, refused + servesNone},
-		{"this ControlPlane's, loaded", []client.Object{stored(valid[1].Data[authenticationFile], own)}, true, refused + servesLast},
-		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, refused + servesNone},
+		{"none stored", nil, false, servesNone, servesNone},
+		{"a predecessor's orphan", []client.Object{stored(valid[1].Data[authenticationFile])}, false, servesNone, ""},
+		{"a predecessor's orphan without JWT authenticators", []client.Object{stored(withoutJWT)}, false, servesNone, ""},
+		{"this ControlPlane's, refused", []client.Object{stored(config[1].Data[authenticationFile], own)}, false, servesNone, ""},
+		{"this ControlPlane's, refused, without JWT authenticators", []client.Object{stored(withoutJWT+"unknown: 1\n", own)}, false, servesNone, ""},
+		{"this ControlPlane's, undecodable", []client.Object{stored("jwt: [", own)}, false, servesNone, ""},
+		{"this ControlPlane's, loaded", []client.Object{stored(valid[1].Data[authenticationFile], own)}, true, servesLast, servesLast},
+		{"this ControlPlane's without JWT authenticators", []client.Object{stored(hashed[1].Data[authenticationFile], own)}, true, servesNone, servesNone},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			fake := fake.NewClientBuilder().WithScheme(scheme).WithObjects(c.stored...).Build()
-			r := &Reconciler{Client: fake, Reader: fake}
-			refusal, err := r.refusal(cp, endpoint, config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			written, served, err := r.validated(t.Context(), cp, endpoint, refusal, config, hashed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if message := refusal + served; message != c.message {
-				t.Errorf("the message is\n%s\nwant\n%s", message, c.message)
-			}
-			switch {
-			case c.kept && len(written) != 1:
-				t.Errorf("Workloads writes %d ConfigMaps, want the egress selector's alone", len(written))
-			case !c.kept && (len(written) != 2 || written[1].Data[authenticationFile] != mainsAuthentication):
-				t.Errorf("Workloads writes %v, want the authentication configuration without JWT authenticators", written)
+			for _, revision := range []string{"", "held"} {
+				fake := fake.NewClientBuilder().WithScheme(scheme).WithObjects(c.stored...).Build()
+				r := &Reconciler{Client: fake, Reader: fake, Revision: revision}
+				refusal, err := r.refusal(cp, endpoint, config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				written, served, err := r.validated(t.Context(), cp, endpoint, refusal, config, hashed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := c.served
+				if r.held(cp) {
+					want = c.held
+				}
+				if refusal != refused || served != want {
+					t.Errorf("a pass held %v says\n%s%s\nwant\n%s%s", r.held(cp), refusal, served, refused, want)
+				}
+				switch {
+				case c.kept && len(written) != 1:
+					t.Errorf("Workloads writes %d ConfigMaps, want the egress selector's alone", len(written))
+				case !c.kept && (len(written) != 2 || written[1].Data[authenticationFile] != mainsAuthentication):
+					t.Errorf("Workloads writes %v, want the authentication configuration without JWT authenticators", written)
+				}
 			}
 		})
 	}

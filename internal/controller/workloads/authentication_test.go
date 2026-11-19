@@ -17,14 +17,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/authnconfig"
 	"go.lodia.io/lodia/internal/controller/lifecycle"
+	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/testenv"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -743,6 +746,69 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 				}
 				return expectAuthenticationInvalid(cp, "URL must not overlap with disallowed issuers: [https://"+moved+"]")
 			})
+			expectAReplicaLoads(t, cp)
+		})
+	}
+}
+
+func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing.T) {
+	const moved = "203.0.113.20"
+	for name, lost := range map[string]bool{
+		"a pass that replaced the file, its status write lost": true,
+		"the issuer moved under the hold":                      false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			jwt := oidc()
+			jwt[0].Issuer.URL = "https://" + moved
+			cp := running(t, withJWT(jwt))
+			refused := oidc("user.nope == 'x'")
+			refused[0].Issuer.URL = "https://" + moved
+			update(t, cp, withJWT(refused))
+			g := get(t, cp).Generation
+			testenv.Eventually(t, func() error {
+				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+			})
+			stored := authenticationConfig(t, cp)
+
+			setTargetAt(t, cp, version, next)
+			reconcileNow(t, cp)
+			setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
+			testenv.Eventually(t, func() error {
+				if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != moved {
+					return fmt.Errorf("status.endpoint is %+v", e)
+				}
+				return nil
+			})
+			served := servesLast
+			if lost {
+				stopped := interceptor.NewClient(k8s, interceptor.Funcs{
+					SubResourceApply: func(context.Context, client.Client, string, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
+						return errors.New("the operator stopped before its status apply")
+					},
+				})
+				granted := &workloads.Reconciler{Client: stopped, Reader: k8s, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: next}
+				if _, err := granted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+					t.Fatal("the granted revision's pass wrote its status")
+				}
+				if issuer := serviceAccountIssuer(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command); issuer != "https://"+moved {
+					t.Fatal("the API server's Deployment runs --service-account-issuer=" + issuer)
+				}
+				if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
+					t.Fatal("the authentication configuration is\n" + authn)
+				}
+				served = servesNone
+			}
+
+			reconcileNow(t, cp)
+			if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+served); err != nil {
+				t.Error(err)
+			}
+			if lost {
+				return
+			}
+			if after := authenticationConfig(t, cp); after.ResourceVersion != stored.ResourceVersion {
+				t.Errorf("the ConfigMap was written:\n%s", after.Data["authentication-config.yaml"])
+			}
 			expectAReplicaLoads(t, cp)
 		})
 	}
