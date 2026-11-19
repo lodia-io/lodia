@@ -10,6 +10,7 @@ require (
 	github.com/gardener/etcd-druid/api v0.39.0
 	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-logr/logr v1.4.4
+	github.com/google/cel-go v0.29.2
 	github.com/prometheus/client_golang v1.24.0
 	github.com/prometheus/common v0.70.0
 	github.com/robfig/cron/v3 v3.0.1
@@ -79,7 +80,6 @@ require (
 	github.com/gobuffalo/flect v1.0.3 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/cel-go v0.29.2 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
