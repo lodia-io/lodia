@@ -288,6 +288,11 @@ type APIServer struct {
 	// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()",message="must be a unicast IP address in canonical form, neither loopback nor link-local"
 	AdvertiseAddress string `json:"advertiseAddress,omitempty"`
 
+	// Authentication configures structured authentication; the anonymous
+	// section is Lodia's.
+	// +optional
+	Authentication *Authentication `json:"authentication,omitempty"`
+
 	// Encryption configures encryption of Secrets at rest.
 	// +optional
 	Encryption *Encryption `json:"encryption,omitempty"`
@@ -314,6 +319,7 @@ type APIServer struct {
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="!('ExternalServiceAccountTokenSigner' in self) || self['ExternalServiceAccountTokenSigner']",message="kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
+	// +kubebuilder:validation:XValidation:rule="!('StructuredAuthenticationConfigurationEgressSelector' in self) || self['StructuredAuthenticationConfigurationEgressSelector']",message="kube-apiserver refuses the egressSelectorType Lodia renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// Resources override the operator's defaults.

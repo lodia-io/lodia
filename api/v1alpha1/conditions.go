@@ -97,6 +97,7 @@ const (
 	ReasonUnavailable                     = "Unavailable"
 	ReasonProgressDeadlineExceeded        = "ProgressDeadlineExceeded"
 	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
+	ReasonAuthenticationInvalid           = "AuthenticationInvalid"
 )
 
 // RoutesReady: Accepted, True, when every route of the ControlPlane is
@@ -223,6 +224,7 @@ var WarningReasons = map[string]WarningGroup{
 	ReasonRouteNotAccepted:                WarningRefusal,
 	ReasonHostnameConflict:                WarningRefusal,
 	ReasonTooManyNodes:                    WarningRefusal,
+	ReasonAuthenticationInvalid:           WarningRefusal,
 
 	ReasonFailed:                   WarningFailure,
 	ReasonMaintenanceFailed:        WarningFailure,

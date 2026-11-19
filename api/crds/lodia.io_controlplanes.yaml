@@ -163,6 +163,263 @@ spec:
                     - message: must be a unicast IP address in canonical form, neither
                         loopback nor link-local
                       rule: isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()
+                  authentication:
+                    description: |-
+                      Authentication configures structured authentication; the anonymous
+                      section is Lodia's.
+                    properties:
+                      jwt:
+                        description: |-
+                          JWT are JWT authenticators, kube-apiserver's apiserver.config.k8s.io/v1
+                          JWTAuthenticator field for field.
+                        items:
+                          description: JWTAuthenticator accepts the tokens of one
+                            issuer.
+                          properties:
+                            claimMappings:
+                              description: ClaimMappings say which claims become the
+                                user.
+                              properties:
+                                extra:
+                                  items:
+                                    description: ExtraMapping is an extra attribute
+                                      of the user, from a CEL expression.
+                                    properties:
+                                      key:
+                                        maxLength: 512
+                                        type: string
+                                        x-kubernetes-validations:
+                                        - message: must be a lowercase domain-prefixed
+                                            path, such as example.org/foo
+                                          rule: self.matches(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[-a-z0-9/._~%!$&\x27()*+,;=:]+$')
+                                        - message: k8s.io, kubernetes.io and their
+                                            subdomains are reserved
+                                          rule: '!self.split(''/'')[0].matches(''(^|[.])(k8s|kubernetes)[.]io$'')'
+                                      valueExpression:
+                                        maxLength: 2048
+                                        minLength: 1
+                                        type: string
+                                    required:
+                                    - key
+                                    - valueExpression
+                                    type: object
+                                  maxItems: 8
+                                  type: array
+                                  x-kubernetes-list-map-keys:
+                                  - key
+                                  x-kubernetes-list-type: map
+                                groups:
+                                  description: PrefixedClaimOrExpression is a claim
+                                    with a prefix, or a CEL expression.
+                                  properties:
+                                    claim:
+                                      maxLength: 253
+                                      minLength: 1
+                                      type: string
+                                    expression:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      type: string
+                                    prefix:
+                                      maxLength: 256
+                                      type: string
+                                  type: object
+                                  x-kubernetes-validations:
+                                  - message: set at most one of claim and expression
+                                    rule: '!(has(self.claim) && has(self.expression))'
+                                  - message: prefix is required with claim; it may
+                                      be empty
+                                    rule: '!has(self.claim) || has(self.prefix)'
+                                  - message: prefix is set only with claim
+                                    rule: '!has(self.expression) || !has(self.prefix)'
+                                uid:
+                                  description: ClaimOrExpression is a claim or a CEL
+                                    expression.
+                                  properties:
+                                    claim:
+                                      maxLength: 253
+                                      minLength: 1
+                                      type: string
+                                    expression:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      type: string
+                                  type: object
+                                  x-kubernetes-validations:
+                                  - message: set at most one of claim and expression
+                                    rule: '!(has(self.claim) && has(self.expression))'
+                                username:
+                                  description: PrefixedClaimOrExpression is a claim
+                                    with a prefix, or a CEL expression.
+                                  properties:
+                                    claim:
+                                      maxLength: 253
+                                      minLength: 1
+                                      type: string
+                                    expression:
+                                      maxLength: 2048
+                                      minLength: 1
+                                      type: string
+                                    prefix:
+                                      maxLength: 256
+                                      type: string
+                                  type: object
+                                  x-kubernetes-validations:
+                                  - message: set exactly one of claim and expression
+                                    rule: has(self.claim) != has(self.expression)
+                                  - message: prefix is required with claim; it may
+                                      be empty
+                                    rule: '!has(self.claim) || has(self.prefix)'
+                                  - message: prefix is set only with claim
+                                    rule: '!has(self.expression) || !has(self.prefix)'
+                              required:
+                              - username
+                              type: object
+                            claimValidationRules:
+                              description: |-
+                                ClaimValidationRules are claims a token must hold, or CEL expressions on
+                                its claims that must be true.
+                              items:
+                                description: |-
+                                  ClaimValidationRule is a claim a token must hold, or a CEL expression on its
+                                  claims that must be true.
+                                properties:
+                                  claim:
+                                    maxLength: 253
+                                    minLength: 1
+                                    type: string
+                                  expression:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  message:
+                                    maxLength: 256
+                                    type: string
+                                  requiredValue:
+                                    maxLength: 1024
+                                    type: string
+                                type: object
+                                x-kubernetes-validations:
+                                - message: set exactly one of claim and expression
+                                  rule: has(self.claim) != has(self.expression)
+                                - message: message is set only with expression
+                                  rule: '!has(self.claim) || !has(self.message)'
+                                - message: requiredValue is set only with claim
+                                  rule: '!has(self.expression) || !has(self.requiredValue)'
+                              maxItems: 8
+                              type: array
+                              x-kubernetes-list-type: atomic
+                              x-kubernetes-validations:
+                              - message: each claim appears once
+                                rule: self.all(r, !has(r.claim) || self.exists_one(s,
+                                  has(s.claim) && s.claim == r.claim))
+                              - message: each expression appears once
+                                rule: self.all(r, !has(r.expression) || self.exists_one(s,
+                                  has(s.expression) && s.expression == r.expression))
+                            issuer:
+                              description: Issuer is where the tokens come from and
+                                whom they are for.
+                              properties:
+                                audienceMatchPolicy:
+                                  description: AudienceMatchPolicy is MatchAny, required
+                                    with more than one audience.
+                                  enum:
+                                  - MatchAny
+                                  type: string
+                                audiences:
+                                  description: Audiences are the aud values a token
+                                    may carry.
+                                  items:
+                                    maxLength: 512
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 8
+                                  minItems: 1
+                                  type: array
+                                  x-kubernetes-list-type: set
+                                certificateAuthority:
+                                  description: |-
+                                    CertificateAuthority is the PEM bundle the issuer's serving certificate
+                                    is verified against; the API server image's roots when empty.
+                                  maxLength: 16384
+                                  type: string
+                                discoveryURL:
+                                  description: |-
+                                    DiscoveryURL is where the discovery document is fetched from, when not
+                                    under url.
+                                  maxLength: 512
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: must be an https URL without a user,
+                                      a query or a fragment
+                                    rule: self.startsWith('https://') && !self.contains('?')
+                                      && !self.contains('#') && !self.contains('@')
+                                egressSelectorType:
+                                  default: cluster
+                                  description: |-
+                                    EgressSelectorType is cluster: the API server reaches the issuer
+                                    through konnectivity, from the tenant's nodes.
+                                  enum:
+                                  - cluster
+                                  type: string
+                                url:
+                                  description: URL is the issuer, the iss claim of
+                                    its tokens.
+                                  maxLength: 512
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: must be an https URL without a user,
+                                      a query or a fragment
+                                    rule: self.startsWith('https://') && !self.contains('?')
+                                      && !self.contains('#') && !self.contains('@')
+                              required:
+                              - audiences
+                              - url
+                              type: object
+                              x-kubernetes-validations:
+                              - message: audienceMatchPolicy must be MatchAny for
+                                  multiple audiences
+                                rule: size(self.audiences) == 1 || has(self.audienceMatchPolicy)
+                              - message: discoveryURL must differ from url
+                                rule: '!has(self.discoveryURL) || self.discoveryURL
+                                  != self.url'
+                            userValidationRules:
+                              description: UserValidationRules are CEL expressions
+                                on the user that must be true.
+                              items:
+                                description: UserValidationRule is a CEL expression
+                                  on the user that must be true.
+                                properties:
+                                  expression:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  message:
+                                    maxLength: 256
+                                    type: string
+                                required:
+                                - expression
+                                type: object
+                              maxItems: 8
+                              type: array
+                              x-kubernetes-list-map-keys:
+                              - expression
+                              x-kubernetes-list-type: map
+                          required:
+                          - claimMappings
+                          - issuer
+                          type: object
+                        maxItems: 8
+                        type: array
+                        x-kubernetes-list-type: atomic
+                        x-kubernetes-validations:
+                        - message: each issuer.url appears once
+                          rule: self.all(a, self.exists_one(b, b.issuer.url == a.issuer.url))
+                        - message: each issuer.discoveryURL appears once
+                          rule: self.all(a, !has(a.issuer.discoveryURL) || self.exists_one(b,
+                            has(b.issuer.discoveryURL) && b.issuer.discoveryURL ==
+                            a.issuer.discoveryURL))
+                    type: object
                   encryption:
                     description: Encryption configures encryption of Secrets at rest.
                     properties:
@@ -248,6 +505,10 @@ spec:
                     - message: kube-apiserver refuses service-account-signing-endpoint,
                         which Lodia sets, without ExternalServiceAccountTokenSigner
                       rule: '!(''ExternalServiceAccountTokenSigner'' in self) || self[''ExternalServiceAccountTokenSigner'']'
+                    - message: kube-apiserver refuses the egressSelectorType Lodia
+                        renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector
+                      rule: '!(''StructuredAuthenticationConfigurationEgressSelector''
+                        in self) || self[''StructuredAuthenticationConfigurationEgressSelector'']'
                   replicas:
                     description: Replicas of the API server; 1 by default, 2 with
                       high availability.
