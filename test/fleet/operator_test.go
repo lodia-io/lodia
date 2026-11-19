@@ -41,6 +41,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 // operatorEnv makes the test binary the operator: it holds the settings the
@@ -48,12 +49,13 @@ import (
 const operatorEnv = "LODIA_FLEET_OPERATOR"
 
 type operatorSettings struct {
-	Kubeconfig            string `json:"kubeconfig"`
-	Tenants               string `json:"tenants"`
-	Etcd                  string `json:"etcd"`
-	Version               string `json:"version"`
-	MaxConcurrentRollouts int    `json:"maxConcurrentRollouts"`
-	Stats                 string `json:"stats"`
+	Kubeconfig            string        `json:"kubeconfig"`
+	Tenants               string        `json:"tenants"`
+	Etcd                  string        `json:"etcd"`
+	Version               string        `json:"version"`
+	MaxConcurrentRollouts int           `json:"maxConcurrentRollouts"`
+	Stats                 string        `json:"stats"`
+	Lag                   time.Duration `json:"lag"`
 }
 
 func logger(w io.Writer) logr.Logger {
@@ -98,6 +100,9 @@ func operate(s operatorSettings) error {
 	cache, err := operator.Cache(gatewayAPI)
 	if err != nil {
 		return err
+	}
+	if s.Lag > 0 {
+		cache.NewInformer = testenv.Lagging(s.Lag)
 	}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{Scheme: operator.Scheme(), Metrics: metricsserver.Options{BindAddress: "0"}, Cache: cache})
 	if err != nil {

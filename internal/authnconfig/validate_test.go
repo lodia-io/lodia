@@ -1,0 +1,157 @@
+// Copyright 2026 The Lodia Authors.
+// SPDX-License-Identifier: Apache-2.0
+
+package authnconfig
+
+import (
+	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"k8s.io/apimachinery/pkg/util/version"
+
+	"go.lodia.io/lodia/internal/versions"
+)
+
+func TestValidateIsKubeAPIServerOfTheNewestMinorLodiaRuns(t *testing.T) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{with .Replace}}{{.Version}}{{else}}{{.Version}}{{end}}", "k8s.io/apiserver").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	linked, err := version.ParseSemantic(strings.TrimSpace(string(out)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := versions.Minors()
+	if newest := all[len(all)-1]; fmt.Sprintf("1.%d", linked.Minor()) != newest || minor != newest {
+		t.Errorf("the operator links k8s.io/apiserver %s and its refusals name kube-apiserver %s; the newest minor Lodia runs is %s", linked, minor, newest)
+	}
+}
+
+const file = `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+anonymous:
+  enabled: true
+  conditions:
+  - path: /livez
+jwt:
+- issuer:
+    url: https://login.example.com
+    audiences: [lodia]
+    egressSelectorType: cluster%s
+  claimMappings:
+    username: {expression: "'oidc:' + claims.sub"}
+    groups: {expression: "dyn(claims.roles).map(r, 'oidc:' + r)"}
+    uid: {expression: claims.sub}
+    extra:
+    - {key: example.com/tenant, valueExpression: claims.tenant}
+  claimValidationRules:
+  - {expression: "claims.tenant == 'acme'", message: not acme's}
+  userValidationRules:
+  - {expression: "%s", message: refused}
+`
+
+const egress = `apiVersion: apiserver.k8s.io/v1beta1
+kind: EgressSelectorConfiguration
+egressSelections:
+- name: cluster
+  connection: {proxyProtocol: Direct}
+`
+
+func TestValidateIsKubeAPIServersLoad(t *testing.T) {
+	const ok = "!('oidc:suspended' in user.groups)"
+	for _, c := range []struct {
+		name, issuer, rule string
+		want               string
+	}{
+		{"the acceptance case", "", ok, ""},
+		{"includes", "", "!user.groups.includes('x')", ""},
+		{"a rule that is not a condition", "", "user.username", "kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.username\": must evaluate to bool"},
+		{"the ServiceAccount issuer", "", ok, "jwt[0].issuer.url: Invalid value: \"https://login.example.com\": URL must not overlap with disallowed issuers: [https://login.example.com]"},
+		{"an unknown field", "\n    notAField: 1", ok, `it does not decode: strict decoding error: unknown field "jwt[0].issuer.notAField"`},
+		{"a CA that does not parse", "\n    certificateAuthority: not a certificate", ok, "jwt[0].issuer.certificateAuthority: Invalid value: \"<omitted>\": data does not contain any valid RSA or ECDSA certificates"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var issuers []string
+			if c.name == "the ServiceAccount issuer" {
+				issuers = []string{"https://login.example.com"}
+			}
+			err := Validate(fmt.Appendf(nil, file, c.issuer, c.rule), issuers, []byte(egress))
+			switch {
+			case c.want == "" && err != nil:
+				t.Fatalf("refused: %v", err)
+			case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
+				t.Fatalf("got %v, want %q", err, c.want)
+			}
+			var invalid *Invalid
+			if err != nil && !errors.As(err, &invalid) {
+				t.Errorf("%v is not an *Invalid", err)
+			}
+		})
+	}
+}
+
+func TestValidateLooksUpEachIssuersEgressAsKubeAPIServerBuildsIt(t *testing.T) {
+	const controlPlaneOnly = "apiVersion: apiserver.k8s.io/v1beta1\nkind: EgressSelectorConfiguration\negressSelections:\n- name: controlplane\n  connection: {proxyProtocol: Direct}\n"
+	for _, c := range []struct {
+		name, egress, selectorType, want string
+	}{
+		{"cluster, configured", egress, "cluster", ""},
+		{"none", egress, "", ""},
+		{"controlplane, not configured", egress, "controlplane", `kube-apiserver 1.37 refuses it: jwt[0].issuer.egressSelectorType: Invalid value: "controlplane": egress lookup for "controlplane" is not configured`},
+		{"cluster, not configured", controlPlaneOnly, "cluster", `jwt[0].issuer.egressSelectorType: Invalid value: "cluster": egress lookup for "cluster" is not configured`},
+		{"no egress selection", "apiVersion: apiserver.k8s.io/v1beta1\nkind: EgressSelectorConfiguration\n", "cluster", `jwt[0].issuer.egressSelectorType: Invalid value: "cluster": egress lookup required with egress selector type "cluster"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := strings.Replace(fmt.Sprintf(file, "", "true"), "egressSelectorType: cluster", "egressSelectorType: "+c.selectorType, 1)
+			err := Validate([]byte(data), nil, []byte(c.egress))
+			var invalid *Invalid
+			switch {
+			case c.want == "" && err != nil:
+				t.Fatalf("refused: %v", err)
+			case c.want != "" && (!errors.As(err, &invalid) || !strings.Contains(err.Error(), c.want)):
+				t.Fatalf("got %v, want an *Invalid with %q", err, c.want)
+			}
+		})
+	}
+	var invalid *Invalid
+	if err := Validate(fmt.Appendf(nil, file, "", "true"), nil, nil); err == nil || errors.As(err, &invalid) {
+		t.Errorf("without an egress selector configuration Validate gives %v, want an error that refuses nothing", err)
+	}
+}
+
+func TestValidateRefusesAFileOfAnotherKindAndKeepsEveryError(t *testing.T) {
+	err := Validate([]byte("apiVersion: apiserver.config.k8s.io/v1\nkind: AuthorizationConfiguration\n"), nil, []byte(egress))
+	if want := "it does not decode: it decodes as *apiserver.AuthorizationConfiguration"; err == nil || err.Error() != want {
+		t.Errorf("a file of another kind gives %v, want %q", err, want)
+	}
+
+	const five = `apiVersion: apiserver.config.k8s.io/v1
+kind: AuthenticationConfiguration
+jwt:
+- issuer: {url: "http://login.example.com", audiences: [lodia]}
+  claimMappings:
+    username: {expression: claims.sub}
+  userValidationRules:
+  - {expression: user.username}
+  - {expression: user.uid}
+  - {expression: "1"}
+  - {expression: "'x'"}
+`
+	invalid, ok := errors.AsType[*Invalid](Validate([]byte(five), nil, []byte(egress)))
+	if !ok || len(invalid.Errors) != 5 || !strings.HasSuffix(invalid.Error(), "; and 2 more") {
+		t.Errorf("a file with five errors gives %v, want all five kept and two of them counted", invalid)
+	}
+}
+
+func TestARefusalNamesItsFirstErrorsWithinBounds(t *testing.T) {
+	long := strings.Repeat("é", 300)
+	err := &Invalid{Minor: "1.35", Errors: []string{long, "a" + long, "c", "d", "e"}}
+	got := err.Error()
+	want := "kube-apiserver 1.35 refuses it: " + strings.Repeat("é", 128) + "…; a" + strings.Repeat("é", 127) + "…; c; and 2 more"
+	if got != want {
+		t.Errorf("the message is %q, want %q", got, want)
+	}
+}

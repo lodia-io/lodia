@@ -167,7 +167,7 @@ func TestPhase1Gate(t *testing.T) {
 			return ctx
 		}).
 		Assess("a container of kind's node image joins with kubeadm join --token and its node turns Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			node = joinNodes(ctx, t, cfg, k8s, key, access, 1)[0]
+			node = joinOneNode(ctx, t, cfg, k8s, key, access)
 			return ctx
 		}).
 		Assess("a ServiceAccount gets kubeconfigs for a key of its own, in its own name, and in lodia:cluster-admins only with the permission", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -604,6 +604,11 @@ func bootstrapToken(ctx context.Context, t *testing.T, c client.Client) string {
 		return nil
 	})
 	return token
+}
+
+func joinOneNode(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess) string {
+	t.Helper()
+	return joinNodes(ctx, t, cfg, k8s, key, access, 1)[0]
 }
 
 func joinNodes(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s client.Client, key client.ObjectKey, access *tenantAccess, count int) []string {

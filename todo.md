@@ -258,3 +258,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
   It keeps its end-of-support date too, which the metric, the alert and `Progressing`'s notice read for the tenants still on it: without the date their series ends, and the alert resolves for the tenants nearing or past it.
+
+## From structured authentication (2026-11-19)
+
+- `Ready` at a generation says that the authentication configuration is written and valid, not that every API server replica has loaded it: an issuer that does not answer holds a load back with nothing in the status ([structured-authentication](docs/decisions/structured-authentication.md)).
+  A condition outside `Ready` could compare each replica's `apiserver_authentication_config_controller_last_config_info` with a hash Workloads writes on the ConfigMap.
+- In `gateway` mode the konnectivity agents resolve names through the node's DNS, so a JWT issuer inside the tenant is reached by a name the nodes resolve or by its ClusterIP in `issuer.discoveryURL` ([operations](docs/operations.md#logging-in-with-an-oidc-provider)); decide whether the agents of that mode should resolve the tenant's Services too.

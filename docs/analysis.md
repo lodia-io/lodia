@@ -2,7 +2,7 @@
 
 Before designing Lodia we studied how the projects that run Kubernetes control planes as a service do it: what they host where, how they store, back up, rotate, upgrade and expose control planes, and what their users run into.
 This page is the summary; every statement links the project's own documentation, code or issue tracker.
-Survey date: 2026-10-23; teuto.net's provider, k3k and Cozystack's nodes as of 2026-11-16.
+Survey date: 2026-10-23; teuto.net's provider, k3k and Cozystack's nodes as of 2026-11-16; structured authentication as of 2026-11-19.
 
 We describe problems as they appear across the category, not as faults of one project: most of them are hard trade-offs that every project resolves differently, and the projects below are the reason this space works at all.
 
@@ -71,6 +71,17 @@ Built into Gardener with schedules ([hibernation](https://gardener.cloud/docs/ga
 
 **Fresh control planes can roll twice.**
 When two steps of a reconcile render the same Deployment (first without an add-on, then with it), a new control plane gets two rollouts before it is ever ready, and every later toggle of that add-on does the same.
+
+**A tenant's own token issuers reach kube-apiserver in three shapes: a file of the user's, a type of the project's own, a ConfigMap of the user's.**
+kube-apiserver reads JWT authenticators from its `--authentication-config` file ([authentication](https://kubernetes.io/docs/reference/access-authn-authz/authentication/#using-authentication-configuration)), and the projects put a tenant's issuers into it in these ways:
+
+| project | the shape | where the file comes from |
+|---|---|---|
+| kubeadm, Cluster API's KubeadmControlPlane | no field: a flag in `apiServer.extraArgs` and a file of the user's in `extraVolumes` ([control-plane-flags](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/setup/production-environment/tools/kubeadm/control-plane-flags.md)); Cluster API carries a copy of kubeadm's types, since it does not import `k8s.io/kubernetes` ([doc.go](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/bootstrap/kubeadm/pkg/types/upstreamv1beta4/doc.go#L17-L21)) | the machine's disk |
+| Kamaji | no field: `extraArgs` and `additionalVolumes` ([tenantcontrolplane_types.go](https://github.com/clastix/kamaji/blob/f9bfdd4/api/v1alpha1/tenantcontrolplane_types.go#L313-L325)) | a volume of the user's |
+| HyperShift | OpenShift's `config/v1` `AuthenticationSpec.oidcProviders`, with the CA in a ConfigMap ([hostedcluster_types.go](https://github.com/openshift/hypershift/blob/v0.1.86/api/hypershift/v1beta1/hostedcluster_types.go#L2851)), rendered into an internal copy of the upstream types ([auth_types.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/kas/auth_types.go#L5-L15)) and checked with upstream's validation before it is written ([auth.go](https://github.com/openshift/hypershift/blob/v0.1.86/control-plane-operator/controllers/hostedcontrolplane/v2/kas/auth.go#L446-L477)) | a ConfigMap |
+| Gardener | `kubeAPIServer.structuredAuthentication.configMapName`, a ConfigMap of the user's that holds an `AuthenticationConfiguration` ([types_shoot.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/apis/core/v1beta1/types_shoot.go#L1165-L1170)), checked by an admission webhook with upstream's validation ([add.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/admissioncontroller/webhook/admission/authenticationconfig/add.go#L97-L124)) | an immutable ConfigMap with a hashed name, so that an edit rolls kube-apiserver ([authentication.go](https://github.com/gardener/gardener/blob/v1.154.0/pkg/component/kubernetes/apiserver/authentication.go#L34-L73)) |
+| teuto.net's provider | a map of `oidcProviders` keyed by issuer URL ([hostedcontrolplane_types.go](https://github.com/teutonet/cluster-api-provider-hosted-control-plane/blob/v1.8.0/api/v1alpha1/hostedcontrolplane_types.go#L74-L78)) | a generated `--authentication-config` |
 
 ## Where the bar is
 

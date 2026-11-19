@@ -51,8 +51,8 @@ flowchart TB
 
 ## Consequences
 
-- Secrets and ConfigMaps whose change requires a restart are hashed into the pod template of the component that mounts them, and only that component rolls: for the API server the etcd CA, the front-proxy client certificate, the konnectivity server's certificate and kubeconfig, the egress selector and the authentication configuration; for the controller manager the cluster CA bundle.
-  Files that are reloaded are not hashed: serving certificates, client CA bundles, the kubelet client certificate, the encryption configuration, the certificates the controller manager's and the scheduler's kubeconfigs reference, and the ServiceAccount keys behind the signer sidecar.
+- Secrets and ConfigMaps whose change requires a restart are hashed into the pod template of the component that mounts them, and only that component rolls: for the API server the etcd CA, the front-proxy client certificate, the konnectivity server's certificate and kubeconfig, the egress selector and the authentication configuration without its JWT authenticators; for the controller manager the cluster CA bundle.
+  Files that are reloaded are not hashed: serving certificates, client CA bundles, the kubelet client certificate, the encryption configuration, the JWT authenticators ([structured-authentication](structured-authentication.md)), the certificates the controller manager's and the scheduler's kubeconfigs reference, and the ServiceAccount keys behind the signer sidecar.
   A Secret's hash is PKI's annotation `lodia.io/data-hash` on it, so Workloads reads the metadata of the Secrets it mounts and never their keys.
 
 ## Code

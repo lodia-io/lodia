@@ -110,7 +110,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 
 func TestEveryConfigMapRollsTheAPIServerAlone(t *testing.T) {
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team"}}
-	config, err := configMaps(cp)
+	_, config, err := configMaps(cp)
 	if err != nil {
 		t.Fatal(err)
 	}

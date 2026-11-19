@@ -45,6 +45,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/authnconfig"
 	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
@@ -94,6 +95,17 @@ type Reconciler struct {
 
 	writes   sync.Mutex
 	gateways map[types.NamespacedName]*fence.Fence
+
+	validating  sync.Mutex
+	validations map[types.NamespacedName][]validation
+}
+
+// validation is the outcome of validating one authentication configuration.
+// A pass validates the spec's and, when that fails, the one stored, so a
+// ControlPlane keeps the last two.
+type validation struct {
+	key string
+	err error
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -172,6 +184,11 @@ func restartOnlyNames(cp string) []string {
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.validating.Lock()
+			delete(r.validations, req.NamespacedName)
+			r.validating.Unlock()
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
@@ -289,7 +306,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		if in.unknownReport != "" {
 			count = func() (metav1.Condition, error) { return r.count(ctx, cp) }
 		}
-		kept, err := r.keep(ctx, cp, r.holding(cp), count)
+		kept, err := r.keep(ctx, cp, r.holding(cp), in.served, count)
 		if err != nil {
 			return nil, err
 		}
@@ -298,7 +315,41 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if in.unknownReport != "" {
 		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, in.unknownReport)), nil
 	}
-	return report(availability(deployments, in.note, controllerManagerHeld(cp))), nil
+	return report(authenticated(availability(deployments, in.note, controllerManagerHeld(cp)), in.refused+in.served)), nil
+}
+
+// authenticated is c, or AuthenticationInvalid with refused in its place unless
+// c is False: Unavailable, or ProgressDeadlineExceeded with a component
+// unavailable, says more, and carries refused after its own message.
+func authenticated(c metav1.Condition, refused string) metav1.Condition {
+	switch {
+	case refused == "":
+		return c
+	case c.Status == metav1.ConditionFalse:
+		c.Message += "; " + refused
+		return c
+	}
+	return newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refused)
+}
+
+// carried is the refusal c reports: AuthenticationInvalid's message, or what
+// authenticated put after the message of a False count.
+func carried(c metav1.Condition) string {
+	if c.Reason == lodiav1alpha1.ReasonAuthenticationInvalid {
+		return c.Message
+	}
+	if i := strings.Index(c.Message, "; "+notWritten); i >= 0 {
+		return c.Message[i+len("; "):]
+	}
+	return ""
+}
+
+// serving is refusal ending with served in place of what it says is served.
+func serving(refusal, served string) string {
+	if before, found := strings.CutSuffix(refusal, servesLast); found {
+		return before + served
+	}
+	return strings.TrimSuffix(refusal, servesNone) + served
 }
 
 type inputs struct {
@@ -308,6 +359,12 @@ type inputs struct {
 	note string
 	// unknownReport says that only the API server's Deployment is written.
 	unknownReport string
+	// refused says why the spec's authentication configuration is not
+	// written, empty when it is written.
+	refused string
+	// served ends refused with what the API server serves, empty when the
+	// pass cannot tell.
+	served string
 }
 
 // inputs waits, in this order, for the target, the two conditions, the
@@ -346,11 +403,11 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"))
 		return nil, waiting, err
 	}
-	config, err := configMaps(cp)
+	config, hashed, err := configMaps(cp)
 	if err != nil {
 		return nil, nil, err
 	}
-	hashes, unhashed, err := r.hashes(ctx, cp, config)
+	hashes, unhashed, err := r.hashes(ctx, cp, hashed)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -358,6 +415,14 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		message := "waiting for PKI to write the Secrets the control plane reads once, with their data hash: " + strings.Join(unhashed, ", ")
 		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, message))
 		return nil, waiting, err
+	}
+	refused, err := r.refusal(cp, endpoint, config)
+	if err != nil {
+		return nil, nil, err
+	}
+	config, served, err := r.validated(ctx, cp, endpoint, refused, config, hashed)
+	if err != nil {
+		return nil, nil, err
 	}
 	unmet, note, err := r.release(ctx, cp)
 	if err != nil {
@@ -386,7 +451,90 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		config:        config,
 		note:          note,
 		unknownReport: unknownReport,
+		refused:       refused,
+		served:        served,
 	}, nil, nil
+}
+
+// refusal says why kube-apiserver would refuse the spec's authentication
+// configuration under the ServiceAccount issuer and the egress selector
+// configuration the pass renders, empty when it would not.
+func (r *Reconciler) refusal(cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, config []*corev1.ConfigMap) (string, error) {
+	err := r.validate(cp, config[1].Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)}, config[0].Data[egressFile])
+	var invalid *authnconfig.Invalid
+	if !errors.As(err, &invalid) {
+		return "", err
+	}
+	return notWritten + invalid.Error(), nil
+}
+
+const (
+	notWritten = "the authentication configuration of spec.apiServer.authentication is not written: "
+	servesLast = "; the API server serves its last valid configuration"
+	servesNone = "; the API server serves no JWT authenticator"
+)
+
+// validated is config with the authentication configuration Workloads writes:
+// the spec's unless refused, and otherwise the one stored while this
+// ControlPlane controls it and kube-apiserver would load it under the
+// ServiceAccount issuer and the egress selector configuration the pass
+// renders, or else one without JWT authenticators. The second result ends a
+// refusal with what the API server serves: the stored file when it is kept and
+// lists JWT authenticators, and otherwise none. A held pass writes over no
+// stored file, so it says nothing of one it would replace.
+func (r *Reconciler) validated(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, refused string, config, hashed []*corev1.ConfigMap) ([]*corev1.ConfigMap, string, error) {
+	if refused == "" {
+		return config, "", nil
+	}
+	written := []*corev1.ConfigMap{config[0], hashed[1]}
+	replaced := servesNone
+	if r.held(cp) {
+		replaced = ""
+	}
+	stored := &corev1.ConfigMap{}
+	err := r.Reader.Get(ctx, client.ObjectKeyFromObject(hashed[1]), stored)
+	switch {
+	case apierrors.IsNotFound(err):
+		return written, servesNone, nil
+	case err != nil:
+		return nil, "", fmt.Errorf("read ConfigMap %s: %w", hashed[1].Name, err)
+	case !metav1.IsControlledBy(stored, cp):
+		return written, replaced, nil
+	}
+	err = r.validate(cp, stored.Data[authenticationFile], []string{issuer(cp, endpoint.APIServer)}, config[0].Data[egressFile])
+	if _, invalid := errors.AsType[*authnconfig.Invalid](err); invalid {
+		return written, replaced, nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if file, err := authnconfig.Decode([]byte(stored.Data[authenticationFile])); err == nil && len(file.JWT) > 0 {
+		return config[:1], servesLast, nil
+	}
+	return config[:1], servesNone, nil
+}
+
+// validate is authnconfig.Validate, kept per ControlPlane for the content,
+// issuers and egress of its last two validations.
+func (r *Reconciler) validate(cp *lodiav1alpha1.ControlPlane, data string, issuers []string, egress string) error {
+	sum, egressSum := sha256.Sum256([]byte(data)), sha256.Sum256([]byte(egress))
+	key := hex.EncodeToString(sum[:]) + "/" + strings.Join(issuers, ",") + "/" + hex.EncodeToString(egressSum[:])
+	name := client.ObjectKeyFromObject(cp)
+	r.validating.Lock()
+	kept := r.validations[name]
+	i := slices.IndexFunc(kept, func(v validation) bool { return v.key == key })
+	r.validating.Unlock()
+	if i >= 0 {
+		return kept[i].err
+	}
+	err := authnconfig.Validate([]byte(data), issuers, []byte(egress))
+	r.validating.Lock()
+	defer r.validating.Unlock()
+	if r.validations == nil {
+		r.validations = map[types.NamespacedName][]validation{}
+	}
+	r.validations[name] = append([]validation{{key: key, err: err}}, r.validations[name][:min(len(r.validations[name]), 1)]...)
+	return err
 }
 
 // imagesOf renders the controller manager and the scheduler at the version the
@@ -522,15 +670,19 @@ func refused(endpoint *lodiav1alpha1.EndpointStatus, obj client.Object, err erro
 }
 
 // wait decides from APIServerReady as the API server holds it. While that
-// reports availability, it counts the Deployments this ControlPlane controls
-// at the generation the condition names; otherwise it keeps a condition of an
-// older generation and returns waiting for one of cp's.
+// reports availability, AuthenticationInvalid included, it counts the
+// Deployments this ControlPlane controls at the generation the condition
+// names, and passes the count through authenticated with the refusal that
+// condition carries, which the pass that wrote it judged under the inputs it
+// rendered; otherwise it keeps a condition of an older generation and returns
+// waiting for one of cp's.
 func (r *Reconciler) wait(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition) (*metav1.Condition, error) {
-	return r.keep(ctx, cp, waiting, func() (metav1.Condition, error) { return r.count(ctx, cp) })
+	return r.keep(ctx, cp, waiting, "", func() (metav1.Condition, error) { return r.count(ctx, cp) })
 }
 
-// keep is wait's decision, with count giving the availability it reports.
-func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, count func() (metav1.Condition, error)) (*metav1.Condition, error) {
+// keep is wait's decision, with count giving the availability it reports, and
+// the refusal it carries ending with served when served is set.
+func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, waiting metav1.Condition, served string, count func() (metav1.Condition, error)) (*metav1.Condition, error) {
 	if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		return nil, err
 	}
@@ -538,11 +690,16 @@ func (r *Reconciler) keep(ctx context.Context, cp *lodiav1alpha1.ControlPlane, w
 	if previous == nil {
 		return &waiting, nil
 	}
-	if slices.Contains([]string{lodiav1alpha1.ReasonReady, lodiav1alpha1.ReasonUnavailable, lodiav1alpha1.ReasonProgressDeadlineExceeded}, previous.Reason) {
+	if slices.Contains([]string{lodiav1alpha1.ReasonReady, lodiav1alpha1.ReasonUnavailable, lodiav1alpha1.ReasonProgressDeadlineExceeded, lodiav1alpha1.ReasonAuthenticationInvalid}, previous.Reason) {
 		counted, err := count()
 		if err != nil {
 			return nil, err
 		}
+		refusal := carried(*previous)
+		if refusal != "" && served != "" {
+			refusal = serving(refusal, served)
+		}
+		counted = authenticated(counted, refusal)
 		counted.ObservedGeneration = previous.ObservedGeneration
 		return &counted, nil
 	}
@@ -755,9 +912,9 @@ func (r *Reconciler) hashes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 }
 
 // restartHashes are each component's hash of what it reads once: its
-// restart-only Secrets by their data hashes and, for the API server, the
-// ConfigMaps Workloads renders, so that a change to one rolls the component
-// that reads it once and nothing else.
+// restart-only Secrets by their data hashes and, for the API server, its
+// ConfigMaps as configMaps hashes them, so that a change to one rolls the
+// component that reads it once and nothing else.
 func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap) map[string]string {
 	out := map[string]string{}
 	for component, secrets := range restartOnly {

@@ -1,0 +1,34 @@
+# A ControlPlane whose people log in with an OIDC provider's tokens: groups,
+# uid and an extra attribute mapped by CEL, a claim rule and a user rule.
+apiVersion: lodia.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: oidc
+  namespace: team-a
+spec:
+  version: v1.37.1
+  endpoint:
+    loadBalancer: {}
+  network:
+    serviceCIDRs: [10.96.0.0/16]
+    podCIDRs: [10.244.0.0/16]
+  apiServer:
+    authentication:
+      jwt:
+      - issuer:
+          url: https://login.example.com/realms/team-a
+          audiences: [team-a-cluster]
+          # egressSelectorType: cluster, the default and what Workloads renders:
+          # the API server reaches the issuer from the tenant's nodes.
+        claimValidationRules:
+        - expression: "claims.tenant == 'team-a'"
+          message: the token is not team-a's
+        claimMappings:
+          username: {expression: "'oidc:' + claims.sub"}
+          groups: {expression: "dyn(claims.roles).map(r, 'oidc:' + r)"}
+          uid: {expression: claims.sub}
+          extra:
+          - {key: example.com/tenant, valueExpression: claims.tenant}
+        userValidationRules:
+        - expression: "!('oidc:suspended' in user.groups)"
+          message: the user is suspended

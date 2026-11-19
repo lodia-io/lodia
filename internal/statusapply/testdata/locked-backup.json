@@ -1,0 +1,31 @@
+{
+  "apiVersion": "lodia.io/v1alpha1",
+  "kind": "Backup",
+  "metadata": {
+    "name": "dev-1",
+    "namespace": "team-a",
+    "resourceVersion": "41"
+  },
+  "status": {
+    "conditions": [
+      {
+        "lastTransitionTime": "2026-11-02T18:00:00Z",
+        "message": "ready",
+        "observedGeneration": 1,
+        "reason": "Ready",
+        "status": "True",
+        "type": "Ready"
+      }
+    ],
+    "kubernetesVersion": "v1.35.0",
+    "seal": {
+      "quotaBackendBytes": "8Gi",
+      "revision": 0
+    },
+    "source": {
+      "name": "dev",
+      "uid": "5e1f7c3a-0000-4000-8000-000000000001"
+    },
+    "startedAt": "2026-11-02T18:00:00Z"
+  }
+}

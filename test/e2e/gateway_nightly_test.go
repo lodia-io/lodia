@@ -85,7 +85,7 @@ func TestGatewayOverhead(t *testing.T) {
 			throughTheGateway(kubeconfig)
 			access = connect(t, kubeconfig)
 			nodeImages = []reference.NamedTagged{tunnelImage(ctx, t, access)}
-			node = joinNodes(ctx, t, cfg, k8s, key, access, 1)[0]
+			node = joinOneNode(ctx, t, cfg, k8s, key, access)
 			loadImage(ctx, t, cfg.KubeconfigFile(), node, image)
 			until(ctx, t, 3*time.Minute, "CoreDNS is available", func(ctx context.Context) error {
 				return coreDNSAvailable(ctx, access.client)

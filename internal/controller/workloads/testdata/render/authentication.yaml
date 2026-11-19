@@ -1,0 +1,69 @@
+apiVersion: v1
+data:
+  authentication-config.yaml: |
+    anonymous:
+      conditions:
+      - path: /healthz
+      - path: /livez
+      - path: /readyz
+      - path: /api/v1/namespaces/kube-public/configmaps/cluster-info
+      enabled: true
+    apiVersion: apiserver.config.k8s.io/v1
+    jwt:
+    - claimMappings:
+        extra:
+        - key: example.com/tenant
+          valueExpression: claims.tenant
+        groups:
+          expression: dyn(claims.roles).map(r, 'oidc:' + r)
+        uid:
+          expression: claims.sub
+        username:
+          expression: '''oidc:'' + claims.sub'
+      claimValidationRules:
+      - expression: claims.tenant == 'team-a'
+        message: the token is not team-a's
+      - claim: hd
+        requiredValue: example.com
+      issuer:
+        audiences:
+        - team-a-cluster
+        egressSelectorType: cluster
+        url: https://login.example.com/realms/team-a
+      userValidationRules:
+      - expression: '!(''oidc:suspended'' in user.groups)'
+        message: the user is suspended
+      - expression: '!user.username.startsWith(''system:'') && !user.username.startsWith(''lodia:'')
+          && !user.groups.exists(g, g.startsWith(''system:'') || g.startsWith(''lodia:''))'
+        message: 'system: and lodia: names are reserved'
+    - claimMappings:
+        groups: {}
+        uid: {}
+        username:
+          claim: email
+          prefix: ""
+      issuer:
+        audienceMatchPolicy: MatchAny
+        audiences:
+        - a
+        - b
+        egressSelectorType: cluster
+        url: https://dex.dex.svc
+      userValidationRules:
+      - expression: '!user.username.startsWith(''system:'') && !user.username.startsWith(''lodia:'')
+          && !user.groups.exists(g, g.startsWith(''system:'') || g.startsWith(''lodia:''))'
+        message: the tenant's own words
+    kind: AuthenticationConfiguration
+kind: ConfigMap
+metadata:
+  labels:
+    lodia.io/control-plane: dev
+  name: dev-authentication-config
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: ""

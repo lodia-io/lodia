@@ -31,6 +31,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/controller/tenant"
 )
 
 const (
@@ -43,6 +44,10 @@ const (
 // hangFor is how long a hanging tenant holds a connection: past any Timeout
 // of the operator's.
 const hangFor = 15 * time.Second
+
+// slowApply is how long a slow tenant takes to answer each of Tenant's
+// applies.
+const slowApply = 150 * time.Millisecond
 
 type tenantServer struct {
 	admin     client.Client
@@ -71,9 +76,21 @@ type stubTenant struct {
 	namespace string
 	hanging   atomic.Bool
 	bounded   atomic.Bool
+	slow      atomic.Bool
+	matching  atomic.Pointer[tenantApply]
 
 	mu      sync.Mutex
 	objects map[string]stored
+}
+
+// tenantApply is what the stub does with an apply of Tenant's to key whose
+// body holds contains: it refuses it, or it holds the first one until release
+// is closed and closes seen as it comes.
+type tenantApply struct {
+	key, contains string
+	refuse        bool
+	seen, release chan struct{}
+	once          sync.Once
 }
 
 type stored struct {
@@ -464,6 +481,19 @@ func (s *tenantServer) serveResource(w http.ResponseWriter, r *http.Request, t *
 		if err != nil {
 			writeStatus(w, http.StatusBadRequest, metav1.StatusReasonBadRequest, err.Error())
 			return
+		}
+		if r.URL.Query().Get("fieldManager") == tenant.FieldManager {
+			if t.slow.Load() {
+				time.Sleep(slowApply)
+			}
+			if m := t.matching.Load(); m != nil && res.key() == m.key && bytes.Contains(body, []byte(m.contains)) {
+				if m.refuse {
+					writeStatus(w, http.StatusUnprocessableEntity, metav1.StatusReasonInvalid, "refused by the test")
+					return
+				}
+				m.once.Do(func() { close(m.seen) })
+				<-m.release
+			}
 		}
 		obj, created, err := s.store(t, res, body, r.URL.Query().Get("fieldManager"))
 		if err != nil {

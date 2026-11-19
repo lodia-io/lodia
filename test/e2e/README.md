@@ -58,6 +58,17 @@ The suite removes the containers it started when it ends, pass or fail, and each
 
 `make e2e` gives the suite 30 minutes.
 
+## Structured authentication with an issuer inside the tenant
+
+`TestStructuredAuthenticationOnKind` checks the structured authentication item of the [phase 3 gate](../../docs/roadmap.md#phase-3--released-hardened-ahead) ([structured-authentication](../../docs/decisions/structured-authentication.md)).
+A `ControlPlane` in `nodePort` mode, as the phase 1 gate's, names in `apiServer.authentication.jwt` the issuer `https://oidcissuer.oidcissuer.svc/first`, with a claim rule, the username, groups, `uid` and an extra key mapped by CEL, and a user rule, and the issuer `…/verbatim`, whose `sub` and `groups` claims map to the username and groups as they are.
+Once it is `Ready` a node joins, and [`test/oidcissuer`](../oidcissuer), built with ko and copied into the node as `test/apiloop` is, serves on it the discovery documents and keys of three issuers, `first`, `second` and `verbatim`, over TLS from a CA the test makes, from a Deployment and a Service in the tenant; the keys are the test's.
+kube-apiserver reaches the issuer through the `cluster` egress, konnectivity, and the agent resolves the Service's name through the tenant's CoreDNS.
+A token the test signs logs in through `status.endpoint.apiServer` as the user its claims map to, by `SelfSubjectReview`, and the two rules refuse a token each.
+A token of `verbatim` logs in as `bob` in `dev`, and Lodia's reserved names refuse the tokens mapped to the usernames `system:admin` and `lodia:user:alice` and to the groups `system:masters` and `lodia:cluster-admins`.
+Then the spec moves to the second issuer, and the test waits, logging how long, until the second's token logs in and the first's does not.
+It wants no API server pod replaced or restarted, the Deployment's `lodia.io/restart-hash` as it was, and every replica's `apiserver_authentication_config_controller_last_config_info` to carry the SHA-256 of the ConfigMap's data, read on each pod through a port-forward to its port 6443 with the admin kubeconfig's certificate.
+
 ## Gate G7: the leader's metrics
 
 G7 checks the metrics item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production) ([metrics-are-part-of-the-api](../../docs/decisions/metrics-are-part-of-the-api.md)), as a step of `TestPhase1Gate` right after its tenant turns `Ready`.

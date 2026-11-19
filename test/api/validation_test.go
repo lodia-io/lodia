@@ -1088,7 +1088,6 @@ func TestRemovedFieldsAreUnknown(t *testing.T) {
 		path  []string
 	}{
 		{"controlplane-single.yaml", "Split", []string{"spec", "layout"}},
-		{"controlplane-single.yaml", map[string]any{"jwt": []any{map[string]any{"issuer": map[string]any{"url": "https://id.example.com", "audiences": []any{"kubernetes"}}}}}, []string{"spec", "apiServer", "authentication"}},
 		{"controlplane-single.yaml", map[string]any{"policyRef": map[string]any{"name": "audit"}}, []string{"spec", "apiServer", "audit"}},
 		{"controlplane-single.yaml", map[string]any{"configRef": map[string]any{"name": "admission"}}, []string{"spec", "apiServer", "admission"}},
 		{"controlplane-single.yaml", map[string]any{"name": "profiles"}, []string{"spec", "scheduler", "configRef"}},
