@@ -514,7 +514,7 @@ func TestRestoreGate(t *testing.T) {
 			return ctx
 		}).
 		Assess("9. a node joins b, and the conformance smoke subset passes in it", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			joinNodes(ctx, t, cfg, k8s, restoredKey, restoredAccess, 1)
+			joinOneNode(ctx, t, cfg, k8s, restoredKey, restoredAccess)
 			until(ctx, t, 3*time.Minute, "CoreDNS is available in b", func(ctx context.Context) error {
 				return coreDNSAvailable(ctx, restoredAccess.client)
 			})

@@ -99,7 +99,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 		}).
 		Assess("a node joins, and the loops outside and inside the tenant answer", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			access = openTenant(ctx, t, k8s, key)
-			node := joinNodes(ctx, t, cfg, k8s, key, access, 1)[0]
+			node := joinOneNode(ctx, t, cfg, k8s, key, access)
 			until(ctx, t, 3*time.Minute, "CoreDNS is available", func(ctx context.Context) error {
 				return coreDNSAvailable(ctx, access.client)
 			})

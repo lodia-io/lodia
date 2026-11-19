@@ -126,7 +126,7 @@ func TestGatewayGate(t *testing.T) {
 				t.Fatalf("status.endpoint.apiServer is the address %s, not a hostname", host)
 			}
 			nodeImages = []reference.NamedTagged{tunnelImage(ctx, t, access)}
-			node = joinNodes(ctx, t, cfg, k8s, a, access, 1)[0]
+			node = joinOneNode(ctx, t, cfg, k8s, a, access)
 			slice := &discoveryv1.EndpointSlice{}
 			if err := access.client.Get(ctx, client.ObjectKey{Namespace: metav1.NamespaceDefault, Name: "kubernetes"}, slice); err != nil {
 				t.Fatal(err)
