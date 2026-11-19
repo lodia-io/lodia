@@ -119,7 +119,7 @@ The request is deleted at its deadline; deleting it earlier revokes nothing, the
 
 `spec.apiServer.authentication.jwt` holds kube-apiserver's JWT authenticators ([the field](api/controlplane.md#spec), [structured-authentication](decisions/structured-authentication.md)).
 A token's user is what its mappings give, never a `system:` or `lodia:` name; bind those users and groups with the tenant's RBAC.
-Workloads validates the file as kube-apiserver of the minor the operator links, 1.37 today, for every tenant: on a tenant of an older minor, write only what that minor's kube-apiserver accepts, since a file with a CEL function or syntax it lacks is written, and its API server keeps its last configuration on a reload and does not start on it.
+Workloads validates the file as kube-apiserver of the minor the operator links, 1.37 today, for every tenant: on a tenant of an older minor, write only what that minor's kube-apiserver accepts, since a configuration that only a newer minor accepts, such as a CEL function that minor lacks or an expression its CEL resolves otherwise, is written, and its API server keeps its last configuration on a reload and does not start on it.
 
 The API server fetches the issuer's discovery document and keys through konnectivity, from the tenant's nodes:
 
