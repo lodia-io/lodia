@@ -441,6 +441,52 @@ func TestTheBackupWaitsForTheRehearsalAndComesInThePassItPasses(t *testing.T) {
 	}
 }
 
+func TestASpecEditedAtTheBackupIsRehearsedBeforeTheTargetMoves(t *testing.T) {
+	cp := quietControlPlane(t)
+	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
+	passed := func() {
+		t.Helper()
+		applyQuiet(t, cp, "test/rehearsal", map[string]any{
+			"rehearsal":  map[string]any{"version": "v1.37.1"},
+			"conditions": []any{map[string]any{"type": lodiav1alpha1.ConditionRehearsed, "status": "True", "reason": lodiav1alpha1.ReasonPassed, "message": "listed", "observedGeneration": getQuiet(t, cp).Generation, "lastTransitionTime": startedAt.Format(time.RFC3339)}},
+		})
+	}
+	pass := func() *lodiav1alpha1.ControlPlane {
+		t.Helper()
+		r := &lifecycle.Reconciler{Client: quiet, Reader: quiet, Clock: clocktesting.NewFakePassiveClock(later), Revision: runningRevision, MaxConcurrentRollouts: 5, MaxConcurrentRehearsals: 5, Settling: settlingTime}
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			t.Fatal(err)
+		}
+		return getQuiet(t, cp)
+	}
+	passed()
+	createBackup(t, cp, preUpgrade(cp), metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
+	edited := getQuiet(t, cp)
+	patch := client.MergeFrom(edited.DeepCopy())
+	edited.Spec.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"APIServerTracing": true}}
+	if err := quiet.Patch(t.Context(), edited, patch); err != nil {
+		t.Fatal(err)
+	}
+	applyQuiet(t, cp, "test/seed", map[string]any{"conditions": quietConditions(edited)})
+
+	fresh := pass()
+	if u := fresh.Status.Kubernetes.Upgrade; fresh.Status.Target.Version != "v1.36.6" || u == nil || u.Step != lodiav1alpha1.UpgradeStepRehearsal || !u.StartedAt.Time.Equal(startedAt) {
+		t.Fatalf("after an edit at the Backup the target is %s and the upgrade %+v, want v1.36.6 at step Rehearsal since %s", fresh.Status.Target.Version, u, startedAt)
+	}
+	passed()
+	fresh = pass()
+	if u := fresh.Status.Kubernetes.Upgrade; fresh.Status.Target.Version != "v1.37.1" || u == nil || u.Step != lodiav1alpha1.UpgradeStepAPIServer {
+		t.Errorf("after the edit's rehearsal passed the target is %s and the upgrade %+v, want v1.37.1 at step APIServer", fresh.Status.Target.Version, u)
+	}
+	list := &lodiav1alpha1.BackupList{}
+	if err := quiet.List(t.Context(), list, client.InNamespace(cp.Namespace)); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Name != preUpgrade(cp) {
+		t.Errorf("the Backups are %v, want the completed %s alone", list.Items, preUpgrade(cp))
+	}
+}
+
 func TestAPredecessorsBackupOfTheSameNameDoesNotStandIn(t *testing.T) {
 	cp := quietControlPlane(t)
 	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")

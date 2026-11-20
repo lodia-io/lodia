@@ -385,7 +385,8 @@ func (f facts) minorStep(c *change) {
 			c.unsupported = notInTable(nextMinor)
 			return
 		}
-		if c.upgrade.Step == lodiav1alpha1.UpgradeStepRehearsal {
+		if c.upgrade.Step == lodiav1alpha1.UpgradeStepRehearsal || f.rehearsals > 0 && !passedAt(cp, next) {
+			c.upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepRehearsal, StartedAt: c.upgrade.StartedAt}
 			f.rehearse(c, next, nextMinor)
 			return
 		}
@@ -441,27 +442,38 @@ const noRehearsal = "no rehearsal ran: fleet.maxConcurrentRehearsals is 0"
 // rehearsals off it takes it at once.
 func (f facts) rehearse(c *change, next, minor string) {
 	cp := f.cp
-	backup := func() {
+	if f.rehearsals == 0 || passedAt(cp, next) {
 		c.upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepBackup, StartedAt: c.upgrade.StartedAt}
 		f.takeBackup(c, next, minor)
-	}
-	if f.rehearsals == 0 {
-		backup()
 		return
 	}
-	rehearsed := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
-	about := rehearsed != nil && cp.Status.Rehearsal != nil && cp.Status.Rehearsal.Version == next
+	rehearsed := rehearsedAbout(cp, next)
 	switch {
-	case about && rehearsed.ObservedGeneration == cp.Generation && rehearsed.Status == metav1.ConditionTrue && rehearsed.Reason == lodiav1alpha1.ReasonPassed:
-		backup()
-	case about && rehearsed.ObservedGeneration == cp.Generation && rehearsed.Status == metav1.ConditionFalse:
+	case rehearsed != nil && rehearsed.ObservedGeneration == cp.Generation && rehearsed.Status == metav1.ConditionFalse:
 		c.rehearsalFailed = fmt.Sprintf("%s: %s: %s", lodiav1alpha1.ConditionRehearsed, rehearsed.Reason, rehearsed.Message)
 	default:
 		c.rehearsal = "rehearsing the step to " + next + " on a copy"
-		if about && rehearsed.Message != "" {
+		if rehearsed != nil && rehearsed.Message != "" {
 			c.rehearsal += ": " + rehearsed.Message
 		}
 	}
+}
+
+// rehearsedAbout is Rehearsed while it is about the step to next, and nil
+// otherwise.
+func rehearsedAbout(cp *lodiav1alpha1.ControlPlane, next string) *metav1.Condition {
+	if cp.Status.Rehearsal == nil || cp.Status.Rehearsal.Version != next {
+		return nil
+	}
+	return meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
+}
+
+// passedAt says whether Rehearsed is Passed for the step to next at the
+// object's generation, the one verdict a minor step's target moves on: a spec
+// edited after the rehearsal passed is rehearsed again, even at the Backup.
+func passedAt(cp *lodiav1alpha1.ControlPlane, next string) bool {
+	rehearsed := rehearsedAbout(cp, next)
+	return rehearsed != nil && rehearsed.ObservedGeneration == cp.Generation && rehearsed.Status == metav1.ConditionTrue && rehearsed.Reason == lodiav1alpha1.ReasonPassed
 }
 
 // maxKubeletSkew is the kubelet's skew the version skew policy allows

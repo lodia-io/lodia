@@ -24,6 +24,7 @@ Lifecycle writes one `status.target.version`: the version the API server rolls t
 3. `status.kubernetes.upgrade.step` becomes `Backup` in the same write as the step's rehearsal passes, and the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` (`PreUpgradeBackupName`) completes; a tenant steps to a minor once, so a `Backup` named for the minor does not change with the patch the step goes to, and the name's UID keeps a predecessor's from standing in for it, since a `Backup` outlives its source.
    A failed `Backup` is `Failed`, and deleting it takes another; it has no owner reference, since it must outlive the tenant.
    The target moves once it completes, or once it reports that the class has no backup store, which `Progressing` then says, unless the upgrade stands `Failed` (below); `step` becomes `APIServer` in the same write.
+   It moves only while `Rehearsed` is `Passed` for the step's version at the object's generation: a generation that moved during the `Backup` step records `Rehearsal` again, and the `Backup` that completed stands for the step once the new generation passes, since a spec edit changes no data.
 4. The API server rolls; the step is done when every replica runs the new template, updated and ready, since `/readyz` reports no version.
 5. The controller manager and the scheduler roll.
 6. In the tenant, kube-proxy, CoreDNS and konnectivity-agent move to the new minor's versions; done when they are applied.
