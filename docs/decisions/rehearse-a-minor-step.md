@@ -70,7 +70,7 @@ While it runs again at the same generation the verdict stays, so that `Progressi
 A paused `ControlPlane` starts no copy, and one already running ends at its deadline: it holds its place among the copies below until then or until the pause ends, and, ended by its kubelet, holds none.
 
 **How many.**
-At most `fleet.maxConcurrentRehearsals` copies run at once, 5 by default, apart from the fleet's slots, which an owner's upgrade does not take; the rehearsal counts them from the cache, which holds the Pods with a copy's two labels and no other, as those a `ControlPlane` controls, under a fence of its own ([`internal/fence`](../../internal/fence/fence.go)): a Pod someone else labels so takes no place and is neither judged nor deleted.
+At most `fleet.maxConcurrentRehearsals` copies run at once, 5 by default, apart from the fleet's slots, which an owner's upgrade does not take; the rehearsal counts as copies the Pods with a copy's two labels that a `ControlPlane` controls, from the cache, which holds the Pods with those labels and no other, under a fence of its own ([`internal/fence`](../../internal/fence/fence.go)); a Pod someone else labels so takes no place and is neither judged nor deleted.
 A step without a free place is `Rehearsed` Unknown `RehearsalLimit`, and looks again every 30 seconds; the waiting tenants have no order among them.
 
 ## Why
