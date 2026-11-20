@@ -17,10 +17,12 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -376,5 +378,40 @@ func TestAControlPlaneGoneTakesItsSweepsAndVerdictTimeAlong(t *testing.T) {
 		if _, kept := r.sweeps["copy-uid"]; kept || len(r.sweeps) != 1 || len(r.verdicts) != 1 {
 			t.Errorf("deleting %t: the reconciler keeps the sweeps %v and the verdict times %v, want the other ControlPlane's alone", deleting, slices.Collect(maps.Keys(r.sweeps)), r.verdicts)
 		}
+	}
+}
+
+type slowLists struct{ client.Client }
+
+func (s slowLists) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	time.Sleep(100 * time.Millisecond)
+	return s.Client.List(ctx, list, opts...)
+}
+
+func TestTwoPlacesAtOnceUnderALimitOfOneCreateOneCopy(t *testing.T) {
+	s := scheme(t)
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	c := slowLists{fake.NewClientBuilder().WithScheme(s).Build()}
+	r := &RehearsalReconciler{Client: c, Reader: c, MaxConcurrent: 1}
+	var wg sync.WaitGroup
+	for _, name := range []string{"a", "b"} {
+		cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: "team-" + name, Name: "dev", UID: types.UID(name)}}
+		pod := &corev1.Pod{ObjectMeta: objectMeta(cp, copyName(cp.Name))}
+		pod.Labels = podLabels(cp.Name, lodiav1alpha1.RehearsalComponent)
+		wg.Go(func() {
+			if _, err := r.place(t.Context(), cp, pod); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	list := &corev1.PodList{}
+	if err := c.List(t.Context(), list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 {
+		t.Errorf("two places at once under a limit of 1 created %d copies", len(list.Items))
 	}
 }
