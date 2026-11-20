@@ -18,7 +18,7 @@ The Datastore controller's etcd NetworkPolicy admits the copy's pods to the clie
 
 **The copy.**
 One Pod `<cp>-rehearsal-<suffix>` in the tenant namespace, named by `generateName`, owned by the `ControlPlane` and labelled with it and `app.kubernetes.io/name: rehearsal`, which nothing else selects; no Service and no route.
-A copy being deleted, as one on a node that is gone stays, counts neither toward the limit below nor against the next copy, which takes a name of its own.
+A copy that is being deleted, as one on a node that is gone stays for good, counts neither toward the limit below nor against the next copy, which takes a name of its own.
 Its API server is the render of the tenant's at the step's version, with only these changes:
 
 | the render | the copy |
@@ -52,7 +52,7 @@ A pass reads for at most 45 s of its minute, a read at most 30 s, the time a con
 | finding | `Rehearsed` |
 |---|---|
 | the copy's kube-apiserver exits on its own, or runs and is not ready 5 minutes after the pod's creation | False `APIServerFailed`, its termination message quoted |
-| a resource lists through the tenant and not through the copy; a resource the tenant serves that a CRD in the copy's own etcd serves at that version and the copy does not; a read through the copy that still fails with an answer, or the tenant's list of a resource the copy failed that still fails, when the copy's 15 minutes are over | False `ListFailed` |
+| a resource lists through the tenant and not through the copy; a resource the tenant serves that a CRD in the copy's own etcd serves at that version and the copy does not; a read through the copy that still fails on a connection the copy accepted, or the tenant's list of a resource the copy failed that still fails, when the copy's 15 minutes are over | False `ListFailed` |
 | the copy did not run its API server within 15 minutes of its creation: not scheduled, an image not pulled, the snapshot, the restore or etcd failing; or it gave no verdict within them, a ready copy whose node is gone among them; or its node ended it, at its `activeDeadlineSeconds`, by an eviction or at its memory limit, whatever ran before | False `CopyFailed`, the pod's last reason, the init container's message or the sweep's last failed read |
 | the management cluster refuses the Pod or the NetworkPolicy, or another owner keeps the NetworkPolicy under its name | False `Refused` or `ObjectsControlledElsewhere` |
 | a resource that fails through both, through the tenant for a reason that is not transient | reported with each side's error: it fails before the step too |

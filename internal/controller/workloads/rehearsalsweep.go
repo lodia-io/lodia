@@ -108,8 +108,8 @@ type sweep struct {
 
 // failing is a read whose error was transient: what it read, its error, and
 // whether it stops the step once the copy's 15 minutes are over, as a read
-// through the copy that got an answer and the tenant's check of a resource
-// the copy failed do.
+// through the copy on a connection it accepted and the tenant's check of a
+// resource the copy failed do.
 type failing struct {
 	what, err string
 	stops     bool
