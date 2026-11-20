@@ -80,14 +80,18 @@ func (r rendering) rehearsalCopy(version string, generation int64, quota resourc
 
 // copyCommand is the API server's command on the copy's own etcd, with the
 // webhook plugins disabled and no compaction, so that a sweep's continue
-// tokens hold across its passes.
+// tokens hold across its passes, and without the peer flags a tenant may set:
+// with --peer-ca-file the mixed-version proxy dials every API server whose
+// identity Lease the snapshot holds, the tenant's own, directly, since the
+// egress selector names no controlplane network
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/peer.go#L66-L86).
 func copyCommand(command []string) []string {
 	flags := map[string]string{}
 	for _, arg := range command[1:] {
 		name, value, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
 		flags[name] = value
 	}
-	for _, name := range []string{"etcd-cafile", "etcd-certfile", "etcd-keyfile"} {
+	for _, name := range []string{"etcd-cafile", "etcd-certfile", "etcd-keyfile", "peer-ca-file", "peer-advertise-ip", "peer-advertise-port"} {
 		delete(flags, name)
 	}
 	flags["etcd-servers"] = copyEtcd

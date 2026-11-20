@@ -223,6 +223,30 @@ func TestTheCopyReadsTheAdmissionPluginsAsKubeAPIServerDoes(t *testing.T) {
 	}
 }
 
+func TestTheCopyRendersNoPeerFlags(t *testing.T) {
+	cp := &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Version:  "v1.37.1",
+			Endpoint: lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+			APIServer: &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{
+				"peer-ca-file": "/etc/lodia/client-ca/ca.crt", "peer-advertise-ip": "10.244.0.7", "peer-advertise-port": "6443",
+			}},
+		},
+	}
+	r := copyRendering(t, cp, lodiav1alpha1.EndpointStatus{InCluster: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}})
+	if flags := flagsOf(r.apiServer().Spec.Template.Spec.Containers[0].Command); flags["peer-ca-file"] == "" {
+		t.Fatalf("the tenant's API server renders no --peer-ca-file: %v", flags)
+	}
+	flags := flagsOf(r.rehearsalCopy("v1.37.1", 1, resource.MustParse("4Gi"), nil).Spec.Containers[0].Command)
+	for _, name := range []string{"peer-ca-file", "peer-advertise-ip", "peer-advertise-port"} {
+		if value, set := flags[name]; set {
+			t.Errorf("the copy renders --%s=%s", name, value)
+		}
+	}
+}
+
 func TestTheCopysPolicyAdmitsTheOperatorAlone(t *testing.T) {
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}}
 	p := copyPolicy(cp, "lodia-system")

@@ -27,6 +27,7 @@ Its API server is the render of the tenant's at the step's version, with only th
 | `--etcd-compaction-interval` at its default or the tenant's | `0`, so that a sweep's continue tokens hold across its passes |
 | the webhook admission plugins on | off: in the disable list and out of the enable list, both read as kube-apiserver reads them, a CSV record whose quotes are not part of a name ([admission.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/server/options/admission.go#L108-L116)) |
 | konnectivity-server and, in `gateway` mode, lodia-tunnel | none; lodia-signer kept |
+| `--peer-ca-file`, `--peer-advertise-ip` and `--peer-advertise-port` a tenant sets in `extraArgs` | none: with `--peer-ca-file` the mixed-version proxy would dial the tenant's API servers, whose identity Leases the snapshot holds, directly ([peer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/peer.go#L66-L86)) |
 | startup, liveness and readiness probes, a preStop sleep | a readiness probe on `/readyz` every second |
 | `terminationMessagePolicy: File` | `FallbackToLogsOnError`, so that the exit's reason lands in the pod's status ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/core/v1/types.go#L3279-L3280)) |
 | a Deployment and its spread constraints | one Pod, `restartPolicy: OnFailure`, `activeDeadlineSeconds: 900`, `terminationGracePeriodSeconds: 5` |
