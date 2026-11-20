@@ -702,26 +702,59 @@ func TestAnAPIServerThatExitsFailsTheRehearsalWhichRunsAgainKeepingItsVerdict(t 
 }
 
 func TestTheWaitBeforeARunAgainSurvivesARestart(t *testing.T) {
+	for _, c := range []struct{ restart, mark time.Duration }{{4 * time.Minute, 10 * time.Minute}, {14 * time.Minute, 20 * time.Minute}} {
+		t.Run(c.restart.String(), func(t *testing.T) {
+			cp := rehearsing(t)
+			setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), exitedCopy(unknownGate))
+			failed := expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed)
+			expectNoCopy(t, cp)
+
+			rehearsalClock.offset.Store(int64(c.restart))
+			t.Cleanup(func() { rehearsalClock.offset.Store(0) })
+			restarted := newRehearsal()
+			result, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if pod := copyOf(t, cp); pod != nil || result.RequeueAfter <= c.mark-c.restart-time.Minute || result.RequeueAfter > c.mark-c.restart {
+				t.Errorf("a restarted operator %s after the verdict of %s made a copy (%t) and waits %s, want no copy and the rest of the time to the %s mark", c.restart, failed.LastTransitionTime, pod != nil, result.RequeueAfter, c.mark)
+			}
+			rehearsalClock.offset.Store(int64(c.mark + time.Second))
+			if _, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+				t.Fatal(err)
+			}
+			eventuallyCopy(t, cp, get(t, cp).Generation)
+		})
+	}
+}
+
+func TestARunAgainThatFailsWaitsForTheNextMarkFromItsEnd(t *testing.T) {
 	cp := rehearsing(t)
-	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), exitedCopy(unknownGate))
+	generation := get(t, cp).Generation
+	setCopy(t, eventuallyCopy(t, cp, generation), exitedCopy(unknownGate))
 	failed := expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed)
 	expectNoCopy(t, cp)
-
-	rehearsalClock.offset.Store(int64(4 * time.Minute))
 	t.Cleanup(func() { rehearsalClock.offset.Store(0) })
-	restarted := newRehearsal()
-	result, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
-	if err != nil {
-		t.Fatal(err)
+	at := func(d time.Duration) {
+		rehearsalClock.offset.Store(int64(failed.LastTransitionTime.Add(d).Sub(time.Now())))
 	}
-	if pod := copyOf(t, cp); pod != nil || result.RequeueAfter <= 5*time.Minute || result.RequeueAfter > 6*time.Minute {
-		t.Errorf("a restarted operator 4 minutes after the verdict of %s made a copy (%t) and waits %s, want no copy and the rest of the 10 minutes", failed.LastTransitionTime, pod != nil, result.RequeueAfter)
+
+	at(11 * time.Minute)
+	poke(t, cp)
+	setCopy(t, eventuallyCopy(t, cp, generation), exitedCopy(unknownGate+" again"))
+	again := expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed, unknownGate+" again")
+	expectNoCopy(t, cp)
+	if !again.LastTransitionTime.Equal(&failed.LastTransitionTime) {
+		t.Errorf("the failed verdict's lastTransitionTime moved from %s to %s", failed.LastTransitionTime, again.LastTransitionTime)
 	}
-	rehearsalClock.offset.Store(int64(10*time.Minute + time.Second))
-	if _, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
-		t.Fatal(err)
+	poke(t, cp)
+	time.Sleep(3 * time.Second)
+	if pod := copyOf(t, cp); pod != nil {
+		t.Fatalf("a run again that ended 11 minutes after the verdict was followed by %s before the 20-minute mark", pod.Name)
 	}
-	eventuallyCopy(t, cp, get(t, cp).Generation)
+	at(20*time.Minute + time.Second)
+	poke(t, cp)
+	eventuallyCopy(t, cp, generation)
 }
 
 func TestAPolicyAnotherOwnerKeepsIsTriedAgainSooner(t *testing.T) {
