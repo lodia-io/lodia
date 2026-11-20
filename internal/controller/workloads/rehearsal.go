@@ -124,8 +124,9 @@ func (r *RehearsalReconciler) SetupWithManager(mgr ctrl.Manager, workers int) er
 // Reconcile runs a copy while status.kubernetes.upgrade.step is Rehearsal and
 // Rehearsed has no verdict for the step's version at the object's
 // generation, or a False one due to run again, and removes any copy otherwise.
-// A paused ControlPlane starts no copy, and one already running ends at its
-// deadline.
+// A paused ControlPlane starts no copy, and one a node started ends at its
+// deadline; one no node started holds its place until the pause ends, since
+// the kubelet enforces the deadline only from the Pod's start.
 func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {

@@ -67,7 +67,8 @@ A failed verdict runs again at once on a new generation, the owner's fix among t
 A run longer than 10 minutes skips a mark: a copy that runs to its 15-minute deadline, `CopyFailed`, runs again every 20 minutes.
 `ObjectsControlledElsewhere` runs again every minute, and `Refused` on the controller's backoff, which doubles from 5 ms to at most 1,000 s ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/controller/controller.go#L271-L277)), so a refusal that stands, as of a quota, is tried again up to 16 minutes 40 seconds apart.
 While it runs again at the same generation the verdict stays, so that `Progressing` does not flip.
-A paused `ControlPlane` starts no copy, and one already running ends at its deadline: it holds its place among the copies below until then or until the pause ends, and, ended by its kubelet, holds none.
+A paused `ControlPlane` starts no copy, and one a node started ends at its deadline: it holds its place among the copies below until then or until the pause ends, and, ended by its kubelet, holds none.
+One no node started holds its place until the pause ends, since the kubelet enforces `activeDeadlineSeconds` only from the Pod's start ([active_deadline.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/kubelet/active_deadline.go#L89-L91)).
 
 **How many.**
 At most `fleet.maxConcurrentRehearsals` copies run at once, 5 by default, apart from the fleet's slots, which an owner's upgrade does not take; the rehearsal counts as copies the Pods with a copy's two labels that a `ControlPlane` controls, from the cache, which holds the Pods with those labels and no other, under a fence of its own ([`internal/fence`](../../internal/fence/fence.go)); a Pod someone else labels so takes no place and is neither judged nor deleted.
