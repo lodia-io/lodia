@@ -282,8 +282,8 @@ func (s *sampling) expired(lease *leaderLease, now time.Time) bool {
 }
 
 // podOfControlPlane says whether holder is a pod Lodia runs for cp: a leader's
-// identity is <pod name>_<uuid>. The list goes through the API server, since no
-// cache holds pods.
+// identity is <pod name>_<uuid>. The list goes through the API server, since
+// the cache holds the Pods labelled as rehearsals' copies alone.
 func (r *NodesReconciler) podOfControlPlane(ctx context.Context, cp *lodiav1alpha1.ControlPlane, holder string) (bool, error) {
 	pods := &corev1.PodList{}
 	if err := r.Reader.List(ctx, pods, client.InNamespace(cp.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: cp.Name}); err != nil {

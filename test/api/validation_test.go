@@ -1028,12 +1028,39 @@ func TestKubernetesStatus(t *testing.T) {
 		want    string
 	}{
 		{"a step", map[string]any{"step": "ControllerManager", "startedAt": "2026-10-27T02:00:00Z"}, ""},
-		{"another step", map[string]any{"step": "Nodes", "startedAt": "2026-10-27T02:00:00Z"}, `supported values: "Backup", "APIServer", "ControllerManager", "Scheduler", "Addons"`},
+		{"the rehearsal", map[string]any{"step": "Rehearsal", "startedAt": "2026-10-27T02:00:00Z"}, ""},
+		{"another step", map[string]any{"step": "Nodes", "startedAt": "2026-10-27T02:00:00Z"}, `supported values: "Rehearsal", "Backup", "APIServer", "ControllerManager", "Scheduler", "Addons"`},
 		{"no start", map[string]any{"step": "APIServer"}, "startedAt: Required value"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			written := obj.DeepCopy()
 			set(t, written, map[string]any{"version": "v1.36.4", "upgrade": c.upgrade}, "status", "kubernetes")
+			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
+		})
+	}
+}
+
+func TestRehearsalStatus(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	obj := example(t, "controlplane-single.yaml", "rehearsal-status")
+	if err := k8s.Create(context.Background(), obj); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k8s.Delete(context.Background(), obj) })
+	for _, c := range []struct {
+		name      string
+		rehearsal map[string]any
+		want      string
+	}{
+		{"a version", map[string]any{"version": "v1.37.1"}, ""},
+		{"a version of 16 characters", map[string]any{"version": "v1.37.1234567890"}, ""},
+		{"a version of 17 characters", map[string]any{"version": "v1.37.12345678901"}, "status.rehearsal.version: Too long"},
+		{"no version", map[string]any{}, "status.rehearsal.version: Required value"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			written := obj.DeepCopy()
+			set(t, written, c.rehearsal, "status", "rehearsal")
 			expect(t, k8s.Status().Update(context.Background(), written, client.DryRunAll), c.want)
 		})
 	}

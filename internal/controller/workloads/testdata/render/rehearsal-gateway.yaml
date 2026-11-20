@@ -1,0 +1,285 @@
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    lodia.io/rehearsal-generation: "3"
+    lodia.io/rehearsal-version: v1.37.1
+  generateName: dev-rehearsal-
+  labels:
+    app.kubernetes.io/name: rehearsal
+    lodia.io/control-plane: dev
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  activeDeadlineSeconds: 900
+  automountServiceAccountToken: false
+  containers:
+  - command:
+    - kube-apiserver
+    - --advertise-address=240.0.0.1
+    - --allow-privileged=true
+    - --authentication-config=/etc/lodia/authentication/authentication-config.yaml
+    - --authorization-mode=Node,RBAC
+    - --client-ca-file=/etc/lodia/client-ca/ca.crt
+    - --disable-admission-plugins=MutatingAdmissionWebhook,ValidatingAdmissionWebhook
+    - --egress-selector-config-file=/etc/lodia/egress/egress-selector.yaml
+    - --enable-admission-plugins=NodeRestriction
+    - --enable-bootstrap-token-auth=true
+    - --encryption-provider-config=/etc/lodia/encryption/encryption-config.yaml
+    - --encryption-provider-config-automatic-reload=true
+    - --endpoint-reconciler-type=none
+    - --etcd-compaction-interval=0
+    - --etcd-servers=http://127.0.0.1:2379
+    - --kubelet-client-certificate=/etc/lodia/kubelet-client/tls.crt
+    - --kubelet-client-key=/etc/lodia/kubelet-client/tls.key
+    - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+    - --proxy-client-cert-file=/etc/lodia/front-proxy-client/tls.crt
+    - --proxy-client-key-file=/etc/lodia/front-proxy-client/tls.key
+    - --requestheader-allowed-names=front-proxy-client
+    - --requestheader-client-ca-file=/etc/lodia/front-proxy-ca/ca.crt
+    - --requestheader-extra-headers-prefix=X-Remote-Extra-
+    - --requestheader-group-headers=X-Remote-Group
+    - --requestheader-username-headers=X-Remote-User
+    - --secure-port=6443
+    - --service-account-issuer=https://api.dev.example.test
+    - --service-account-jwks-uri=https://api.dev.example.test/openid/v1/jwks
+    - --service-account-signing-endpoint=/run/signer/signer.sock
+    - --service-cluster-ip-range=10.96.0.0/16
+    - --shutdown-delay-duration=0s
+    - --shutdown-watch-termination-grace-period=10s
+    - --tls-cert-file=/etc/lodia/serving/tls.crt
+    - --tls-private-key-file=/etc/lodia/serving/tls.key
+    image: registry.k8s.io/kube-apiserver:v1.37.1
+    name: kube-apiserver
+    ports:
+    - containerPort: 6443
+      name: https
+      protocol: TCP
+    readinessProbe:
+      failureThreshold: 3
+      httpGet:
+        path: /readyz
+        port: https
+        scheme: HTTPS
+      periodSeconds: 1
+      timeoutSeconds: 15
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+    terminationMessagePolicy: FallbackToLogsOnError
+    volumeMounts:
+    - mountPath: /etc/lodia/serving
+      name: serving
+      readOnly: true
+    - mountPath: /etc/lodia/client-ca
+      name: client-ca
+      readOnly: true
+    - mountPath: /etc/lodia/kubelet-client
+      name: kubelet-client
+      readOnly: true
+    - mountPath: /etc/lodia/front-proxy-ca
+      name: front-proxy-ca
+      readOnly: true
+    - mountPath: /etc/lodia/front-proxy-client
+      name: front-proxy-client
+      readOnly: true
+    - mountPath: /etc/lodia/encryption
+      name: encryption
+      readOnly: true
+    - mountPath: /etc/lodia/authentication
+      name: authentication
+      readOnly: true
+    - mountPath: /etc/lodia/egress
+      name: egress
+      readOnly: true
+    - mountPath: /run/konnectivity
+      name: konnectivity-socket
+    - mountPath: /run/signer
+      name: signer-socket
+  enableServiceLinks: false
+  initContainers:
+  - command:
+    - etcdctl
+    - --endpoints=https://dev-etcd-client.team-a.svc:2379
+    - --cacert=/etc/lodia/etcd-ca/ca.crt
+    - --cert=/etc/lodia/etcd-client/tls.crt
+    - --key=/etc/lodia/etcd-client/tls.key
+    - --dial-timeout=10s
+    - --command-timeout=5m
+    - snapshot
+    - save
+    - /var/rehearsal/snapshot.db
+    image: gcr.io/etcd-development/etcd:v3.5.27@sha256:8e402d61918b1d847c322c8eb11541884d76f3dbcc267afd98347493269bd007
+    name: snapshot
+    resources: {}
+    terminationMessagePolicy: FallbackToLogsOnError
+    volumeMounts:
+    - mountPath: /etc/lodia/etcd-ca
+      name: etcd-ca
+      readOnly: true
+    - mountPath: /etc/lodia/etcd-client
+      name: etcd-client
+      readOnly: true
+    - mountPath: /var/rehearsal
+      name: rehearsal
+  - command:
+    - etcdutl
+    - snapshot
+    - restore
+    - /var/rehearsal/snapshot.db
+    - --data-dir=/var/rehearsal/data
+    - --name=rehearsal
+    - --initial-cluster=rehearsal=http://127.0.0.1:2380
+    - --initial-advertise-peer-urls=http://127.0.0.1:2380
+    image: gcr.io/etcd-development/etcd:v3.5.27@sha256:8e402d61918b1d847c322c8eb11541884d76f3dbcc267afd98347493269bd007
+    name: restore
+    resources: {}
+    terminationMessagePolicy: FallbackToLogsOnError
+    volumeMounts:
+    - mountPath: /var/rehearsal
+      name: rehearsal
+  - command:
+    - etcd
+    - --data-dir=/var/rehearsal/data
+    - --listen-client-urls=http://127.0.0.1:2379
+    - --advertise-client-urls=http://127.0.0.1:2379
+    - --listen-peer-urls=http://127.0.0.1:2380
+    - --listen-metrics-urls=http://127.0.0.1:2381
+    - --name=rehearsal
+    - --initial-cluster=rehearsal=http://127.0.0.1:2380
+    - --initial-advertise-peer-urls=http://127.0.0.1:2380
+    - --quota-backend-bytes=4294967296
+    image: gcr.io/etcd-development/etcd:v3.5.27@sha256:8e402d61918b1d847c322c8eb11541884d76f3dbcc267afd98347493269bd007
+    name: etcd
+    readinessProbe:
+      exec:
+        command:
+        - etcdctl
+        - --endpoints=http://127.0.0.1:2379
+        - endpoint
+        - health
+      periodSeconds: 5
+    resources: {}
+    restartPolicy: Always
+    startupProbe:
+      exec:
+        command:
+        - etcdctl
+        - --endpoints=http://127.0.0.1:2379
+        - endpoint
+        - health
+      failureThreshold: 300
+      periodSeconds: 1
+    terminationMessagePolicy: FallbackToLogsOnError
+    volumeMounts:
+    - mountPath: /var/rehearsal
+      name: rehearsal
+  - args:
+    - --socket=/run/signer/signer.sock
+    - --keys-dir=/keys
+    image: registry.example/lodia-signer:test
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 8081
+      periodSeconds: 10
+    name: lodia-signer
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+    restartPolicy: Always
+    startupProbe:
+      failureThreshold: 30
+      httpGet:
+        path: /readyz
+        port: 8081
+      periodSeconds: 1
+    volumeMounts:
+    - mountPath: /run/signer
+      name: signer-socket
+    - mountPath: /keys
+      name: sa-keys
+      readOnly: true
+  restartPolicy: OnFailure
+  terminationGracePeriodSeconds: 5
+  volumes:
+  - name: client-ca
+    secret:
+      secretName: dev-client-ca
+  - name: encryption
+    secret:
+      secretName: dev-encryption-config
+  - name: etcd-ca
+    secret:
+      secretName: dev-etcd-ca
+  - name: etcd-client
+    secret:
+      secretName: dev-apiserver-etcd-client
+  - name: front-proxy-ca
+    secret:
+      secretName: dev-front-proxy-ca
+  - name: front-proxy-client
+    secret:
+      secretName: dev-front-proxy-client
+  - name: kubelet-client
+    secret:
+      secretName: dev-apiserver-kubelet-client
+  - name: sa-keys
+    secret:
+      secretName: dev-sa-keys
+  - name: serving
+    secret:
+      secretName: dev-apiserver-serving
+  - configMap:
+      name: dev-authentication-config
+    name: authentication
+  - configMap:
+      name: dev-egress-selector
+    name: egress
+  - emptyDir: {}
+    name: konnectivity-socket
+  - emptyDir: {}
+    name: signer-socket
+  - emptyDir:
+      sizeLimit: 8Gi
+    name: rehearsal
+status: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  labels:
+    lodia.io/control-plane: dev
+  name: dev-rehearsal
+  namespace: team-a
+  ownerReferences:
+  - apiVersion: lodia.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ControlPlane
+    name: dev
+    uid: 5e1f7c3a-0000-4000-8000-000000000001
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: lodia-system
+    ports:
+    - port: 6443
+      protocol: TCP
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rehearsal
+      lodia.io/control-plane: dev
+  policyTypes:
+  - Ingress

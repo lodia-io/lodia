@@ -103,21 +103,22 @@ type Writer struct {
 // that copy holds with another reason, since a writer tells its first pass
 // from a cache that can lag behind its own last write.
 func (w Writer) Apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	_, _, err := w.write(ctx, cp, desired, changed)
+	_, _, err := w.write(ctx, cp, desired, changed, false)
 	return err
 }
 
 // ApplyVersion is Apply returning the resourceVersion its write left, empty
-// when it wrote nothing.
-func (w Writer) ApplyVersion(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) (string, error) {
-	_, version, err := w.write(ctx, cp, desired, changed)
+// when it wrote nothing. A locked write carries the resourceVersion cp was
+// read at, so that it conflicts once cp has changed since.
+func (w Writer) ApplyVersion(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed, locked bool) (string, error) {
+	_, version, err := w.write(ctx, cp, desired, changed, locked)
 	return version, err
 }
 
 // ApplyInto is Apply for a writer that goes on from its own conditions in the
 // same pass: it leaves cp with the conditions it wrote.
 func (w Writer) ApplyInto(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	written, _, err := w.write(ctx, cp, desired, changed)
+	written, _, err := w.write(ctx, cp, desired, changed, false)
 	if written != nil {
 		cp.Status.Conditions = written
 	}
@@ -138,7 +139,7 @@ func Live(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPl
 
 // write returns the conditions it wrote among cp's, nil when it wrote none,
 // and the resourceVersion the write left.
-func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) ([]metav1.Condition, string, error) {
+func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed, locked bool) ([]metav1.Condition, string, error) {
 	ctx, cancel, err := ownDeadline(ctx)
 	if err != nil {
 		return nil, "", err
@@ -176,7 +177,11 @@ func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desir
 		return nil, "", err
 	}
 	fields["conditions"] = applied
-	version, err := w.apply(ctx, "ControlPlane", map[string]any{"name": cp.Name, "namespace": cp.Namespace}, fields)
+	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
+	if locked {
+		metadata["resourceVersion"] = cp.ResourceVersion
+	}
+	version, err := w.apply(ctx, "ControlPlane", metadata, fields)
 	if err != nil {
 		return nil, "", err
 	}

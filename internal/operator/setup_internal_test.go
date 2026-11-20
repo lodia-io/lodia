@@ -72,12 +72,29 @@ func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
 	cfg.Health.Period = metav1.Duration{Duration: 7 * time.Second}
 	cfg.Health.FailuresBeforeFalse = 4
 	cfg.Fleet.MaxConcurrentRollouts = 2
+	cfg.Fleet.MaxConcurrentRehearsals = 0
 	got := newLifecycle(nil, nil, cfg, "v1.0.0+0")
 	if want := 4*(7*time.Second+newHealth(nil, nil, nil, cfg.Health).Timeout) + 15*time.Second; got.Settling != want {
 		t.Errorf("Settling = %s, want %s", got.Settling, want)
 	}
-	if got.MaxConcurrentRollouts != 2 || got.Revision != "v1.0.0+0" {
-		t.Errorf("MaxConcurrentRollouts = %d and Revision = %q, want 2 and v1.0.0+0", got.MaxConcurrentRollouts, got.Revision)
+	if got.MaxConcurrentRollouts != 2 || got.MaxConcurrentRehearsals != 0 || got.Revision != "v1.0.0+0" {
+		t.Errorf("MaxConcurrentRollouts = %d, MaxConcurrentRehearsals = %d and Revision = %q, want 2, 0 and v1.0.0+0", got.MaxConcurrentRollouts, got.MaxConcurrentRehearsals, got.Revision)
+	}
+	if got := newLifecycle(nil, nil, DefaultConfig(), "v1.0.0+0"); got.MaxConcurrentRehearsals != 5 {
+		t.Errorf("at the defaults MaxConcurrentRehearsals = %d, want 5", got.MaxConcurrentRehearsals)
+	}
+}
+
+func TestTheRehearsalRunsOnTheFilesLimit(t *testing.T) {
+	in := Inputs{Config: DefaultConfig(), SignerImage: "signer", OperatorNamespace: "lodia"}
+	if got := newRehearsal(nil, nil, nil, in); got.MaxConcurrent != 5 || got.SignerImage != "signer" || got.OperatorNamespace != "lodia" {
+		t.Errorf("at the defaults the rehearsal runs %d copies with %q in %q, want 5 with signer in lodia", got.MaxConcurrent, got.SignerImage, got.OperatorNamespace)
+	}
+	for _, limit := range []int{0, 2} {
+		in.Config.Fleet.MaxConcurrentRehearsals = limit
+		if got := newRehearsal(nil, nil, nil, in).MaxConcurrent; got != limit {
+			t.Errorf("with fleet.maxConcurrentRehearsals %d the rehearsal runs %d copies", limit, got)
+		}
 	}
 }
 

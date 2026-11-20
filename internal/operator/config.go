@@ -54,6 +54,7 @@ type ControllersConfig struct {
 	Health            ControllerConfig `json:"health"`
 	HealthNodes       ControllerConfig `json:"health-nodes"`
 	Workloads         ControllerConfig `json:"workloads"`
+	Rehearsal         ControllerConfig `json:"rehearsal"`
 }
 
 // ControllerConfig holds a controller's concurrent reconciles.
@@ -61,9 +62,10 @@ type ControllerConfig struct {
 	Workers int `json:"workers"`
 }
 
-// FleetConfig holds the fleet limit.
+// FleetConfig holds the fleet limit and the rehearsals' own.
 type FleetConfig struct {
-	MaxConcurrentRollouts int `json:"maxConcurrentRollouts"`
+	MaxConcurrentRollouts   int `json:"maxConcurrentRollouts"`
+	MaxConcurrentRehearsals int `json:"maxConcurrentRehearsals"`
 }
 
 // HealthConfig holds Health's settings.
@@ -102,11 +104,11 @@ func DefaultConfig() Config {
 			ReleaseAfter:        metav1.Duration{Duration: 2 * time.Minute},
 			MaxNodes:            5000,
 		},
-		Fleet: FleetConfig{MaxConcurrentRollouts: 5},
+		Fleet: FleetConfig{MaxConcurrentRollouts: 5, MaxConcurrentRehearsals: 5},
 		Controllers: ControllersConfig{
 			PKI: ControllerConfig{10}, KubeconfigRequest: ControllerConfig{10}, Datastore: ControllerConfig{10}, Backup: ControllerConfig{10},
 			DatastoreSample: ControllerConfig{10}, Lifecycle: ControllerConfig{10}, Tenant: ControllerConfig{10}, Health: ControllerConfig{100},
-			HealthNodes: ControllerConfig{100}, Workloads: ControllerConfig{10},
+			HealthNodes: ControllerConfig{100}, Workloads: ControllerConfig{10}, Rehearsal: ControllerConfig{10},
 		},
 	}
 }
@@ -129,6 +131,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if n := cfg.Fleet.MaxConcurrentRollouts; n < 1 {
 		return Config{}, fmt.Errorf("fleet.maxConcurrentRollouts is %d, want at least 1: with none no change Lodia starts ever rolls", n)
+	}
+	if n := cfg.Fleet.MaxConcurrentRehearsals; n < 0 {
+		return Config{}, fmt.Errorf("fleet.maxConcurrentRehearsals is %d, want 0, which turns rehearsals off, or more", n)
 	}
 	if err := cfg.Controllers.validate(); err != nil {
 		return Config{}, err

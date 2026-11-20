@@ -70,6 +70,9 @@ type Reconciler struct {
 	// Settling is how long a change Lodia started keeps its slot once it has
 	// rolled out.
 	Settling time.Duration
+	// MaxConcurrentRehearsals is fleet.maxConcurrentRehearsals: 0 takes a
+	// minor step from its preflight to its Backup with no rehearsal.
+	MaxConcurrentRehearsals int
 
 	slots fence.Fence
 }
@@ -121,7 +124,10 @@ func (r *Reconciler) controlPlanesOn(ctx context.Context, class client.Object) [
 // of the fleet, counted from the cache, is made again under the fleet's fence
 // and written under it, so that two passes never take one slot: from the
 // fleet the API server holds until a write under the fence has shown in the
-// cache, and from the cache, which then holds every grant, after.
+// cache, and from the cache, which then holds every grant, after. A write that
+// moves a minor step's target carries the resourceVersion of the copy it was
+// decided from, so that an edit made since conflicts and the next pass decides
+// at the new generation.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cached := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cached); err != nil {
@@ -157,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		d = decide(gathered)
 	}
-	version, err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).ApplyVersion(ctx, current, d.status, d.fieldsDiffer(current))
+	version, err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).ApplyVersion(ctx, current, d.status, d.fieldsDiffer(current), d.movesMinor)
 	if fenced && d.takesSlot {
 		written := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: current.Namespace, Name: current.Name, ResourceVersion: version}}
 		err = r.slots.Wrote(ctx, r.Client, written, err)
@@ -181,7 +187,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // DatastoreClass the Etcd runs from the cache, and, while a change is
 // pending, the fleet through fleet.
 func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane, fleet client.Reader) (facts, error) {
-	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision, limit: r.MaxConcurrentRollouts, settling: r.Settling}
+	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision, limit: r.MaxConcurrentRollouts, settling: r.Settling, rehearsals: r.MaxConcurrentRehearsals}
 	if minor := backupMinor(cp); minor != "" {
 		backup := &lodiav1alpha1.Backup{}
 		switch err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.PreUpgradeBackupName(cp.Name, minor, cp.UID)}, backup); {

@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -56,6 +57,7 @@ var conditionWriters = map[string]string{
 	lodiav1alpha1.ConditionControllerManagerHeld: "lodia/health-nodes",
 	lodiav1alpha1.ConditionProgressing:           "lodia/lifecycle",
 	lodiav1alpha1.ConditionReady:                 "lodia/lifecycle",
+	lodiav1alpha1.ConditionRehearsed:             "lodia/rehearsal",
 }
 
 var fieldWriters = map[string]string{
@@ -67,19 +69,21 @@ var fieldWriters = map[string]string{
 	"endpoint.konnectivity": "lodia/workloads",
 	"endpoint.inCluster":    "lodia/workloads",
 	"endpoint.tunnel":       "lodia/workloads",
+	"health":                "lodia/health-nodes",
 	"kubernetes":            "lodia/lifecycle",
 	"maintenance":           "lodia/lifecycle",
 	"nodes":                 "lodia/health-nodes",
 	"restore":               "lodia/datastore",
 	"target":                "lodia/lifecycle",
 	"observedGeneration":    "lodia/lifecycle",
+	"rehearsal":             "lodia/rehearsal",
 }
 
 func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		t.Skip("KUBEBUILDER_ASSETS is not set; run make test")
 	}
-	k8s := start(t)
+	cfg, k8s := serve(t)
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "writers-"}}
 	if err := k8s.Create(t.Context(), ns); err != nil {
 		t.Fatal(err)
@@ -90,6 +94,7 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	}
 	defer updates.Stop()
 	class, gateway, cp := gatewayTenant(ns.Name)
+	cp.Spec.Version = "v1.36.6"
 	backup := &lodiav1alpha1.Backup{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-backup", Namespace: ns.Name},
 		Spec:       lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: cp.Name}},
@@ -99,6 +104,19 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	atRehearsal := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status": map[string]any{
+			"target":     map[string]any{"version": "v1.35.0"},
+			"kubernetes": map[string]any{"upgrade": map[string]any{"step": string(lodiav1alpha1.UpgradeStepRehearsal), "startedAt": "2026-11-20T00:00:00Z"}},
+		},
+	}}
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(atRehearsal), client.FieldOwner("lodia/lifecycle"), client.ForceOwnership); err != nil {
+		t.Fatal(err)
+	}
+	run(t, cfg)
 
 	owners := map[string][]string{}
 	deadline := time.After(time.Minute)
@@ -197,7 +215,7 @@ func complete(cp *lodiav1alpha1.ControlPlane) bool {
 			return false
 		}
 	}
-	return true
+	return cp.Status.Rehearsal != nil
 }
 
 func statusOwners(obj metav1.Object) (map[string][]string, error) {

@@ -143,6 +143,22 @@ func (e *Env) StartSecond() *rest.Config {
 	return cfg
 }
 
+// Admin is the configuration of the API server's administrator.
+func (e *Env) Admin() *rest.Config { return rest.CopyConfig(e.cfg) }
+
+// ServingCertificate names the files of the API server's serving certificate
+// and its key.
+func (e *Env) ServingCertificate() (cert, key string) {
+	dir := e.env.ControlPlane.GetAPIServer().CertDir
+	return filepath.Join(dir, "apiserver.crt"), filepath.Join(dir, "apiserver.key")
+}
+
+// Etcd is the address of the API server's etcd, and SecondEtcd that of the
+// second's.
+func (e *Env) Etcd() string { return e.env.ControlPlane.Etcd.URL.String() }
+
+func (e *Env) SecondEtcd() string { return e.second.ControlPlane.Etcd.URL.String() }
+
 // StartDumping starts env and returns its stop. Where LODIA_APISERVER_DUMPS
 // names a directory, an API server still running after the given time since
 // its stop began is sent SIGQUIT, and the directory keeps its log and its

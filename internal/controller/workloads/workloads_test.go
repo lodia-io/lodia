@@ -44,6 +44,7 @@ import (
 	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/secretcache"
 	"go.lodia.io/lodia/internal/testenv"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -111,8 +112,21 @@ func TestMain(m *testing.M) {
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
 	}
+	copies := startCopies(env)
+	secrets := secretcache.New(mgr.GetCache(), apiReader)
+	newRehearsal = func() *workloads.RehearsalReconciler {
+		return &workloads.RehearsalReconciler{
+			Client: mgr.GetClient(), Reader: apiReader, Secrets: secrets, Clock: rehearsalClock, SignerImage: signerImage,
+			OperatorNamespace: operatorNamespace, MaxConcurrent: 1, Timeout: 5 * time.Second, Dial: copies.dial,
+		}
+	}
+	if err := newRehearsal().SetupWithManager(mgr, 2); err != nil {
+		env.Fatal("rehearsal", err)
+	}
 	env.StartManager(mgr)
-	os.Exit(env.Finish(m.Run()))
+	code := m.Run()
+	copies.Close()
+	os.Exit(env.Finish(code))
 }
 
 func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {

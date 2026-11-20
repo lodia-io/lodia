@@ -590,6 +590,26 @@ func TestALockedApplyConflictsOnAStaleResourceVersion(t *testing.T) {
 	}
 }
 
+func TestALockedStatusApplyConflictsOnAnEditSinceItsRead(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	read := stored(t, cp)
+	edited := read.DeepCopy()
+	edited.Spec.Version = "v1.35.1"
+	if err := k8s.Update(t.Context(), edited); err != nil {
+		t.Fatal(err)
+	}
+	desired := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "decided from the read", earlier)}}
+	if _, err := writer().ApplyVersion(t.Context(), read, desired, false, true); !apierrors.IsConflict(err) {
+		t.Fatalf("error %v, want a conflict", err)
+	}
+	if c := meta.FindStatusCondition(stored(t, cp).Status.Conditions, lodiav1alpha1.ConditionReady); c != nil {
+		t.Errorf("Ready is %+v, want nothing written", c)
+	}
+	if _, err := writer().ApplyVersion(t.Context(), stored(t, cp), desired, false, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func newBackup(t *testing.T, ns string) *lodiav1alpha1.Backup {
 	t.Helper()
 	backup := &lodiav1alpha1.Backup{

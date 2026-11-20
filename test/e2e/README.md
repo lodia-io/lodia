@@ -93,14 +93,16 @@ Then, for up to 2 minutes, it wants an event regarding the tenant, by its UID, w
 It sits behind the build tag `upgrade` with `e2e`, and `make e2e-upgrade` runs it on a kind cluster of its own as `make e2e-restore` runs G3; the `e2e-upgrade` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
 It reuses G3's versitygw store ([Gate G3](#gate-g3-a-backup-and-a-restore)) for the class `e2e-upgrade`, and needs nothing else of G3.
 
-A `ControlPlane` at v1.36.4 turns `Ready`, a container of the kind node image `v1.36.4`, by digest, joins it, and a pod runs on it.
-kube-proxy's and CoreDNS's images of v1.37.1 are pulled into the node, and both loops and two watches, of the `ControlPlane` and of the namespace's Deployments, start before `spec.version` moves to v1.37.1:
+A `ControlPlane` at v1.36.4 with `apiServer.featureGates` `APIServerTracing: true`, a gate 1.37 removed, turns `Ready`, a container of the kind node image `v1.36.4`, by digest, joins it, and a pod runs on it.
+kube-proxy's and CoreDNS's images of v1.37.1 are pulled into the node, and both loops and two watches, of the `ControlPlane` and of the namespace's Deployments, and a watch of every key of the tenant's etcd, through etcd-druid's client certificate, start before `spec.version` moves to v1.37.1:
 
-1. The `Backup` of 1.37 turns `Completed` with `status.kubernetesVersion` v1.36.4, no owner reference, before the target moves.
-2. While the API server reports v1.37.1 and the addons still the old minor, `logs` and `exec` reach the pod, the agents having reconnected to the new konnectivity-server ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L134-L144)); the tenant's `konnectivity-agent` image is still v1.36's after them.
-3. The upgrade ends: `status.kubernetes.version` v1.37.1, no `upgrade`, `Progressing` False, `Idle`, `Ready` True, the tenant's kube-proxy at v1.37.1, the node kept at v1.36.4 and reported as outdated.
+1. The edit stands `Failed` at `Rehearsal`, `Rehearsed` `APIServerFailed` naming the gate ([rehearse-a-minor-step](../../docs/decisions/rehearse-a-minor-step.md)), with the API server's Deployment, its pods and `status.components.apiServer.version` as they were, the target at v1.36.4, no pre-upgrade `Backup` and no copy left.
+2. The gate's removal rolls the API server at v1.36.4, `Rehearsed` turns `Passed`, and the `Backup` of 1.37 turns `Completed` with `status.kubernetesVersion` v1.36.4, no owner reference, before the target moves; no copy is left, and the tenant holds no identity Lease of kube-apiserver with the copy's host name.
+3. While the API server reports v1.37.1 and the addons still the old minor, `logs` and `exec` reach the pod, the agents having reconnected to the new konnectivity-server ([metrics.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/metrics/metrics.go#L134-L144)); the tenant's `konnectivity-agent` image is still v1.36's after them.
+4. The upgrade ends: `status.kubernetes.version` v1.37.1, no `upgrade`, `Progressing` False, `Idle`, `Ready` True, the tenant's kube-proxy at v1.37.1, the node kept at v1.36.4 and reported as outdated.
 
 The test wants the two watches to have seen the three Deployments and never the controller manager or the scheduler newer than the API server, in `status.components` or, in their images, than what `status.components.apiServer.version` reports, nor `status.addons` newer than the oldest component; and between the counts before the edit and counts each loop reports later than the end, no request failed, none found the `kubernetes` slice empty, and answers to at least 95% of the requests sent.
+While each copy runs the tenant's etcd sees no write of a bootstrap role or an APIService, which a copy of a newer minor writes at its start, and the test logs the keys it saw written by prefix, and each copy's creation, readiness and removal.
 The test does not ask `Ready` to stay `True` through the upgrade, and logs each change of it instead.
 
 ## Nightly: the chain and a highly available upgrade

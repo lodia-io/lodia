@@ -133,6 +133,12 @@ const (
 	// NetworkPolicy admits.
 	APIServerComponent = "kube-apiserver"
 
+	// RehearsalComponent is the ComponentLabel of the copy of the API
+	// server that rehearses a minor step, which Workloads writes and the
+	// Datastore controller's etcd NetworkPolicy admits; nothing else selects
+	// it.
+	RehearsalComponent = "rehearsal"
+
 	// DefaultAdvertiseAddress is the API server's advertise address in
 	// gateway mode when apiServer.advertiseAddress names none and the first
 	// service range is IPv4, which Workloads renders and publishes as

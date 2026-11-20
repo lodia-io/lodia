@@ -14,6 +14,7 @@ import (
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -85,16 +86,22 @@ func GatewayAPI(cfg *rest.Config) (bool, error) {
 }
 
 // Cache holds Lodia's own kinds whole, TLSRoutes and Gateways whole where
-// gatewayAPI says they are served, and of every other kind only the objects
-// labelled with their ControlPlane, without their managed fields. The cache
+// gatewayAPI says they are served, the Pods labelled as rehearsals' copies alone,
+// and of every other kind only the objects labelled with their ControlPlane,
+// without their managed fields. The cache
 // maps every kind it holds when it is built, and fails on one not served.
 func Cache(gatewayAPI bool) (cache.Options, error) {
 	labelled, err := labels.NewRequirement(lodiav1alpha1.ControlPlaneLabel, selection.Exists, nil)
 	if err != nil {
 		return cache.Options{}, err
 	}
+	rehearsals, err := labels.NewRequirement(lodiav1alpha1.ComponentLabel, selection.Equals, []string{lodiav1alpha1.RehearsalComponent})
+	if err != nil {
+		return cache.Options{}, err
+	}
 	everything := cache.ByObject{Label: labels.Everything()}
 	byObject := map[client.Object]cache.ByObject{
+		&corev1.Pod{}:                      {Label: labels.NewSelector().Add(*labelled, *rehearsals)},
 		&lodiav1alpha1.ControlPlane{}:      everything,
 		&lodiav1alpha1.DatastoreClass{}:    everything,
 		&lodiav1alpha1.KubeconfigRequest{}: everything,
@@ -118,8 +125,8 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 // EtcdDruidVersion, EtcdDruidNamespace and EtcdDruidDeployment etcd-druid's,
 // OperatorNamespace the operator's, which each etcd's NetworkPolicy admits,
 // and GatewayAPI what GatewayAPI found. Dial, when set, opens every
-// connection PKI, Tenant and Health make to a tenant, whose names nothing
-// outside a cluster resolves; it is nil in production.
+// connection PKI, Tenant, Health and the rehearsal make to a tenant, whose
+// names nothing outside a cluster resolves; it is nil in production.
 type Inputs struct {
 	Config              Config
 	Version             string
@@ -154,6 +161,7 @@ type controllers struct {
 	health    *health.Reconciler
 	nodes     *health.NodesReconciler
 	workloads *workloads.Reconciler
+	rehearsal *workloads.RehearsalReconciler
 }
 
 func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
@@ -192,6 +200,7 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 		health:    newHealth(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
 		nodes:     newNodes(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
 		workloads: &workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI, Revision: revision},
+		rehearsal: newRehearsal(mgr.GetClient(), mgr.GetAPIReader(), secrets, in),
 	}
 	c.health.DialContext, c.nodes.DialContext = in.Dial, in.Dial
 	return c
@@ -240,6 +249,9 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := c.workloads.SetupWithManager(mgr, workers.Workloads.Workers); err != nil {
 		return nil, fmt.Errorf("set up the workloads controller: %w", err)
 	}
+	if err := c.rehearsal.SetupWithManager(mgr, workers.Rehearsal.Workers); err != nil {
+		return nil, fmt.Errorf("set up the rehearsal reconciler: %w", err)
+	}
 	return &Sources{Health: c.health, Nodes: c.nodes, Etcd: c.sampler}, nil
 }
 
@@ -264,8 +276,16 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision string) *lifecycle.Reconciler {
 	return &lifecycle.Reconciler{
 		Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: revision,
-		MaxConcurrentRollouts: cfg.Fleet.MaxConcurrentRollouts,
-		Settling:              time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
+		MaxConcurrentRollouts:   cfg.Fleet.MaxConcurrentRollouts,
+		MaxConcurrentRehearsals: cfg.Fleet.MaxConcurrentRehearsals,
+		Settling:                time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
+	}
+}
+
+func newRehearsal(c client.Client, reader, secrets client.Reader, in Inputs) *workloads.RehearsalReconciler {
+	return &workloads.RehearsalReconciler{
+		Client: c, Reader: reader, Secrets: secrets, Clock: clock.RealClock{}, SignerImage: in.SignerImage,
+		OperatorNamespace: in.OperatorNamespace, MaxConcurrent: in.Config.Fleet.MaxConcurrentRehearsals, Timeout: healthTimeout, Dial: in.Dial,
 	}
 }
 

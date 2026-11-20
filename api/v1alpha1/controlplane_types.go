@@ -624,6 +624,10 @@ type ControlPlaneStatus struct {
 	// +optional
 	Kubernetes *KubernetesStatus `json:"kubernetes,omitempty"`
 
+	// Rehearsal is the minor step the condition Rehearsed is about.
+	// +optional
+	Rehearsal *RehearsalStatus `json:"rehearsal,omitempty"`
+
 	// Components are the rollouts of the API server, the controller manager
 	// and the scheduler.
 	// +optional
@@ -711,9 +715,19 @@ type KubernetesStatus struct {
 	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
 }
 
+// RehearsalStatus names the minor step a rehearsal ran for.
+type RehearsalStatus struct {
+	// Version is the Kubernetes version the step goes to.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=16
+	Version string `json:"version"`
+}
+
 // UpgradeStatus is the version change in progress.
 type UpgradeStatus struct {
-	// Step is Backup while a minor step's pre-upgrade Backup is taken,
+	// Step is Rehearsal while a minor step is rehearsed on a copy of the
+	// API server, then Backup while its pre-upgrade Backup is taken, both
 	// before the target moves, then the first of the others not at the
 	// target yet.
 	// +required
@@ -724,13 +738,14 @@ type UpgradeStatus struct {
 	StartedAt metav1.Time `json:"startedAt"`
 }
 
-// UpgradeStep is a step of a version change, in their order: the
-// pre-upgrade Backup of a minor step, then the API server, the controller
-// manager and the scheduler, and the objects inside the tenant.
-// +kubebuilder:validation:Enum=Backup;APIServer;ControllerManager;Scheduler;Addons
+// UpgradeStep is a step of a version change, in their order: the rehearsal
+// and the pre-upgrade Backup of a minor step, then the API server, the
+// controller manager and the scheduler, and the objects inside the tenant.
+// +kubebuilder:validation:Enum=Rehearsal;Backup;APIServer;ControllerManager;Scheduler;Addons
 type UpgradeStep string
 
 const (
+	UpgradeStepRehearsal         UpgradeStep = "Rehearsal"
 	UpgradeStepBackup            UpgradeStep = "Backup"
 	UpgradeStepAPIServer         UpgradeStep = "APIServer"
 	UpgradeStepControllerManager UpgradeStep = "ControllerManager"

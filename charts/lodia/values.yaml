@@ -42,6 +42,7 @@ health:
 
 fleet:
   maxConcurrentRollouts: 5
+  maxConcurrentRehearsals: 5
 
 resources:
   requests:
@@ -72,6 +73,8 @@ controllers:
   health-nodes:
     workers: 100
   workloads:
+    workers: 10
+  rehearsal:
     workers: 10
 
 metrics:

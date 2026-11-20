@@ -37,10 +37,9 @@ const (
 // gets a rule of its own only when etcd-druid's rule does not cover it.
 func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, druidNamespace, operatorNamespace string) *networkingv1ac.NetworkPolicyApplyConfiguration {
 	members := metav1ac.LabelSelector().WithMatchLabels(memberLabels(etcd))
-	apiServer := metav1ac.LabelSelector().WithMatchLabels(map[string]string{
-		lodiav1alpha1.ControlPlaneLabel: cp.Name,
-		lodiav1alpha1.ComponentLabel:    lodiav1alpha1.APIServerComponent,
-	})
+	component := func(name string) *metav1ac.LabelSelectorApplyConfiguration {
+		return metav1ac.LabelSelector().WithMatchLabels(map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.ComponentLabel: name})
+	}
 	tcp := func(port int32) *networkingv1ac.NetworkPolicyPortApplyConfiguration {
 		return networkingv1ac.NetworkPolicyPort().WithProtocol(corev1.ProtocolTCP).WithPort(intstr.FromInt32(port))
 	}
@@ -55,7 +54,8 @@ func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, dru
 		return metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: name})
 	}
 	rules := []*networkingv1ac.NetworkPolicyIngressRuleApplyConfiguration{
-		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(apiServer)).WithPorts(tcp(clientPort)),
+		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(component(lodiav1alpha1.APIServerComponent))).WithPorts(tcp(clientPort)),
+		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(component(lodiav1alpha1.RehearsalComponent))).WithPorts(tcp(clientPort)),
 		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(members)).WithPorts(memberPorts...),
 		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(namespace(druidNamespace))).WithPorts(druidPorts...),
 	}

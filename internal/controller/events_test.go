@@ -73,8 +73,10 @@ func TestEachControllerRecordsItsTransitionsOnceUnderItsName(t *testing.T) {
 	}
 	uids := map[string]string{"ControlPlane": string(cp.UID), "Backup": string(backup.UID), "KubeconfigRequest": string(request.UID)}
 	want := map[string]bool{}
-	for _, writer := range conditionWriters {
-		want["lodia.io/"+strings.TrimPrefix(writer, "lodia/")] = true
+	for conditionType, writer := range conditionWriters {
+		if conditionType != lodiav1alpha1.ConditionRehearsed {
+			want["lodia.io/"+strings.TrimPrefix(writer, "lodia/")] = true
+		}
 	}
 	for controller := range recorders {
 		want[controller] = true

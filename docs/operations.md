@@ -332,14 +332,18 @@ A clone restores through the API, as Velero does, which gives every object a new
 ### Stuck upgrade
 
 1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message what failed; the upgrade resumes when the cause is gone.
-2. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>`.
+2. `Rehearsal` step failing: `Rehearsed`'s message says what the copy of the API server at the next minor found ([rehearse-a-minor-step](decisions/rehearse-a-minor-step.md)).
+   A gate or a flag the next minor removed, `APIServerFailed` with kube-apiserver's own message, is fixed in `spec`, and the rehearsal runs again at once at the new generation; any other verdict runs again at a 10-minute mark from `Rehearsed`'s `lastTransitionTime` once its last run ended, every 20 minutes for a copy that runs to its deadline, `ObjectsControlledElsewhere` every minute and `Refused` up to 16 minutes 40 seconds apart ([rehearse-a-minor-step](decisions/rehearse-a-minor-step.md)).
+   `CopyFailed` quotes the pod's last reason: an image the node cannot pull, a pod that is not scheduled, or a snapshot the etcd's NetworkPolicy does not admit yet; or, for a copy that gave no verdict within 15 minutes, as one on a node that is gone, the sweep's last failed read; a copy its node ended, by an eviction, or one of whose containers, its etcd among them, it ended at its memory limit, is `CopyFailed` too, and runs again.
+   A rehearsal that stops a tenant wrongly is turned off for the whole operator with `fleet.maxConcurrentRehearsals: 0` for the length of that tenant's step: the step then goes to its `Backup`, and `Progressing` says no rehearsal ran.
+3. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>`.
    A failed `Backup` is final: delete it, and Lifecycle takes it again.
    A class without a backup store skips it, and `Progressing`'s message says so.
-   A failure named elsewhere holds the target at this step even with the `Backup` `Completed`, and the target moves once the cause is gone: if that took long, delete the `Backup` first, so that the upgrade starts from a fresh one.
-3. API server step failing: a removed flag or feature gate in `extraArgs` or `featureGates` is the usual cause; fix `spec`, the step retries.
-4. In-tenant step failing: an object the tenant refuses, named in `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards, and an image they cannot pull (air gap, registry mirror missing) shows in `AddonsAvailable`, not here.
-5. `MaintenanceFailed`: a new operator revision the tenant failed in its slot of the fleet, `Progressing`'s message saying what; the tenant keeps the slot, through an edit of its spec or a pause, and takes the next release at once, and the slot is free once the cause is gone and `Ready` has been True for the settling time.
-6. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so delete the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+   A step whose rehearsal passed waits here, its `Backup` `Completed`, while a failure named elsewhere stands, and `Progressing` names it; a fix in `spec` is rehearsed again first, and the target then moves on the `Backup` taken before the wait: if that took long, delete the `Backup` first, so that the upgrade starts from a fresh one.
+4. API server step failing: what a rehearsal does not reach, a webhook of the tenant that refuses the next minor's start writes among them, or a removed flag or feature gate while rehearsals are off; fix the cause, the step retries.
+5. In-tenant step failing: an object the tenant refuses, named in `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards, and an image they cannot pull (air gap, registry mirror missing) shows in `AddonsAvailable`, not here.
+6. `MaintenanceFailed`: a new operator revision the tenant failed in its slot of the fleet, `Progressing`'s message saying what; the tenant keeps the slot, through an edit of its spec or a pause, and takes the next release at once, and the slot is free once the cause is gone and `Ready` has been True for the settling time.
+7. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so delete the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
    A downgrade in place is not supported by Kubernetes.
 
 Pre-upgrade `Backup`s have no owner, so they outlive their `ControlPlane`, one per minor per tenant, and deleting them is the owner's ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
@@ -495,7 +499,7 @@ Warning, at once, on `Progressing=False` with `Failed` or `MaintenanceFailed`: t
 ### LodiaUpgradeStalled
 
 Warning, once `status.kubernetes.upgrade.startedAt` is more than 2 hours ago, whatever its step, while `Progressing` reads neither `Failed`, `MaintenanceFailed` nor `Paused`.
-An upgrade that neither ends nor fails waits on its `Backup` step, a `Backup` `Snapshotting` behind a full etcd for one, or on Tenant: `status.kubernetes.upgrade.step` and the [stuck upgrade](#stuck-upgrade) runbook.
+An upgrade that neither ends nor fails waits on its `Rehearsal` step for a place, `Rehearsed` `RehearsalLimit` while `fleet.maxConcurrentRehearsals` copies run, on its `Backup` step, a `Backup` `Snapshotting` behind a full etcd for one, or on Tenant: `status.kubernetes.upgrade.step` and the [stuck upgrade](#stuck-upgrade) runbook.
 
 ### LodiaMaintenanceHalted
 
@@ -547,6 +551,10 @@ CPU varies between runs more than memory: run [40334709578](https://github.com/l
 The nightly now runs on the public runner, 4 CPUs and 15.6 GiB, where run [40371428547](https://github.com/lodia-io/lodia/actions/runs/40371428547) measured 55.4 millicores and 422.9 MiB; the table stays run 40360016124's.
 A highly available control plane's target stays 1.5 CPU and 2.5 GiB.
 A management cluster sized for N tenants needs the sum of their requests on its control plane nodes, plus room to roll one Deployment of every tenant (the fleet limit bounds how many roll at once), plus etcd volumes with low fsync latency.
+
+A minor step's rehearsal runs a copy of the API server for a minute or so, beside the API server it rehearses: experiment X4 measured 0.23 to 0.30 GiB and 1.3 to 3.5 core-seconds at its peak, up to 1.6 cores for half a second, for 38 to 61 s from its creation to its removal, and the next minor's image pulled once per node in 6 to 8 s.
+Its requests are the API server's, lodia-signer's and the class's member resources for its etcd, and its `emptyDir` holds the snapshot and the restored database, at most twice the class's quota on the node's disk ([rehearse-a-minor-step](decisions/rehearse-a-minor-step.md)).
+At most `fleet.maxConcurrentRehearsals` copies run at once, 5 by default.
 
 The operator: two replicas; memory grows with the number of tenants it caches (label-scoped, metadata-only for Secrets) and reads, as the synthetic fleet measures ([Scale](#scale)).
 Health reads a tenant as JSON, and the tenant's administrator can have any server answer, an APIService naming a Service of their own included ([review checklist](review-checklist.md), item 10).

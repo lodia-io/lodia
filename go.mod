@@ -13,6 +13,7 @@ require (
 	github.com/prometheus/client_golang v1.24.0
 	github.com/prometheus/common v0.70.0
 	github.com/robfig/cron/v3 v3.0.1
+	github.com/spf13/pflag v1.0.10
 	github.com/vishvananda/netlink v1.3.1
 	go.etcd.io/etcd/api/v3 v3.7.0
 	go.etcd.io/etcd/client/v3 v3.7.0
@@ -107,7 +108,6 @@ require (
 	github.com/soheilhy/cmux v0.1.5 // indirect
 	github.com/spf13/afero v1.12.0 // indirect
 	github.com/spf13/cobra v1.10.2 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20220101234140-673ab2c3ae75 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect

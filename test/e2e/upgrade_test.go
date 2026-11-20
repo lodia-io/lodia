@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -46,6 +47,7 @@ const (
 	upgradeTo     = "v1.37.1"
 	nodeImage136  = "kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed"
 	readyBackends = "konnectivity_network_proxy_server_ready_backends"
+	removedGate   = "APIServerTracing"
 )
 
 func TestMinorUpgradeGate(t *testing.T) {
@@ -59,6 +61,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 		before  []loopCounts
 		history *recorder
 		upgrade *watchedUpgrade
+		etcd    *tenantEtcd
 		start   time.Time
 	)
 	key := client.ObjectKey{Namespace: upgradeTenant, Name: controlPlane}
@@ -66,7 +69,9 @@ func TestMinorUpgradeGate(t *testing.T) {
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
 			startStore(ctx, t, k8s)
-			createStoreTenant(ctx, t, k8s, key, upgradeClass, upgradeFrom)
+			createStoreTenant(ctx, t, k8s, key, upgradeClass, upgradeFrom, func(s *lodiav1alpha1.ControlPlaneSpec) {
+				s.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{removedGate: true}}
+			})
 			image, err := build(ctx, cfg.KubeconfigFile(), "./test/"+apiLoop)
 			if err != nil {
 				t.Fatal(err)
@@ -104,12 +109,65 @@ func TestMinorUpgradeGate(t *testing.T) {
 			upgrade = watchUpgrade(ctx, t, k8s, key)
 			return ctx
 		}).
-		Assess("the edit takes the upgrade through its preflight and a Backup that completes before the target moves", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("the edit stands Failed at Rehearsal on a gate the next minor removed, with the API server untouched and no Backup", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			pullAddons(ctx, t, node, upgradeTo)
+			etcd = watchTenantEtcd(ctx, t, cfg, k8s, key)
+			before := apiServerNow(ctx, t, k8s, key)
+			failing := watchCopy(ctx, k8s, key)
 			start = time.Now()
 			setVersionTo(ctx, t, k8s, key, upgradeTo)
+			verdict := expectRehearsed(ctx, t, k8s, key, upgradeTo, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed)
+			if !strings.Contains(verdict.Message, "unrecognized feature gate: "+removedGate) {
+				t.Errorf("Rehearsed's message does not name the gate: %s", verdict.Message)
+			}
+			until(ctx, t, time.Minute, "Progressing is Failed at Rehearsal", func(ctx context.Context) error {
+				cp := getControlPlane(ctx, t, k8s, key)
+				c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing)
+				switch {
+				case c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonFailed || !strings.Contains(c.Message, "Rehearsed: APIServerFailed: "):
+					return fmt.Errorf("Progressing is %+v", c)
+				case cp.Status.Kubernetes == nil || cp.Status.Kubernetes.Upgrade == nil || cp.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal:
+					return fmt.Errorf("status.kubernetes is %+v", cp.Status.Kubernetes)
+				case cp.Status.Target == nil || cp.Status.Target.Version != upgradeFrom:
+					return fmt.Errorf("status.target is %+v", cp.Status.Target)
+				}
+				return nil
+			})
+			expectNoCopy(ctx, t, k8s, key)
+			created, gone := failing.log(t, "failing")
+			etcd.check(t, "failing", created, gone)
+			if after := apiServerNow(ctx, t, k8s, key); !reflect.DeepEqual(after, before) {
+				t.Errorf("the API server is %+v after the failed rehearsal, want %+v", after, before)
+			}
+			cp := getControlPlane(ctx, t, k8s, key)
+			if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: lodiav1alpha1.PreUpgradeBackupName(key.Name, "1.37", cp.UID)}, &lodiav1alpha1.Backup{}); !apierrors.IsNotFound(err) {
+				t.Errorf("the pre-upgrade Backup exists after a failed rehearsal: %v", err)
+			}
+			return ctx
+		}).
+		Assess("the gate's removal rolls the API server at the older minor, the rehearsal passes, and a Backup completes before the target moves", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			passing := watchCopy(ctx, k8s, key)
+			setFeatureGates(ctx, t, k8s, key, nil)
+			until(ctx, t, 2*time.Minute, "the API server's Deployment drops the gate at "+upgradeFrom, func(ctx context.Context) error {
+				d := &appsv1.Deployment{}
+				if err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: key.Name + "-" + lodiav1alpha1.APIServerComponent}, d); err != nil {
+					return err
+				}
+				c := d.Spec.Template.Spec.Containers[0]
+				if slices.ContainsFunc(c.Command, func(arg string) bool { return strings.HasPrefix(arg, "--feature-gates=") }) || !strings.HasSuffix(c.Image, ":"+upgradeFrom) {
+					return fmt.Errorf("the API server runs %s with %v", c.Image, c.Command)
+				}
+				return nil
+			})
+			expectRehearsed(ctx, t, k8s, key, upgradeTo, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
 			backup := expectBackupCompleted(ctx, t, k8s, key, "1.37", upgradeFrom, upgradeTo, upgrade)
 			t.Logf("Backup %s: %s", backup.Name, meta.FindStatusCondition(backup.Status.Conditions, lodiav1alpha1.ConditionReady).Message)
+			expectNoCopy(ctx, t, k8s, key)
+			created, gone := passing.log(t, "passing")
+			etcd.check(t, "passing", created, gone)
+			etcd.stop()
+			etcd = nil
+			noCopyIdentity(ctx, t, access, key)
 			return ctx
 		}).
 		Assess("the target moves, and logs and exec reach the pod during the skew", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -178,6 +236,9 @@ func TestMinorUpgradeGate(t *testing.T) {
 			}
 			if upgrade != nil {
 				upgrade.stop()
+			}
+			if etcd != nil {
+				etcd.stop()
 			}
 			closeStoreTenant(ctx, t, k8s, key, upgradeClass)
 			return ctx
