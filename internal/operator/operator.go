@@ -200,10 +200,7 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 		health:    newHealth(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
 		nodes:     newNodes(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
 		workloads: &workloads.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), SignerImage: in.SignerImage, TunnelImage: in.TunnelImage, GatewayAPI: in.GatewayAPI, Revision: revision},
-		rehearsal: &workloads.RehearsalReconciler{
-			Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: secrets, Clock: clock.RealClock{}, SignerImage: in.SignerImage,
-			OperatorNamespace: in.OperatorNamespace, MaxConcurrent: in.Config.Fleet.MaxConcurrentRehearsals, Timeout: healthTimeout, Dial: in.Dial,
-		},
+		rehearsal: newRehearsal(mgr.GetClient(), mgr.GetAPIReader(), secrets, in),
 	}
 	c.health.DialContext, c.nodes.DialContext = in.Dial, in.Dial
 	return c
@@ -282,6 +279,13 @@ func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision st
 		MaxConcurrentRollouts:   cfg.Fleet.MaxConcurrentRollouts,
 		MaxConcurrentRehearsals: cfg.Fleet.MaxConcurrentRehearsals,
 		Settling:                time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
+	}
+}
+
+func newRehearsal(c client.Client, reader, secrets client.Reader, in Inputs) *workloads.RehearsalReconciler {
+	return &workloads.RehearsalReconciler{
+		Client: c, Reader: reader, Secrets: secrets, Clock: clock.RealClock{}, SignerImage: in.SignerImage,
+		OperatorNamespace: in.OperatorNamespace, MaxConcurrent: in.Config.Fleet.MaxConcurrentRehearsals, Timeout: healthTimeout, Dial: in.Dial,
 	}
 }
 

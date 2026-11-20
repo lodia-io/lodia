@@ -301,7 +301,7 @@ func liveCopy(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*corev1.Pod,
 		return nil, err
 	}
 	for i := range all {
-		if all[i].DeletionTimestamp.IsZero() {
+		if all[i].DeletionTimestamp.IsZero() && metav1.IsControlledBy(&all[i], cp) {
 			return &all[i], nil
 		}
 	}
@@ -553,6 +553,41 @@ func keep(t *testing.T, pod *corev1.Pod) {
 	})
 }
 
+func TestAnotherOwnersPodWithTheCopysLabelsIsNeitherJudgedNorDeleted(t *testing.T) {
+	cp := controlPlaneForRehearsal(t)
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "owner"}}
+	if err := k8s.Create(t.Context(), owner); err != nil {
+		t.Fatal(err)
+	}
+	foreign := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: cp.Namespace, Name: cp.Name + "-rehearsal-foreign",
+			Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent},
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: owner.Name, UID: owner.UID, Controller: new(true)}},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "kube-apiserver", Image: "registry.example/kube-apiserver:" + version}}},
+	}
+	if err := k8s.Create(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	setCopy(t, foreign, readyCopy())
+	startRehearsal(t, cp)
+	expectRehearsed(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsalLimit)
+	time.Sleep(2 * time.Second)
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), foreign); err != nil || !foreign.DeletionTimestamp.IsZero() {
+		t.Fatalf("the other owner's Pod is gone or being deleted: %v", err)
+	}
+	if c, _ := rehearsed(t, cp); c.Reason != lodiav1alpha1.ReasonRehearsalLimit {
+		t.Errorf("Rehearsed is %s beside the other owner's Pod, want RehearsalLimit", c.Reason)
+	}
+	if err := k8s.Delete(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	poke(t, cp)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
+}
+
 func TestTwoTenantsUnderALimitOfOneNeverGetTwoCopies(t *testing.T) {
 	watcher, err := k8s.Watch(t.Context(), &corev1.PodList{}, client.MatchingLabels{lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent})
 	if err != nil {
@@ -706,6 +741,51 @@ func TestANewGenerationReplacesARunningCopy(t *testing.T) {
 		t.Errorf("the copy of generation %d is %s with %v", fresh.Generation, replaced.UID, replaced.Spec.Containers[0].Command)
 	}
 	expectRehearsed(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsing)
+}
+
+func TestANewGenerationAfterAFailedVerdictIsRehearsedAtOnce(t *testing.T) {
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), exitedCopy(unknownGate))
+	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed, unknownGate)
+	expectNoCopy(t, cp)
+	fresh := get(t, cp)
+	patch := client.MergeFrom(fresh.DeepCopy())
+	fresh.Spec.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"StorageVersionMigrator": true}}
+	if err := k8s.Patch(t.Context(), fresh, patch); err != nil {
+		t.Fatal(err)
+	}
+	eventuallyCopy(t, cp, fresh.Generation)
+	expectRehearsed(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsing)
+}
+
+func TestAChainsSecondMinorIsRehearsedAtTheGenerationTheFirstPassedAt(t *testing.T) {
+	cp := controlPlaneForRehearsal(t)
+	setTargetAt(t, cp, "v1.35.10", "")
+	startRehearsal(t, cp)
+	generation := get(t, cp).Generation
+	passed := func(step string) {
+		t.Helper()
+		pod := eventuallyCopy(t, cp, generation)
+		if pod.Annotations["lodia.io/rehearsal-version"] != step || pod.Spec.Containers[0].Image != "registry.k8s.io/kube-apiserver:"+step {
+			t.Fatalf("the copy rehearses %s with %s, want %s", pod.Annotations["lodia.io/rehearsal-version"], pod.Spec.Containers[0].Image, step)
+		}
+		setCopy(t, pod, readyCopy())
+		testenv.Eventually(t, func() error {
+			c, at := rehearsed(t, cp)
+			if c == nil || c.Reason != lodiav1alpha1.ReasonPassed || c.ObservedGeneration != generation || at != step {
+				return fmt.Errorf("Rehearsed is %+v for %q, want Passed for %s at %d", c, at, step, generation)
+			}
+			return nil
+		})
+		expectNoCopy(t, cp)
+	}
+	passed("v1.36.6")
+	setTargetAt(t, cp, "v1.36.6", "")
+	applyStatus(t, cp, "test/lifecycle", map[string]any{"kubernetes": map[string]any{"upgrade": map[string]any{"step": string(lodiav1alpha1.UpgradeStepRehearsal), "startedAt": "2026-11-20T01:00:00Z"}}})
+	passed(version)
+	if g := get(t, cp).Generation; g != generation {
+		t.Errorf("the generation moved to %d, want both minors at %d", g, generation)
+	}
 }
 
 func TestACopyThatDoesNotRunItsAPIServerFailsTheStep(t *testing.T) {

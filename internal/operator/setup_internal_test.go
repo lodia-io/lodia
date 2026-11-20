@@ -85,6 +85,19 @@ func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
 	}
 }
 
+func TestTheRehearsalRunsOnTheFilesLimit(t *testing.T) {
+	in := Inputs{Config: DefaultConfig(), SignerImage: "signer", OperatorNamespace: "lodia"}
+	if got := newRehearsal(nil, nil, nil, in); got.MaxConcurrent != 5 || got.SignerImage != "signer" || got.OperatorNamespace != "lodia" {
+		t.Errorf("at the defaults the rehearsal runs %d copies with %q in %q, want 5 with signer in lodia", got.MaxConcurrent, got.SignerImage, got.OperatorNamespace)
+	}
+	for _, limit := range []int{0, 2} {
+		in.Config.Fleet.MaxConcurrentRehearsals = limit
+		if got := newRehearsal(nil, nil, nil, in).MaxConcurrent; got != limit {
+			t.Errorf("with fleet.maxConcurrentRehearsals %d the rehearsal runs %d copies", limit, got)
+		}
+	}
+}
+
 func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T) {
 	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
 	in.Config.Fleet.MaxConcurrentRollouts = 2
