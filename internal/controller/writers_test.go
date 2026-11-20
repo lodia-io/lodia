@@ -56,6 +56,7 @@ var conditionWriters = map[string]string{
 	lodiav1alpha1.ConditionControllerManagerHeld: "lodia/health-nodes",
 	lodiav1alpha1.ConditionProgressing:           "lodia/lifecycle",
 	lodiav1alpha1.ConditionReady:                 "lodia/lifecycle",
+	lodiav1alpha1.ConditionRehearsed:             "lodia/rehearsal",
 }
 
 var fieldWriters = map[string]string{
@@ -73,6 +74,7 @@ var fieldWriters = map[string]string{
 	"restore":               "lodia/datastore",
 	"target":                "lodia/lifecycle",
 	"observedGeneration":    "lodia/lifecycle",
+	"rehearsal":             "lodia/rehearsal",
 }
 
 func TestEveryStatusFieldHasOneWriter(t *testing.T) {
@@ -193,7 +195,7 @@ func complete(cp *lodiav1alpha1.ControlPlane) bool {
 		return false
 	}
 	for conditionType := range conditionWriters {
-		if meta.FindStatusCondition(cp.Status.Conditions, conditionType) == nil {
+		if conditionType != lodiav1alpha1.ConditionRehearsed && meta.FindStatusCondition(cp.Status.Conditions, conditionType) == nil {
 			return false
 		}
 	}

@@ -25,8 +25,19 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - pods
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
+  - get
   - list
   - watch
 - apiGroups:
@@ -69,6 +80,7 @@ rules:
   - lodia.io
   resources:
   - controlplanes
+  - datastoreclasses
   verbs:
   - get
   - list

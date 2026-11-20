@@ -53,10 +53,11 @@ func TestWithoutAFileTheDefaultsApply(t *testing.T) {
 			ReleaseAfter:        seconds(120),
 			MaxNodes:            5000,
 		},
-		Fleet: operator.FleetConfig{MaxConcurrentRollouts: 5},
+		Fleet: operator.FleetConfig{MaxConcurrentRollouts: 5, MaxConcurrentRehearsals: 5},
 		Controllers: operator.ControllersConfig{
 			PKI: workers(10), KubeconfigRequest: workers(10), Datastore: workers(10), Backup: workers(10), DatastoreSample: workers(10),
 			Lifecycle: workers(10), Tenant: workers(10), Health: workers(100), HealthNodes: workers(100), Workloads: workers(10),
+			Rehearsal: workers(10),
 		},
 	}
 	got, err := operator.LoadConfig("")
@@ -228,6 +229,20 @@ func TestTheFleetLimitComesFromTheFileAndIsAtLeastOne(t *testing.T) {
 		if got, err := load(t, "fleet:\n  maxConcurrentRollouts: "+n+"\n"); err == nil || !strings.Contains(err.Error(), "fleet.maxConcurrentRollouts") {
 			t.Errorf("a fleet limit of %s gives %+v, %v, want an error that names fleet.maxConcurrentRollouts", n, got, err)
 		}
+	}
+}
+
+func TestTheRehearsalsLimitComesFromTheFileAndZeroTurnsThemOff(t *testing.T) {
+	for _, n := range []int{0, 2} {
+		got, err := load(t, fmt.Sprintf("fleet:\n  maxConcurrentRehearsals: %d\n", n))
+		want := operator.DefaultConfig()
+		want.Fleet.MaxConcurrentRehearsals = n
+		if err != nil || got != want {
+			t.Errorf("a file that sets the rehearsals' limit to %d gives %+v, %v, want %+v", n, got, err, want)
+		}
+	}
+	if got, err := load(t, "fleet:\n  maxConcurrentRehearsals: -1\n"); err == nil || !strings.Contains(err.Error(), "fleet.maxConcurrentRehearsals") {
+		t.Errorf("a rehearsals' limit of -1 gives %+v, %v, want an error that names fleet.maxConcurrentRehearsals", got, err)
 	}
 }
 

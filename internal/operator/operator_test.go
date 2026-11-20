@@ -35,6 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
@@ -85,6 +86,35 @@ func TestTheCacheHoldsTheGatewayAPIWholeOnlyWhereItIsServed(t *testing.T) {
 			if len(held) > 0 != served {
 				t.Errorf("Cache(%t) holds %T by %v", served, kind, held)
 			}
+		}
+	}
+}
+
+func TestTheCacheHoldsTheRehearsalsCopiesAloneOfThePods(t *testing.T) {
+	options, err := operator.Cache(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pods labels.Selector
+	for obj, byObject := range options.ByObject {
+		if _, ok := obj.(*corev1.Pod); ok {
+			pods = byObject.Label
+		}
+	}
+	if pods == nil {
+		t.Fatal("the cache holds Pods by the default selector")
+	}
+	for _, c := range []struct {
+		labels labels.Set
+		held   bool
+	}{
+		{labels.Set{lodiav1alpha1.ControlPlaneLabel: "dev", lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}, true},
+		{labels.Set{lodiav1alpha1.ControlPlaneLabel: "dev", lodiav1alpha1.ComponentLabel: lodiav1alpha1.APIServerComponent}, false},
+		{labels.Set{lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}, false},
+		{labels.Set{lodiav1alpha1.ControlPlaneLabel: "dev"}, false},
+	} {
+		if got := pods.Matches(c.labels); got != c.held {
+			t.Errorf("the cache holds a Pod labelled %v: %t, want %t", c.labels, got, c.held)
 		}
 	}
 }
@@ -258,7 +288,7 @@ func TestEachControllerRunsTheWorkersOfItsKey(t *testing.T) {
 		PKI: operator.ControllerConfig{Workers: 21}, KubeconfigRequest: operator.ControllerConfig{Workers: 22}, Datastore: operator.ControllerConfig{Workers: 23},
 		Backup: operator.ControllerConfig{Workers: 24}, DatastoreSample: operator.ControllerConfig{Workers: 25}, Lifecycle: operator.ControllerConfig{Workers: 26},
 		Tenant: operator.ControllerConfig{Workers: 27}, Health: operator.ControllerConfig{Workers: 28}, HealthNodes: operator.ControllerConfig{Workers: 29},
-		Workloads: operator.ControllerConfig{Workers: 30},
+		Workloads: operator.ControllerConfig{Workers: 30}, Rehearsal: operator.ControllerConfig{Workers: 31},
 	}
 	if _, err := operator.Setup(mgr, in); err != nil {
 		t.Fatal(err)
@@ -274,7 +304,7 @@ func TestEachControllerRunsTheWorkersOfItsKey(t *testing.T) {
 	})
 	want := map[string]float64{
 		"pki": 21, "kubeconfigrequest": 22, datastore.Name: 23, datastore.BackupName: 24, datastore.SampleName: 25,
-		lifecycle.Name: 26, tenant.Name: 27, health.Name: 28, health.NodesName: 29, workloads.Name: 30,
+		lifecycle.Name: 26, tenant.Name: 27, health.Name: 28, health.NodesName: 29, workloads.Name: 30, workloads.RehearsalName: 31,
 	}
 	testenv.Eventually(t, func() error {
 		families, err := ctrlmetrics.Registry.Gather()

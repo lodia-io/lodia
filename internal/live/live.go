@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package live reads a writer's own conditions, Datastore's status.datastore
-// and status.restore, Workloads' status.components and status.endpoint,
-// Tenant's status.addons, PKI's status.credentials and Health's status.nodes,
+// and status.restore, Workloads' status.components and status.endpoint, the
+// rehearsal's status.rehearsal, Tenant's status.addons, PKI's
+// status.credentials and Health's status.nodes,
 // and for Lifecycle's decisions the whole object, as the API server holds
 // them, for the waits and keeps docs/decisions/independent-controllers.md
 // names. A read fails when the API
@@ -56,6 +57,18 @@ func Components(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Con
 		return err
 	}
 	cp.Status.Components, cp.Status.Endpoint = current.Status.Components, current.Status.Endpoint
+	return nil
+}
+
+// Rehearsal replaces cp's status.rehearsal and its conditions of the given
+// types with the API server's, read through reader, which must not be a
+// cache.
+func Rehearsal(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) error {
+	current, err := conditions(ctx, reader, cp, conditionTypes)
+	if err != nil {
+		return err
+	}
+	cp.Status.Rehearsal = current.Status.Rehearsal
 	return nil
 }
 

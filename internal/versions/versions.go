@@ -141,6 +141,22 @@ func EndOfSupport(minor string) (time.Time, bool) {
 	return day, err == nil
 }
 
+// Step is the version a minor step from target towards spec goes to: spec
+// itself on the next minor, else that minor's newest patch; and that minor,
+// with false when Lodia does not run it.
+func Step(spec, target string) (version, minor string, inTable bool) {
+	targetMinor, _ := Minor(target)
+	minor, inTable = Next(targetMinor)
+	if !inTable {
+		return "", minor, false
+	}
+	if specMinor, _ := Minor(spec); specMinor == minor {
+		return spec, minor, true
+	}
+	version, _ = Latest(minor)
+	return version, minor, true
+}
+
 // Next returns the minor after minor ("1.37" for "1.36"), and false when Lodia
 // does not run it; minor may have left the table.
 func Next(minor string) (string, bool) {

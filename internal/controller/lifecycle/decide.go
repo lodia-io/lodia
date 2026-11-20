@@ -366,7 +366,7 @@ func (c *change) settle(cp *lodiav1alpha1.ControlPlane) {
 
 func (f facts) minorStep(c *change) {
 	cp := f.cp
-	next, nextMinor, inTable := nextVersion(cp.Spec.Version, c.target)
+	next, nextMinor, inTable := versions.Step(cp.Spec.Version, c.target)
 	switch {
 	case c.upgrade != nil && c.upgrade.Step == lodiav1alpha1.UpgradeStepBackup:
 		if !inTable {
@@ -428,21 +428,6 @@ const clockSkew = time.Minute
 
 func notInTable(minor string) string {
 	return fmt.Sprintf("the next minor, %s, is not one Lodia runs: %s", minor, strings.Join(versions.Minors(), ", "))
-}
-
-// nextVersion is the version a minor step from target towards spec goes to:
-// spec itself on the next minor, else that minor's newest patch.
-func nextVersion(spec, target string) (version, minor string, inTable bool) {
-	targetMinor, _ := versions.Minor(target)
-	minor, inTable = versions.Next(targetMinor)
-	if !inTable {
-		return "", minor, false
-	}
-	if specMinor, _ := versions.Minor(spec); specMinor == minor {
-		return spec, minor, true
-	}
-	version, _ = versions.Latest(minor)
-	return version, minor, true
 }
 
 // takeBackup waits for the pre-upgrade Backup, created while it does not

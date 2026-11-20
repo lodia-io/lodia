@@ -101,6 +101,23 @@ func TestNext(t *testing.T) {
 	}
 }
 
+func TestStep(t *testing.T) {
+	for _, c := range []struct {
+		spec, target, version, minor string
+		inTable                      bool
+	}{
+		{"v1.37.1", "v1.36.4", "v1.37.1", "1.37", true},
+		{"v1.37.0", "v1.36.6", "v1.37.0", "1.37", true},
+		{"v1.37.1", "v1.35.8", "v1.36.6", "1.36", true},
+		{"v1.38.0", "v1.37.2", "", "1.38", false},
+	} {
+		version, minor, inTable := versions.Step(c.spec, c.target)
+		if version != c.version || minor != c.minor || inTable != c.inTable {
+			t.Errorf("Step(%s, %s) is %q, %q, %t, want %q, %q, %t", c.spec, c.target, version, minor, inTable, c.version, c.minor, c.inTable)
+		}
+	}
+}
+
 func TestMinorsAhead(t *testing.T) {
 	for _, c := range []struct {
 		from, to string

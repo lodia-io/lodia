@@ -5,7 +5,7 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
 
 ## Decision
 
-- **One package builds, keeps and uses every client of a tenant's API server** for PKI, Tenant, `health` and `health-nodes`: the transport of [tenant-clients-speak-http1](tenant-clients-speak-http1.md), a request sent once, an answer cut at 8 MiB and its headers at 64 KiB, and a failed answer read as a Status within bounds, or as a Status of Lodia's own that carries none of its text.
+- **One package builds, keeps and uses every client of a tenant's API server** for PKI, Tenant, `health`, `health-nodes` and `rehearsal`, whose copy of a minor step is a client at the copy's address with the API server's name: the transport of [tenant-clients-speak-http1](tenant-clients-speak-http1.md), a request sent once, an answer cut at 8 MiB and its headers at 64 KiB, and a failed answer read as a Status within bounds, or as a Status of Lodia's own that carries none of its text.
   `clientcmd.RESTConfigFromKubeConfig`, `client.New`, `kubernetes.NewForConfig`, `rest.HTTPClientFor` and `rest.UnversionedRESTClientForConfigAndClient` appear under `internal/controller` and `internal/operator` in tests only, for a client of a tenant.
 - **A caller reads an answer into the fields it keeps and nothing else**, with each array counted ([who-is-trusted](who-is-trusted.md)): no object of a tenant is decoded into an API type or into `unstructured`.
 - **A controller keeps a client for each `ControlPlane`, rebuilt when the bytes of its kubeconfig change, and forgets it once the `ControlPlane` is gone.**
@@ -72,5 +72,6 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
 ## Code
 
 - `internal/tenantclient` — `client.go` builds a client from a `rest.Config` and keeps the clients of a controller; `bounded.go` is the cap on a response, its headers and its connections; `read.go` sends a request once and reads a failed answer; `fields.go` holds the bounds of what every reader keeps.
+- `internal/controller/workloads/rehearsalsweep.go` — the sweep of a rehearsal's copy and of the tenant, one request at a time, with what it keeps of discovery, `APIService`s, CustomResourceDefinitions and `Table`s ([rehearse-a-minor-step](rehearse-a-minor-step.md)).
 - `internal/secretcache` — the reader, whose tests count the reads that reach the API server for a hit, a changed `resourceVersion`, a recreated Secret, a Secret outside the cache, a failed read, a read newer than the cache and one the cache overtook, a delete and a tombstone and a cancelled context, and, against envtest's informer, a delete in the cluster; `internal/operator` builds it once, in `newControllers`, whose test finds Tenant, `health`, `health-nodes` and the three dials of the etcd, the Datastore controller's, the Backup reconciler's and the sampler's, reading through it.
 - `internal/controller/tenant` — `table.go` is the table of kinds, `api.go` reaches the tenant by it, `reads.go` holds what Tenant keeps of an answer; `table_test.go` ties the table to the goldens of the render, and `hijacked_internal_test.go` puts a server of the test's own where the tenant's is.
