@@ -25,7 +25,7 @@ Its API server is the render of the tenant's at the step's version, with only th
 |---|---|
 | `--etcd-servers` the client Service, with its TLS flags and mounts | `http://127.0.0.1:2379`, an etcd in the pod |
 | `--etcd-compaction-interval` at its default or the tenant's | `0`, so that a sweep's continue tokens hold across its passes |
-| the webhook admission plugins on | off: in the disable list and out of the enable list |
+| the webhook admission plugins on | off: in the disable list and out of the enable list, both read as kube-apiserver reads them, a CSV record whose quotes are not part of a name ([admission.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/server/options/admission.go#L108-L116)) |
 | konnectivity-server and, in `gateway` mode, lodia-tunnel | none; lodia-signer kept |
 | startup, liveness and readiness probes, a preStop sleep | a readiness probe on `/readyz` every second |
 | `terminationMessagePolicy: File` | `FallbackToLogsOnError`, so that the exit's reason lands in the pod's status ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/core/v1/types.go#L3279-L3280)) |

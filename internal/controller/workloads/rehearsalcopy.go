@@ -4,6 +4,7 @@
 package workloads
 
 import (
+	"encoding/csv"
 	"maps"
 	"net"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -90,23 +92,42 @@ func copyCommand(command []string) []string {
 	}
 	flags["etcd-servers"] = copyEtcd
 	flags["etcd-compaction-interval"] = "0"
-	enabled := slices.DeleteFunc(strings.Split(flags["enable-admission-plugins"], ","), func(p string) bool { return slices.Contains(webhookPlugins, p) })
-	flags["enable-admission-plugins"] = strings.Join(enabled, ",")
-	var disabled []string
-	if flags["disable-admission-plugins"] != "" {
-		disabled = strings.Split(flags["disable-admission-plugins"], ",")
+	if enabled, err := plugins(flags["enable-admission-plugins"]); err == nil {
+		flags["enable-admission-plugins"] = pluginList(slices.DeleteFunc(enabled, func(p string) bool { return slices.Contains(webhookPlugins, p) }))
 	}
-	for _, p := range webhookPlugins {
-		if !slices.Contains(disabled, p) {
-			disabled = append(disabled, p)
+	if disabled, err := plugins(flags["disable-admission-plugins"]); err == nil {
+		for _, p := range webhookPlugins {
+			if !slices.Contains(disabled, p) {
+				disabled = append(disabled, p)
+			}
 		}
+		flags["disable-admission-plugins"] = pluginList(disabled)
 	}
-	flags["disable-admission-plugins"] = strings.Join(disabled, ",")
 	out := []string{command[0]}
 	for _, name := range slices.Sorted(maps.Keys(flags)) {
 		out = append(out, "--"+name+"="+flags[name])
 	}
 	return out
+}
+
+// plugins reads a list of admission plugins as kube-apiserver reads its flags,
+// with pflag's StringSlice: a CSV record, whose quotes are not part of a name
+// (https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/server/options/admission.go#L108-L116). A list
+// that does not parse fails the tenant's API server as it fails the copy's.
+func plugins(value string) ([]string, error) {
+	var list []string
+	flags := pflag.NewFlagSet("admission", pflag.ContinueOnError)
+	flags.StringSliceVar(&list, "plugins", nil, "")
+	err := flags.Set("plugins", value)
+	return list, err
+}
+
+func pluginList(plugins []string) string {
+	var b strings.Builder
+	w := csv.NewWriter(&b)
+	_ = w.Write(plugins)
+	w.Flush()
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func copySnapshot(etcd lodiav1alpha1.HostPort) corev1.Container {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -189,6 +190,36 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 	}
 	if !maps.Equal(pod.Labels, map[string]string{lodiav1alpha1.ControlPlaneLabel: "dev", lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}) || !metav1.IsControlledBy(pod, cp) {
 		t.Errorf("the copy is labelled %v and owned by %+v", pod.Labels, pod.OwnerReferences)
+	}
+}
+
+func TestTheCopyReadsTheAdmissionPluginsAsKubeAPIServerDoes(t *testing.T) {
+	for _, extra := range []map[string]string{
+		{"enable-admission-plugins": `AlwaysPullImages,"ValidatingAdmissionWebhook"`},
+		{"enable-admission-plugins": `AlwaysPullImages,"MutatingAdmissionWebhook"`, "disable-admission-plugins": `DefaultStorageClass`},
+	} {
+		cp := &lodiav1alpha1.ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
+			Spec: lodiav1alpha1.ControlPlaneSpec{
+				Version:   "v1.37.1",
+				Endpoint:  lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+				Network:   lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+				APIServer: &lodiav1alpha1.APIServer{ExtraArgs: extra},
+			},
+		}
+		r := copyRendering(t, cp, lodiav1alpha1.EndpointStatus{InCluster: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}})
+		var enabled, disabled []string
+		flags := pflag.NewFlagSet("kube-apiserver", pflag.ContinueOnError)
+		flags.StringSliceVar(&enabled, "enable-admission-plugins", nil, "")
+		flags.StringSliceVar(&disabled, "disable-admission-plugins", nil, "")
+		flags.ParseErrorsAllowlist.UnknownFlags = true
+		if err := flags.Parse(r.rehearsalCopy("v1.37.1", 1, resource.MustParse("4Gi"), nil).Spec.Containers[0].Command[1:]); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(enabled, []string{"NodeRestriction", "AlwaysPullImages"}) || !slices.Contains(disabled, "MutatingAdmissionWebhook") || !slices.Contains(disabled, "ValidatingAdmissionWebhook") ||
+			slices.ContainsFunc(enabled, func(p string) bool { return slices.Contains(disabled, p) }) || slices.ContainsFunc(disabled, func(p string) bool { return strings.Contains(p, `"`) }) {
+			t.Errorf("with %v the copy enables %q and disables %q", extra, enabled, disabled)
+		}
 	}
 }
 
