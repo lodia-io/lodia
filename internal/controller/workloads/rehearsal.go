@@ -267,8 +267,9 @@ func (r *RehearsalReconciler) rehearsingNow(ctx context.Context, cp *lodiav1alph
 var errCopied = errors.New("the ControlPlane has a copy")
 
 // place creates pod unless cp has a copy or MaxConcurrent copies run, counted
-// under the fence without those being deleted, and returns how many ran before
-// it.
+// under the fence without those being deleted or that their kubelet ended, as
+// the copy of a paused ControlPlane at its deadline, and returns how many ran
+// before it.
 func (r *RehearsalReconciler) place(ctx context.Context, cp *lodiav1alpha1.ControlPlane, pod *corev1.Pod) (int, error) {
 	if err := r.places.Acquire(ctx); err != nil {
 		return 0, err
@@ -288,6 +289,7 @@ func (r *RehearsalReconciler) place(ctx context.Context, cp *lodiav1alpha1.Contr
 		case !copied.DeletionTimestamp.IsZero():
 		case metav1.IsControlledBy(copied, cp):
 			return 0, errCopied
+		case copied.Status.Phase == corev1.PodFailed || copied.Status.Phase == corev1.PodSucceeded:
 		default:
 			running++
 		}

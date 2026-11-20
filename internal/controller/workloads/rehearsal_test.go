@@ -646,6 +646,36 @@ func TestAnotherOwnersPodWithTheCopysLabelsIsNeitherJudgedNorDeleted(t *testing.
 	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
 }
 
+func TestACopyItsNodeEndedHoldsNoPlaceWhileItsControlPlaneIsPaused(t *testing.T) {
+	paused := rehearsing(t)
+	pod := eventuallyCopy(t, paused, get(t, paused).Generation)
+	pause := func(ctx context.Context, on bool) error {
+		fresh := &lodiav1alpha1.ControlPlane{}
+		if err := k8s.Get(ctx, client.ObjectKeyFromObject(paused), fresh); err != nil {
+			return err
+		}
+		patch := client.MergeFrom(fresh.DeepCopy())
+		fresh.Spec.Paused = on
+		return k8s.Patch(ctx, fresh, patch)
+	}
+	if err := pause(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := pause(context.Background(), false); err != nil {
+			t.Error(err)
+		}
+	})
+	time.Sleep(2 * time.Second)
+	setCopy(t, pod, corev1.PodStatus{Phase: corev1.PodFailed, Reason: "DeadlineExceeded", Message: "Pod was active on the node longer than the specified deadline", PodIP: copyIP})
+
+	other := rehearsing(t)
+	eventuallyCopy(t, other, get(t, other).Generation)
+	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(pod), pod); err != nil || !pod.DeletionTimestamp.IsZero() {
+		t.Errorf("the paused tenant's ended copy is gone or being deleted: %v", err)
+	}
+}
+
 func TestTwoTenantsUnderALimitOfOneNeverGetTwoCopies(t *testing.T) {
 	watcher, err := k8s.Watch(t.Context(), &corev1.PodList{}, client.MatchingLabels{lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent})
 	if err != nil {
