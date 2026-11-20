@@ -721,7 +721,7 @@ func (c change) upgradingMessage(f facts, rolling []string) string {
 		return c.rehearsal
 	}
 	if c.upgrade.Step == lodiav1alpha1.UpgradeStepBackup {
-		if next, _, _ := versions.Step(f.cp.Spec.Version, c.target); f.rehearsals == 0 && !passed(f.cp, next) {
+		if next, _, _ := versions.Step(f.cp.Spec.Version, c.target); f.rehearsals == 0 && !passedAt(f.cp, next) {
 			return c.backup + "; " + noRehearsal
 		}
 		return c.backup
@@ -733,15 +733,10 @@ func (c change) upgradingMessage(f facts, rolling []string) string {
 	if ready := backupReady(f.backup); noBackupStore(ready) && !f.backup.CreationTimestamp.Time.Before(c.upgrade.StartedAt.Add(-clockSkew)) {
 		message += "; no pre-upgrade Backup was taken: " + ready.Message
 	}
-	if f.rehearsals == 0 && f.backup != nil && !f.backup.CreationTimestamp.Time.Before(c.upgrade.StartedAt.Add(-clockSkew)) && !passed(f.cp, c.target) {
+	if f.rehearsals == 0 && f.backup != nil && !f.backup.CreationTimestamp.Time.Before(c.upgrade.StartedAt.Add(-clockSkew)) && !passedAt(f.cp, c.target) {
 		message += "; " + noRehearsal
 	}
 	return message
-}
-
-func passed(cp *lodiav1alpha1.ControlPlane, version string) bool {
-	return cp.Status.Rehearsal != nil && cp.Status.Rehearsal.Version == version &&
-		meta.IsStatusConditionTrue(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
 }
 
 func backupReady(backup *lodiav1alpha1.Backup) *metav1.Condition {
