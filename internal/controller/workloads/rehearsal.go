@@ -94,8 +94,13 @@ type RehearsalReconciler struct {
 	tenants *tenantclient.Clients
 	sweeps  map[types.UID]*sweep
 	// verdicts is when this operator last concluded a verdict for a
-	// ControlPlane, or first saw its failed one.
-	verdicts map[types.UID]time.Time
+	// ControlPlane, or first saw its failed one, by its UID.
+	verdicts map[types.UID]verdictAt
+}
+
+type verdictAt struct {
+	key types.NamespacedName
+	at  time.Time
 }
 
 func (r *RehearsalReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -129,7 +134,11 @@ func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
+	if !cp.DeletionTimestamp.IsZero() {
+		r.forget(req.NamespacedName)
+		return ctrl.Result{}, nil
+	}
+	if cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
 	pod, err := r.copyOf(ctx, cp)
@@ -159,7 +168,7 @@ func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return r.judge(ctx, cp, version, verdict, pod)
 	}
 	if verdict != nil && !slices.Contains(soonerAgain, verdict.Reason) {
-		if wait := r.againAt(cp.UID, verdict).Sub(r.Clock.Now()); wait > 0 {
+		if wait := r.againAt(cp, verdict).Sub(r.Clock.Now()); wait > 0 {
 			return ctrl.Result{RequeueAfter: wait}, nil
 		}
 	}
@@ -442,9 +451,9 @@ func (r *RehearsalReconciler) conclude(ctx context.Context, cp *lodiav1alpha1.Co
 	}
 	r.mu.Lock()
 	if r.verdicts == nil {
-		r.verdicts = map[types.UID]time.Time{}
+		r.verdicts = map[types.UID]verdictAt{}
 	}
-	r.verdicts[cp.UID] = r.Clock.Now()
+	r.verdicts[cp.UID] = verdictAt{key: client.ObjectKeyFromObject(cp), at: r.Clock.Now()}
 	r.mu.Unlock()
 	if err := r.remove(ctx, cp, pod); err != nil {
 		return ctrl.Result{}, err
@@ -465,18 +474,18 @@ var soonerAgain = []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObje
 // concluded a verdict for cp, or first saw this one. A failed verdict stays
 // through its runs again, so the transition does not move, and a restarted
 // operator waits for the next mark instead of running at once.
-func (r *RehearsalReconciler) againAt(uid types.UID, failed *metav1.Condition) time.Time {
+func (r *RehearsalReconciler) againAt(cp *lodiav1alpha1.ControlPlane, failed *metav1.Condition) time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.verdicts == nil {
-		r.verdicts = map[types.UID]time.Time{}
+		r.verdicts = map[types.UID]verdictAt{}
 	}
-	since, ok := r.verdicts[uid]
+	last, ok := r.verdicts[cp.UID]
 	if !ok {
-		since = r.Clock.Now()
-		r.verdicts[uid] = since
+		last = verdictAt{key: client.ObjectKeyFromObject(cp), at: r.Clock.Now()}
+		r.verdicts[cp.UID] = last
 	}
-	from := failed.LastTransitionTime.Time
+	since, from := last.at, failed.LastTransitionTime.Time
 	if since.Before(from) {
 		return from.Add(rehearseAgain)
 	}
@@ -575,10 +584,24 @@ func (r *RehearsalReconciler) report(ctx context.Context, cp *lodiav1alpha1.Cont
 	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: RehearsalFieldManager, Events: r.Events}.ApplyInto(ctx, cp, desired, changed)
 }
 
+// forget drops what the reconciler keeps for a ControlPlane that is gone or
+// being deleted: its tenant client, its sweeps with their copy clients, and
+// its verdict time.
 func (r *RehearsalReconciler) forget(key types.NamespacedName) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.tenants != nil {
 		r.tenants.Forget(key)
+	}
+	for uid, s := range r.sweeps {
+		if s.key == key {
+			s.copy.Close()
+			delete(r.sweeps, uid)
+		}
+	}
+	for uid, v := range r.verdicts {
+		if v.key == key {
+			delete(r.verdicts, uid)
+		}
 	}
 }

@@ -83,6 +83,7 @@ const (
 // tokens hold, since it does not compact.
 type sweep struct {
 	controlPlane types.UID
+	key          types.NamespacedName
 	copy, tenant *tenantclient.Client
 	stage        stage
 	token        string
@@ -234,7 +235,7 @@ func (r *RehearsalReconciler) sweepOf(ctx context.Context, cp *lodiav1alpha1.Con
 	if r.sweeps == nil {
 		r.sweeps = map[types.UID]*sweep{}
 	}
-	s = &sweep{controlPlane: cp.UID, copy: copyClient, tenant: tenant}
+	s = &sweep{controlPlane: cp.UID, key: client.ObjectKeyFromObject(cp), copy: copyClient, tenant: tenant}
 	r.sweeps[pod.UID] = s
 	return s, nil
 }

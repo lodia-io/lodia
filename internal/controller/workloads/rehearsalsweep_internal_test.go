@@ -17,8 +17,13 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/tenantclient"
 )
 
@@ -322,5 +327,32 @@ func TestACustomResourceTheTenantServesStopsTheStepOnlyWhenTheCopysOwnCRDServesI
 				t.Errorf("the sweep stops on %q and reports %q, want %q and %q", s.stopping, s.reported, c.stopping, c.reported)
 			}
 		})
+	}
+}
+
+func TestAControlPlaneGoneTakesItsSweepsAndVerdictTimeAlong(t *testing.T) {
+	key := types.NamespacedName{Namespace: "team-a", Name: "dev"}
+	for _, deleting := range []bool{false, true} {
+		c := fake.NewClientBuilder().WithScheme(scheme(t)).Build()
+		if deleting {
+			cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name, UID: "cp-uid", Finalizers: []string{"test/finalizer"}}}
+			if err := c.Create(t.Context(), cp); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Delete(t.Context(), cp); err != nil {
+				t.Fatal(err)
+			}
+		}
+		copyClient, _ := stub(t, nil)
+		other, _ := stub(t, nil)
+		r := &RehearsalReconciler{Client: c, Reader: c, MaxConcurrent: 1, Timeout: time.Second}
+		r.sweeps = map[types.UID]*sweep{"copy-uid": {controlPlane: "cp-uid", key: key, copy: copyClient, lists: make([]list, 10000)}, "other-copy-uid": {controlPlane: "other-uid", key: types.NamespacedName{Namespace: "team-b", Name: "dev"}, copy: other}}
+		r.verdicts = map[types.UID]verdictAt{"cp-uid": {key: key, at: time.Now()}, "other-uid": {key: types.NamespacedName{Namespace: "team-b", Name: "dev"}, at: time.Now()}}
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: key}); err != nil {
+			t.Fatal(err)
+		}
+		if _, kept := r.sweeps["copy-uid"]; kept || len(r.sweeps) != 1 || len(r.verdicts) != 1 {
+			t.Errorf("deleting %t: the reconciler keeps the sweeps %v and the verdict times %v, want the other ControlPlane's alone", deleting, slices.Collect(maps.Keys(r.sweeps)), r.verdicts)
+		}
 	}
 }
