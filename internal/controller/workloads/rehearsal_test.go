@@ -810,7 +810,7 @@ func TestARunAgainThatFailsWaitsForTheNextMarkFromItsEnd(t *testing.T) {
 	expectNoCopy(t, cp)
 	t.Cleanup(func() { rehearsalClock.offset.Store(0) })
 	at := func(d time.Duration) {
-		rehearsalClock.offset.Store(int64(failed.LastTransitionTime.Add(d).Sub(time.Now())))
+		rehearsalClock.offset.Store(int64(time.Until(failed.LastTransitionTime.Add(d))))
 	}
 
 	at(11 * time.Minute)
