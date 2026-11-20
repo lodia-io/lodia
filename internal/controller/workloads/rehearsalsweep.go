@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -306,12 +308,21 @@ func (s *sweep) again(what string, err error, stops bool) error {
 }
 
 // transient says whether a read may answer when sent again: one that got no
-// answer or none in time, kube-apiserver's 429, 503, 504 and ServerTimeout,
-// and an answer that is no Status but carries Retry-After.
+// answer, none in time or one cut mid-body, kube-apiserver's 429, 503, 504
+// and ServerTimeout, and an answer that is no Status but carries Retry-After.
 func transient(err error) bool {
 	_, delay := apierrors.SuggestsClientDelay(err)
-	return delay || isTransport(err) || errors.Is(err, errSlow) || apierrors.IsTooManyRequests(err) ||
+	return delay || isTransport(err) || cut(err) || errors.Is(err, errSlow) || apierrors.IsTooManyRequests(err) ||
 		apierrors.IsServiceUnavailable(err) || apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err)
+}
+
+// cut says whether the body of an answer ended early, its connection closed
+// or reset while it was read: kube-apiserver ends so an answer it began when
+// the request times out
+// (https://github.com/kubernetes/apiserver/blob/v0.37.2/pkg/server/filters/timeout.go#L274),
+// and so does a replica that dies mid-answer.
+func cut(err error) bool {
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET)
 }
 
 // read sends one read and gives its body. Its error is errBudget once the

@@ -80,6 +80,7 @@ type delays struct {
 
 type fault struct {
 	code, left int
+	cut        bool
 	served     atomic.Int32
 }
 
@@ -171,7 +172,16 @@ func (c *copies) Close() {
 
 func (c *copies) inject(t *testing.T, side, path string, code, times int) *fault {
 	t.Helper()
-	f := &fault{code: code, left: times}
+	return c.add(t, side, path, &fault{code: code, left: times})
+}
+
+func (c *copies) cut(t *testing.T, side, path string, times int) *fault {
+	t.Helper()
+	return c.add(t, side, path, &fault{code: http.StatusOK, left: times, cut: true})
+}
+
+func (c *copies) add(t *testing.T, side, path string, f *fault) *fault {
+	t.Helper()
 	c.mu.Lock()
 	c.faults[side+" "+path] = f
 	c.mu.Unlock()
@@ -215,6 +225,12 @@ func (c *copies) fail(side string, w http.ResponseWriter, r *http.Request) bool 
 		return false
 	}
 	f.served.Add(1)
+	if f.cut {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"kind":"Table","apiVersion":"meta.k8s.io/v1","metadata":{},"columnDefinitions":[],"rows":[`))
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	}
 	reason := map[int]string{http.StatusTooManyRequests: "TooManyRequests", http.StatusServiceUnavailable: "ServiceUnavailable"}[f.code]
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(f.code)
@@ -1002,11 +1018,26 @@ func TestATenantThatAnswers503OnceDoesNotHideWhatTheCopyCannotRead(t *testing.T)
 func TestATransientAnswerOfTheCopyIsReadAgain(t *testing.T) {
 	discovery := copyServers.inject(t, "copy", "/api", http.StatusTooManyRequests, 1)
 	list := copyServers.inject(t, "copy", "/api/v1/configmaps", http.StatusServiceUnavailable, 1)
+	cutDiscovery := copyServers.cut(t, "copy", "/apis", 1)
+	cutList := copyServers.cut(t, "copy", "/api/v1/secrets", 1)
 	cp := rehearsing(t)
 	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
 	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
-	if discovery.served.Load() != 1 || list.served.Load() != 1 {
-		t.Errorf("the copy answered 429 %d times and 503 %d times, want once each", discovery.served.Load(), list.served.Load())
+	if discovery.served.Load() != 1 || list.served.Load() != 1 || cutDiscovery.served.Load() != 1 || cutList.served.Load() != 1 {
+		t.Errorf("the copy answered 429 %d times, 503 %d times and cut its discovery %d times and its list %d times, want once each",
+			discovery.served.Load(), list.served.Load(), cutDiscovery.served.Load(), cutList.served.Load())
+	}
+}
+
+func TestATenantsAnswerCutMidBodyDoesNotHideWhatTheCopyCannotRead(t *testing.T) {
+	ns := namespace(t)
+	corrupt(t, copyServers.etcd, "/registry/podtemplates/"+ns+"/broken")
+	once := copyServers.cut(t, "tenant", "/api/v1/podtemplates", 1)
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed, "podtemplates of v1 lists through the tenant and not through the copy: ")
+	if n := once.served.Load(); n != 1 {
+		t.Errorf("the tenant cut its answer %d times, want once", n)
 	}
 }
 

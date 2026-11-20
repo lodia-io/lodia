@@ -5,9 +5,11 @@ package workloads
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/pem"
 	"errors"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -122,6 +124,26 @@ func dropped(w http.ResponseWriter, _ *http.Request) {
 	}
 }
 
+func cutMidBody(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"kind":"Table","apiVersion":"meta.k8s.io/v1","metadata":{},"columnDefinitions":[],"rows":[`))
+	w.(http.Flusher).Flush()
+	panic(http.ErrAbortHandler)
+}
+
+func resetMidBody(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"kind":"Table","apiVersion":"meta.k8s.io/v1","metadata":{},"columnDefinitions":[],"rows":[`))
+	w.(http.Flusher).Flush()
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		return
+	}
+	tcp := conn.(*tls.Conn).NetConn().(*net.TCPConn)
+	_ = tcp.SetLinger(0)
+	_ = tcp.Close()
+}
+
 var undecodable = status(http.StatusInternalServerError, "InternalError", "proto: illegal wireType 6")
 
 func transients() map[string][]answer {
@@ -131,6 +153,8 @@ func transients() map[string][]answer {
 		"504":           {status(http.StatusGatewayTimeout, "Timeout", "request did not complete within the allotted timeout")},
 		"ServerTimeout": {status(http.StatusInternalServerError, "ServerTimeout", "the server cannot complete the requested operation at this time, try again later")},
 		"no answer":     {dropped, dropped},
+		"a body cut":    {cutMidBody},
+		"a body reset":  {resetMidBody},
 		"a 502 that is no Status with Retry-After": {func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/plain")
 			w.Header().Set("Retry-After", "1")
@@ -185,12 +209,27 @@ func TestAPageWithNoAnswerInTimeIsReadAgain(t *testing.T) {
 	}
 }
 
-func TestATransientErrorThroughTheCopysDiscoveryIsReadAgain(t *testing.T) {
-	copyClient, _ := stub(t, map[string][]answer{"/api": {status(http.StatusServiceUnavailable, "ServiceUnavailable", "apiserver is shutting down"), body(coreConfigMaps)}})
-	tenant, _ := stub(t, nil)
-	s := &sweep{copy: copyClient, tenant: tenant}
-	if again := sweptAll(t, s); again != 1 || len(s.stopping) > 0 || s.objects != 2 {
-		t.Errorf("the sweep sent %d reads again and ends with %d objects, stopping %q, want 1, 2 and nothing", again, s.objects, s.stopping)
+func TestATransientErrorThroughEithersDiscoveryIsReadAgain(t *testing.T) {
+	for name, once := range map[string]answer{
+		"503":          status(http.StatusServiceUnavailable, "ServiceUnavailable", "apiserver is shutting down"),
+		"a body cut":   cutMidBody,
+		"a body reset": resetMidBody,
+	} {
+		for _, side := range []string{"copy", "tenant"} {
+			t.Run(side+" "+name, func(t *testing.T) {
+				discovery := map[string][]answer{"/api": {once, body(coreConfigMaps)}}
+				copyAnswers, tenantAnswers := discovery, map[string][]answer(nil)
+				if side == "tenant" {
+					copyAnswers, tenantAnswers = nil, discovery
+				}
+				copyClient, _ := stub(t, copyAnswers)
+				tenant, _ := stub(t, tenantAnswers)
+				s := &sweep{copy: copyClient, tenant: tenant}
+				if again := sweptAll(t, s); again != 1 || len(s.stopping) > 0 || s.objects != 2 {
+					t.Errorf("the sweep sent %d reads again and ends with %d objects, stopping %q, want 1, 2 and nothing", again, s.objects, s.stopping)
+				}
+			})
+		}
 	}
 }
 
