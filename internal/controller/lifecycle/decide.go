@@ -44,12 +44,15 @@ var noClass lodiav1alpha1.DatastoreClassGeneration
 
 // decision holds every status field Lifecycle owns and no other, since an
 // apply that leaves one out removes it, the name of the pre-upgrade Backup to
-// create, when to pass again, and whether the write takes a slot of the fleet.
+// create, when to pass again, whether the write takes a slot of the fleet, and
+// whether it moves a minor step's target, which it may only at the generation
+// it was decided from.
 type decision struct {
 	status       lodiav1alpha1.ControlPlaneStatus
 	createBackup string
 	requeue      time.Duration
 	takesSlot    bool
+	movesMinor   bool
 }
 
 // fieldsDiffer says whether a status field Lifecycle owns, the conditions
@@ -87,6 +90,8 @@ type change struct {
 	// backup says how the pre-upgrade Backup stands, and backupFailed its failure.
 	backup, backupFailed string
 	createBackup         string
+	// movesMinor says the pass moves a minor step's target.
+	movesMinor bool
 }
 
 func decide(f facts) decision {
@@ -117,7 +122,7 @@ func decide(f facts) decision {
 		status.Target = newTarget(c.target, m.revision, c.class, m.scheduledFor)
 		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince, m.slotSince)
 		upgrade = c.upgrade
-		d.createBackup, d.requeue, d.takesSlot = c.createBackup, m.requeue, m.takesSlot
+		d.createBackup, d.requeue, d.takesSlot, d.movesMinor = c.createBackup, m.requeue, m.takesSlot, c.movesMinor
 	}
 	reported := oldestReported(cp)
 	if notice := supportNotice(reported, f.now); notice != "" && cp.DeletionTimestamp.IsZero() {
@@ -505,7 +510,7 @@ func (f facts) takeBackup(c *change, next, minor string) {
 	switch {
 	case completed(ready), noBackupStore(ready):
 		if c.failure(f.cp) == "" {
-			c.target, c.upgrade = next, moved(c.upgrade, f.now)
+			c.target, c.upgrade, c.movesMinor = next, moved(c.upgrade, f.now), true
 		}
 	case ready == nil:
 		c.backup = fmt.Sprintf("the Backup %s has reported nothing yet", name)

@@ -124,7 +124,10 @@ func (r *Reconciler) controlPlanesOn(ctx context.Context, class client.Object) [
 // of the fleet, counted from the cache, is made again under the fleet's fence
 // and written under it, so that two passes never take one slot: from the
 // fleet the API server holds until a write under the fence has shown in the
-// cache, and from the cache, which then holds every grant, after.
+// cache, and from the cache, which then holds every grant, after. A write that
+// moves a minor step's target carries the resourceVersion of the copy it was
+// decided from, so that an edit made since conflicts and the next pass decides
+// at the new generation.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cached := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cached); err != nil {
@@ -160,7 +163,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		d = decide(gathered)
 	}
-	version, err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).ApplyVersion(ctx, current, d.status, d.fieldsDiffer(current))
+	version, err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).ApplyVersion(ctx, current, d.status, d.fieldsDiffer(current), d.movesMinor)
 	if fenced && d.takesSlot {
 		written := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: current.Namespace, Name: current.Name, ResourceVersion: version}}
 		err = r.slots.Wrote(ctx, r.Client, written, err)

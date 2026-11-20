@@ -487,6 +487,48 @@ func TestASpecEditedAtTheBackupIsRehearsedBeforeTheTargetMoves(t *testing.T) {
 	}
 }
 
+func TestAnEditThatOvertakesTheWriteMovingTheTargetIsRehearsedFirst(t *testing.T) {
+	cp := quietControlPlane(t)
+	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
+	applyQuiet(t, cp, "test/rehearsal", map[string]any{
+		"rehearsal":  map[string]any{"version": "v1.37.1"},
+		"conditions": []any{map[string]any{"type": lodiav1alpha1.ConditionRehearsed, "status": "True", "reason": lodiav1alpha1.ReasonPassed, "message": "listed", "observedGeneration": getQuiet(t, cp).Generation, "lastTransitionTime": startedAt.Format(time.RFC3339)}},
+	})
+	createBackup(t, cp, preUpgrade(cp), metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
+	edited := false
+	overtaken := interceptor.NewClient(quiet, interceptor.Funcs{
+		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+			if !edited {
+				edited = true
+				fresh := getQuiet(t, cp)
+				patch := client.MergeFrom(fresh.DeepCopy())
+				fresh.Spec.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"APIServerTracing": true}}
+				if err := quiet.Patch(ctx, fresh, patch); err != nil {
+					return err
+				}
+			}
+			return c.SubResource(subResource).Apply(ctx, obj, opts...)
+		},
+	})
+	pass := func(c client.Client) error {
+		r := &lifecycle.Reconciler{Client: c, Reader: quiet, Clock: clocktesting.NewFakePassiveClock(later), Revision: runningRevision, MaxConcurrentRollouts: 5, MaxConcurrentRehearsals: 5, Settling: settlingTime}
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err
+	}
+	if err := pass(overtaken); !apierrors.IsConflict(err) {
+		t.Fatalf("the pass an edit overtook returned %v, want a conflict", err)
+	}
+	if fresh := getQuiet(t, cp); fresh.Status.Target.Version != "v1.36.6" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepBackup {
+		t.Fatalf("after the edit overtook the write the target is %s and the upgrade %+v, want v1.36.6 at step Backup", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade)
+	}
+	if err := pass(quiet); err != nil {
+		t.Fatal(err)
+	}
+	if fresh := getQuiet(t, cp); fresh.Status.Target.Version != "v1.36.6" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal || !fresh.Status.Kubernetes.Upgrade.StartedAt.Time.Equal(startedAt) {
+		t.Errorf("the next pass leaves the target at %s and the upgrade %+v, want v1.36.6 at step Rehearsal since %s", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade, startedAt)
+	}
+}
+
 func TestAPredecessorsBackupOfTheSameNameDoesNotStandIn(t *testing.T) {
 	cp := quietControlPlane(t)
 	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")

@@ -122,7 +122,7 @@ func TestTheRequestOfAStatusApplyIsTheOneInTestdata(t *testing.T) {
 				AdminKubeconfigSecretRef: &lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
 				CABundleSecretRef:        &lodiav1alpha1.LocalReference{Name: "dev-ca-bundle"},
 			},
-		}, true)
+		}, true, false)
 		return err
 	})
 	if version != "42" {
