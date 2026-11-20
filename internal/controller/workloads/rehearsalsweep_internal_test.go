@@ -6,6 +6,7 @@ package workloads
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"maps"
@@ -23,12 +24,15 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/clock"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/tenantclient"
@@ -337,6 +341,115 @@ func TestASweepGoesOnWhereThePassBudgetEndedIt(t *testing.T) {
 	}
 	if len(s.failed) > 0 || len(s.stopping) > 0 || s.objects != 503 || len(lists) != 3 || !strings.Contains(lists[2], "continue=c1") {
 		t.Errorf("the sweep ends with %d objects, failed %v and stopping %q after the lists %q, want 503 objects and the second page read again with its token", s.objects, s.failed, s.stopping, lists)
+	}
+}
+
+func TestAPassReadsNoLongerThanWhatIsLeftOfTheCopysMinutes(t *testing.T) {
+	late := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(readTimeout + 5*time.Second):
+		case <-r.Context().Done():
+		}
+	}
+	copyClient, _ := stub(t, map[string][]answer{"/api": {late}})
+	tenant, _ := stub(t, nil)
+	now := time.Now()
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "copy-uid", CreationTimestamp: metav1.NewTime(now.Add(2*time.Second - copyDeadline))}}
+	r := &RehearsalReconciler{Clock: clocktesting.NewFakePassiveClock(now), sweeps: map[types.UID]*sweep{pod.UID: {copy: copyClient, tenant: tenant}}}
+	failed := &metav1.Condition{Type: lodiav1alpha1.ConditionRehearsed, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonAPIServerFailed}
+	began := time.Now()
+	result, err := r.sweep(t.Context(), &lodiav1alpha1.ControlPlane{}, "v1.37.1", failed, pod)
+	if took := time.Since(began); err != nil || took > 5*time.Second || result.RequeueAfter > 2*time.Second {
+		t.Errorf("a pass 2 s before the copy's deadline ends after %s with %v and waits %s, want it within the 2 s left", took.Round(time.Second), err, result.RequeueAfter)
+	}
+}
+
+func TestAReadThatAnswersAgainNoLongerFailsAtTheDeadline(t *testing.T) {
+	pass, end := context.WithCancel(t.Context())
+	endPass := func(w http.ResponseWriter, r *http.Request) {
+		end()
+		<-r.Context().Done()
+	}
+	copyClient, _ := stub(t, map[string][]answer{configMapsPath: {status(http.StatusServiceUnavailable, "ServiceUnavailable", "injected"), rows(500, "c1"), endPass}})
+	tenant, _ := stub(t, nil)
+	s := &sweep{copy: copyClient, tenant: tenant}
+	if err := s.run(t.Context()); !errors.Is(err, errAgain) {
+		t.Fatalf("the pass ends with %v, want the read sent again", err)
+	}
+	if err := s.run(pass); !errors.Is(err, errBudget) {
+		t.Fatalf("the pass ends with %v, want errBudget", err)
+	}
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "dev", UID: "cp-uid", Generation: 3}}
+	pod := &corev1.Pod{ObjectMeta: objectMeta(cp, copyName(cp.Name)+"-expired")}
+	pod.UID = "copy-uid"
+	sc := scheme(t)
+	if err := corev1.AddToScheme(sc); err != nil {
+		t.Fatal(err)
+	}
+	if err := networkingv1.AddToScheme(sc); err != nil {
+		t.Fatal(err)
+	}
+	var applied []byte
+	c := interceptor.NewClient(fake.NewClientBuilder().WithScheme(sc).WithObjects(cp, pod).Build(), interceptor.Funcs{
+		SubResourceApply: func(_ context.Context, _ client.Client, _ string, obj runtime.ApplyConfiguration, _ ...client.SubResourceApplyOption) error {
+			var err error
+			applied, err = json.Marshal(obj)
+			return err
+		},
+	})
+	r := &RehearsalReconciler{Client: c, Reader: c, Clock: clock.RealClock{}, sweeps: map[types.UID]*sweep{pod.UID: s}}
+	if _, err := r.expired(t.Context(), cp, "v1.37.1", pod); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(applied), `"reason":"CopyFailed"`) || len(s.stopping) > 0 {
+		t.Errorf("the deadline after a 503 that answered later writes %s and stops on %q, want CopyFailed", applied, s.stopping)
+	}
+}
+
+func TestTheSweepOfACopyThatIsGoneOrBeingDeletedIsDropped(t *testing.T) {
+	sc := scheme(t)
+	if err := corev1.AddToScheme(sc); err != nil {
+		t.Fatal(err)
+	}
+	if err := networkingv1.AddToScheme(sc); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name     string
+		step     lodiav1alpha1.UpgradeStep
+		deleting bool
+	}{
+		{"gone at Rehearsal", lodiav1alpha1.UpgradeStepRehearsal, false},
+		{"being deleted at Rehearsal", lodiav1alpha1.UpgradeStepRehearsal, true},
+		{"gone once the step left Rehearsal", lodiav1alpha1.UpgradeStepBackup, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := &lodiav1alpha1.ControlPlane{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "dev", UID: "cp-uid", Generation: 3},
+				Spec:       lodiav1alpha1.ControlPlaneSpec{Version: "v1.37.1"},
+				Status: lodiav1alpha1.ControlPlaneStatus{
+					Target:     &lodiav1alpha1.Target{Version: "v1.36.6"},
+					Kubernetes: &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: c.step}},
+				},
+			}
+			objects := []client.Object{cp}
+			if c.deleting {
+				pod := &corev1.Pod{ObjectMeta: objectMeta(cp, copyName(cp.Name)+"-deleting")}
+				pod.UID, pod.Labels, pod.Finalizers = "copy-uid", podLabels(cp.Name, lodiav1alpha1.RehearsalComponent), []string{"test/node-gone"}
+				pod.DeletionTimestamp = new(metav1.Now())
+				objects = append(objects, pod)
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(sc).WithObjects(objects...).WithStatusSubresource(cp).Build()
+			copyClient, _ := stub(t, nil)
+			r := &RehearsalReconciler{Client: fakeClient, Reader: fakeClient, MaxConcurrent: 1, Clock: clock.RealClock{},
+				sweeps: map[types.UID]*sweep{"copy-uid": {controlPlane: cp.UID, key: client.ObjectKeyFromObject(cp), copy: copyClient}}}
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+				t.Fatal(err)
+			}
+			if len(r.sweeps) != 0 {
+				t.Errorf("the reconciler keeps the sweeps %v of a copy %s", slices.Collect(maps.Keys(r.sweeps)), c.name)
+			}
+		})
 	}
 }
 

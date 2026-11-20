@@ -741,15 +741,38 @@ func TestAnAPIServerThatExitsFailsTheRehearsalWhichRunsAgainKeepingItsVerdict(t 
 	failed := expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed, "exited 1 (Error): "+unknownGate)
 	expectNoCopy(t, cp)
 
+	updates, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(cp.Namespace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer updates.Stop()
 	rehearsalClock.offset.Store(int64(11 * time.Minute))
 	t.Cleanup(func() { rehearsalClock.offset.Store(0) })
 	poke(t, cp)
 	again := eventuallyCopy(t, cp, generation)
-	if c, _ := rehearsed(t, cp); c.Reason != failed.Reason || c.Message != failed.Message || !c.LastTransitionTime.Equal(&failed.LastTransitionTime) {
-		t.Errorf("Rehearsed is %+v while the rehearsal runs again, want %+v kept", c, failed)
-	}
+	setCopy(t, again, corev1.PodStatus{Phase: corev1.PodPending})
+	time.Sleep(time.Second)
 	setCopy(t, again, readyCopy())
 	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
+	deadline := time.After(time.Minute)
+	for {
+		select {
+		case event := <-updates.ResultChan():
+			fresh, ok := event.Object.(*lodiav1alpha1.ControlPlane)
+			if !ok {
+				t.Fatalf("watch: %v", event.Object)
+			}
+			c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
+			if c.Reason == lodiav1alpha1.ReasonPassed {
+				return
+			}
+			if c.Reason != failed.Reason || c.Message != failed.Message || !c.LastTransitionTime.Equal(&failed.LastTransitionTime) {
+				t.Fatalf("Rehearsed is %+v while the rehearsal runs again, want %+v kept", c, failed)
+			}
+		case <-deadline:
+			t.Fatal("the watch did not see the Passed verdict")
+		}
+	}
 }
 
 func TestTheWaitBeforeARunAgainSurvivesARestart(t *testing.T) {
