@@ -60,6 +60,7 @@ var rehearsalClock = &offsetClock{}
 type copies struct {
 	*httptest.Server
 	refuse  atomic.Bool
+	refused atomic.Int32
 	admin   client.Client
 	etcd    string
 	tenant  string
@@ -121,6 +122,7 @@ func startCopies(env *testenv.Env) *copies {
 func (c *copies) dial(ctx context.Context, network, address string) (net.Conn, error) {
 	if address == net.JoinHostPort(copyIP, "6443") {
 		if c.refuse.Load() {
+			c.refused.Add(1)
 			return nil, errors.New("connection refused")
 		}
 		address = c.Listener.Addr().String()
@@ -215,13 +217,33 @@ func endRehearsal(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 		return
 	}
 	for ctx.Err() == nil {
-		pod := &corev1.Pod{}
-		if err := k8s.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-rehearsal"}, pod); apierrors.IsNotFound(err) {
+		if pod, err := liveCopy(ctx, cp); err == nil && pod == nil {
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Errorf("the copy of %s/%s is still there after its step", cp.Namespace, cp.Name)
+}
+
+func copyPods(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]corev1.Pod, error) {
+	list := &corev1.PodList{}
+	if err := k8s.List(ctx, list, client.InNamespace(cp.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func liveCopy(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*corev1.Pod, error) {
+	all, err := copyPods(ctx, cp)
+	if err != nil {
+		return nil, err
+	}
+	for i := range all {
+		if all[i].DeletionTimestamp.IsZero() {
+			return &all[i], nil
+		}
+	}
+	return nil, nil
 }
 
 func writeKubeconfig(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
@@ -247,11 +269,7 @@ func writeKubeconfig(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 
 func copyOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) *corev1.Pod {
 	t.Helper()
-	pod := &corev1.Pod{}
-	err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: cp.Name + "-rehearsal"}, pod)
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
+	pod, err := liveCopy(t.Context(), cp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +280,7 @@ func eventuallyCopy(t *testing.T, cp *lodiav1alpha1.ControlPlane, generation int
 	t.Helper()
 	var pod *corev1.Pod
 	testenv.Eventually(t, func() error {
-		if pod = copyOf(t, cp); pod == nil || pod.Annotations["lodia.io/rehearsal-generation"] != fmt.Sprint(generation) || !pod.DeletionTimestamp.IsZero() {
+		if pod = copyOf(t, cp); pod == nil || pod.Annotations["lodia.io/rehearsal-generation"] != fmt.Sprint(generation) {
 			return fmt.Errorf("no copy of generation %d: %+v", generation, pod)
 		}
 		return nil
@@ -400,6 +418,76 @@ func TestACopyThatDoesNotAnswerIsReadAgainAndNotFailed(t *testing.T) {
 			return fmt.Errorf("Rehearsed is %+v", c)
 		}
 		return nil
+	})
+}
+
+func TestAReadyCopyWhoseNodeIsGoneEndsAtItsDeadline(t *testing.T) {
+	copyServers.refuse.Store(true)
+	t.Cleanup(func() { copyServers.refuse.Store(false) })
+	for _, after := range []time.Duration{20 * time.Minute, time.Hour, 24 * time.Hour} {
+		t.Run(after.String(), func(t *testing.T) {
+			cp := rehearsing(t)
+			gone := eventuallyCopy(t, cp, get(t, cp).Generation)
+			keep(t, gone)
+			refused := copyServers.refused.Load()
+			setCopy(t, gone, readyCopy())
+			testenv.Eventually(t, func() error {
+				if copyServers.refused.Load() == refused {
+					return errors.New("the sweep has not dialled the copy")
+				}
+				return nil
+			})
+			rehearsalClock.offset.Store(int64(after))
+			t.Cleanup(func() { rehearsalClock.offset.Store(0) })
+			poke(t, cp)
+			expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed, "gave no verdict within 15m0s of its creation: ", "connection refused")
+			testenv.Eventually(t, func() error {
+				if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(gone), gone); err != nil {
+					return err
+				}
+				if gone.DeletionTimestamp.IsZero() {
+					return errors.New("the copy is not being deleted")
+				}
+				return nil
+			})
+			rehearsalClock.offset.Store(0)
+
+			other := rehearsing(t)
+			setCopy(t, eventuallyCopy(t, other, get(t, other).Generation), corev1.PodStatus{Phase: corev1.PodPending})
+			expectRehearsed(t, other, metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsing)
+			endRehearsal(t, other)
+			fresh := get(t, cp)
+			patch := client.MergeFrom(fresh.DeepCopy())
+			fresh.Spec.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"APIServerTracing": true}}
+			if err := k8s.Patch(t.Context(), fresh, patch); err != nil {
+				t.Fatal(err)
+			}
+			if replaced := eventuallyCopy(t, cp, fresh.Generation); replaced.Name == gone.Name {
+				t.Errorf("the copy of generation %d took the name %s of the one being deleted", fresh.Generation, replaced.Name)
+			}
+		})
+	}
+}
+
+func keep(t *testing.T, pod *corev1.Pod) {
+	t.Helper()
+	testenv.Eventually(t, func() error {
+		fresh := &corev1.Pod{}
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(pod), fresh); err != nil {
+			return err
+		}
+		fresh.Finalizers = append(fresh.Finalizers, "test/node-gone")
+		return k8s.Update(t.Context(), fresh)
+	})
+	t.Cleanup(func() {
+		testenv.Eventually(t, func() error {
+			fresh := &corev1.Pod{}
+			if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(pod), fresh); err != nil {
+				return client.IgnoreNotFound(err)
+			}
+			fresh.Finalizers = slices.DeleteFunc(fresh.Finalizers, func(f string) bool { return f == "test/node-gone" })
+			return k8s.Update(context.Background(), fresh)
+		})
 	})
 }
 

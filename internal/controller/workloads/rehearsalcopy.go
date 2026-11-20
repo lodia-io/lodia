@@ -23,7 +23,8 @@ import (
 )
 
 const (
-	// copyDeadline ends the copy's containers if the operator is gone.
+	// copyDeadline is how long after its creation a copy ends with a verdict,
+	// and when its containers end if the operator is gone.
 	copyDeadline = 15 * time.Minute
 	copyGrace    = 5 * time.Second
 	copyDir      = "/var/rehearsal"
@@ -68,7 +69,8 @@ func (r rendering) rehearsalCopy(version string, generation int64, quota resourc
 	pod.ActiveDeadlineSeconds = new(int64(copyDeadline / time.Second))
 	pod.TerminationGracePeriodSeconds = new(int64(copyGrace / time.Second))
 
-	meta := objectMeta(cp, copyName(cp.Name))
+	meta := objectMeta(cp, "")
+	meta.GenerateName = copyName(cp.Name) + "-"
 	meta.Labels = podLabels(cp.Name, lodiav1alpha1.RehearsalComponent)
 	meta.Annotations = map[string]string{versionAnnotation: version, generationAnnotation: strconv.FormatInt(generation, 10)}
 	return &corev1.Pod{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"}, ObjectMeta: meta, Spec: pod}

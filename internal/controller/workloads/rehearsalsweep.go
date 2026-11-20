@@ -37,6 +37,8 @@ const (
 	// (https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/util/webhook/webhook.go#L36-L38).
 	readTimeout = 30 * time.Second
 	sweepAgain  = time.Millisecond
+	// readAgain is how soon a read that got no answer is sent again.
+	readAgain = 5 * time.Second
 
 	listPage = 500
 	// crdPage keeps a page of CustomResourceDefinitions, each at most etcd's
@@ -94,6 +96,8 @@ type sweep struct {
 	checked int
 
 	stopping, reported []string
+	// failing is the error of the read the sweep sends again.
+	failing string
 }
 
 // served is a group-version in a discovery: whether it is stale, and its
@@ -118,13 +122,18 @@ func (r *RehearsalReconciler) sweep(ctx context.Context, cp *lodiav1alpha1.Contr
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	pass, cancel := context.WithTimeout(ctx, sweepBudget)
+	left := copyDeadline - r.Clock.Since(pod.CreationTimestamp.Time)
+	pass, cancel := context.WithTimeout(ctx, min(sweepBudget, left))
 	defer cancel()
-	if err := s.run(pass); errors.Is(err, errBudget) {
-		return ctrl.Result{RequeueAfter: sweepAgain}, r.rehearsingNow(ctx, cp, version, verdict)
-	} else if err != nil {
-		return ctrl.Result{}, err
+	switch err := s.run(pass); {
+	case errors.Is(err, errBudget):
+		s.failing = ""
+		return ctrl.Result{RequeueAfter: min(sweepAgain, left)}, r.rehearsingNow(ctx, cp, version, verdict)
+	case err != nil:
+		s.failing = err.Error()
+		return ctrl.Result{RequeueAfter: min(readAgain, left)}, r.rehearsingNow(ctx, cp, version, verdict)
 	}
+	s.failing = ""
 	took := r.Clock.Since(pod.CreationTimestamp.Time).Round(time.Second)
 	if len(s.stopping) > 0 {
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed,
@@ -132,6 +141,16 @@ func (r *RehearsalReconciler) sweep(ctx context.Context, cp *lodiav1alpha1.Contr
 	}
 	return r.conclude(ctx, cp, version, pod, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed,
 		fmt.Sprintf("the copy at %s listed %d objects of %d resources, %s after its creation", version, s.objects, len(s.lists), took)+s.reports())
+}
+
+// lastRead says what the sweep of pod read last when that failed.
+func (r *RehearsalReconciler) lastRead(pod *corev1.Pod) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s := r.sweeps[pod.UID]; s != nil && s.failing != "" {
+		return ": " + quoted(s.failing)
+	}
+	return ""
 }
 
 func (s *sweep) reports() string {

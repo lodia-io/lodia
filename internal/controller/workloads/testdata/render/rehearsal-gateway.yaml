@@ -5,10 +5,10 @@ metadata:
   annotations:
     lodia.io/rehearsal-generation: "3"
     lodia.io/rehearsal-version: v1.37.1
+  generateName: dev-rehearsal-
   labels:
     app.kubernetes.io/name: rehearsal
     lodia.io/control-plane: dev
-  name: dev-rehearsal
   namespace: team-a
   ownerReferences:
   - apiVersion: lodia.io/v1alpha1

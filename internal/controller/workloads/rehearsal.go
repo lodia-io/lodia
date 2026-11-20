@@ -5,6 +5,7 @@ package workloads
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -149,13 +150,7 @@ func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, r.remove(ctx, cp, pod)
 	}
 	if pod != nil {
-		if owner := ownership.ControlledElsewhere(pod, cp); owner != nil {
-			return r.heldElsewhere(ctx, cp, version, pod, owner)
-		}
-		switch {
-		case !pod.DeletionTimestamp.IsZero():
-			return ctrl.Result{RequeueAfter: copyGrace}, nil
-		case pod.Annotations[versionAnnotation] != version || pod.Annotations[generationAnnotation] != strconv.FormatInt(cp.Generation, 10):
+		if pod.Annotations[versionAnnotation] != version || pod.Annotations[generationAnnotation] != strconv.FormatInt(cp.Generation, 10) {
 			return ctrl.Result{RequeueAfter: copyGrace}, r.deleteCopy(ctx, pod)
 		}
 		return r.judge(ctx, cp, version, verdict, pod)
@@ -189,22 +184,20 @@ func verdictOf(cp *lodiav1alpha1.ControlPlane, version string) *metav1.Condition
 	return c
 }
 
-// copyOf is the Pod under the copy's name, from the cache and, when the cache
-// lacks it, from the API server: the cache can lag the rehearsal's own create.
+// copyOf is cp's copy that is not being deleted, from the cache: one being
+// deleted, as on a node that is gone, stands in the way of nothing. A copy
+// the cache lacks is found by place under the fence.
 func (r *RehearsalReconciler) copyOf(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*corev1.Pod, error) {
-	key := client.ObjectKey{Namespace: cp.Namespace, Name: copyName(cp.Name)}
-	pod := &corev1.Pod{}
-	err := r.Get(ctx, key, pod)
-	if apierrors.IsNotFound(err) {
-		err = r.Reader.Get(ctx, key, pod)
-	}
-	switch {
-	case apierrors.IsNotFound(err):
-		return nil, nil
-	case err != nil:
+	list := &corev1.PodList{}
+	if err := r.List(ctx, list, client.InNamespace(cp.Namespace), client.MatchingLabels(podLabels(cp.Name, lodiav1alpha1.RehearsalComponent))); err != nil {
 		return nil, err
 	}
-	return pod, nil
+	for i := range list.Items {
+		if pod := &list.Items[i]; pod.DeletionTimestamp.IsZero() && metav1.IsControlledBy(pod, cp) {
+			return pod, nil
+		}
+	}
+	return nil, nil
 }
 
 // start creates the copy's NetworkPolicy and, while fewer than MaxConcurrent
@@ -234,9 +227,9 @@ func (r *RehearsalReconciler) start(ctx context.Context, cp *lodiav1alpha1.Contr
 	if err := r.apply(ctx, policy); err != nil {
 		return ctrl.Result{}, r.refused(ctx, cp, version, "NetworkPolicy", policy.Name, err)
 	}
-	running, err := r.place(ctx, pod)
+	running, err := r.place(ctx, cp, pod)
 	switch {
-	case apierrors.IsAlreadyExists(err):
+	case errors.Is(err, errCopied) || apierrors.IsAlreadyExists(err):
 		return ctrl.Result{RequeueAfter: copyGrace}, nil
 	case err != nil:
 		return ctrl.Result{}, r.refused(ctx, cp, version, "Pod", pod.Name, err)
@@ -258,9 +251,13 @@ func (r *RehearsalReconciler) rehearsingNow(ctx context.Context, cp *lodiav1alph
 		fmt.Sprintf("a copy of the API server at %s runs on a fresh snapshot of the etcd", version))
 }
 
-// place creates pod unless MaxConcurrent copies run, counted under the
-// fence, and returns how many ran before it.
-func (r *RehearsalReconciler) place(ctx context.Context, pod *corev1.Pod) (int, error) {
+// errCopied is place's answer when cp has a copy the cache did not show.
+var errCopied = errors.New("the ControlPlane has a copy")
+
+// place creates pod unless cp has a copy or MaxConcurrent copies run, counted
+// under the fence without those being deleted, and returns how many ran before
+// it.
+func (r *RehearsalReconciler) place(ctx context.Context, cp *lodiav1alpha1.ControlPlane, pod *corev1.Pod) (int, error) {
 	if err := r.places.Acquire(ctx); err != nil {
 		return 0, err
 	}
@@ -273,11 +270,21 @@ func (r *RehearsalReconciler) place(ctx context.Context, pod *corev1.Pod) (int, 
 	if err := copies.List(ctx, list, client.MatchingLabels{lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}, client.HasLabels{lodiav1alpha1.ControlPlaneLabel}); err != nil {
 		return 0, err
 	}
-	if len(list.Items) >= r.MaxConcurrent {
-		return len(list.Items), nil
+	running := 0
+	for i := range list.Items {
+		switch copied := &list.Items[i]; {
+		case !copied.DeletionTimestamp.IsZero():
+		case metav1.IsControlledBy(copied, cp):
+			return 0, errCopied
+		default:
+			running++
+		}
+	}
+	if running >= r.MaxConcurrent {
+		return running, nil
 	}
 	err := r.Create(ctx, pod, client.FieldOwner(RehearsalFieldManager))
-	return len(list.Items), r.places.Wrote(ctx, r.Client, pod, err)
+	return running, r.places.Wrote(ctx, r.Client, pod, err)
 }
 
 // class is the quota and the member resources of the DatastoreClass the etcd
@@ -315,6 +322,9 @@ func (r *RehearsalReconciler) judge(ctx context.Context, cp *lodiav1alpha1.Contr
 	case pod.Status.Phase == corev1.PodFailed || !started && age >= copyDeadline:
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
 			fmt.Sprintf("the copy did not run its API server at %s within %s of its creation: %s", version, copyDeadline, lastReason(pod)))
+	case age >= copyDeadline:
+		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
+			fmt.Sprintf("the copy at %s gave no verdict within %s of its creation%s", version, copyDeadline, r.lastRead(pod)))
 	case api != nil && api.Ready:
 		return r.sweep(ctx, cp, version, verdict, pod)
 	case started && age >= readyWithin:
@@ -324,7 +334,7 @@ func (r *RehearsalReconciler) judge(ctx context.Context, cp *lodiav1alpha1.Contr
 	if err := r.rehearsingNow(ctx, cp, version, verdict); err != nil {
 		return ctrl.Result{}, err
 	}
-	if started {
+	if started && age < readyWithin {
 		return ctrl.Result{RequeueAfter: readyWithin - age}, nil
 	}
 	return ctrl.Result{RequeueAfter: copyDeadline - age}, nil
@@ -456,7 +466,7 @@ func (r *RehearsalReconciler) againAt(uid types.UID, failed *metav1.Condition) t
 // remove deletes the copy and its NetworkPolicy, those cp controls, and
 // forgets its sweep.
 func (r *RehearsalReconciler) remove(ctx context.Context, cp *lodiav1alpha1.ControlPlane, pod *corev1.Pod) error {
-	if pod != nil && metav1.IsControlledBy(pod, cp) {
+	if pod != nil {
 		r.endSweeps(cp.UID, "")
 		if err := r.deleteCopy(ctx, pod); err != nil {
 			return err
@@ -504,10 +514,6 @@ func (r *RehearsalReconciler) policyHeld(ctx context.Context, cp *lodiav1alpha1.
 		return elsewhere("NetworkPolicy", policy.Name, owner), nil
 	}
 	return "", nil
-}
-
-func (r *RehearsalReconciler) heldElsewhere(ctx context.Context, cp *lodiav1alpha1.ControlPlane, version string, pod *corev1.Pod, owner *metav1.OwnerReference) (ctrl.Result, error) {
-	return ctrl.Result{RequeueAfter: time.Minute}, r.report(ctx, cp, version, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, elsewhere("Pod", pod.Name, owner))
 }
 
 func elsewhere(kind, name string, owner *metav1.OwnerReference) string {

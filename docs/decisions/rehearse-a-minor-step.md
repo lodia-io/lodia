@@ -17,7 +17,8 @@ Workloads' second reconciler, `rehearsal`, with a queue and field manager of its
 The Datastore controller's etcd NetworkPolicy admits the copy's pods to the client port, so it keeps the one say over who reaches the etcd.
 
 **The copy.**
-One Pod `<cp>-rehearsal` in the tenant namespace, owned by the `ControlPlane` and labelled with it and `app.kubernetes.io/name: rehearsal`, which nothing else selects; no Service and no route.
+One Pod `<cp>-rehearsal-<suffix>` in the tenant namespace, named by `generateName`, owned by the `ControlPlane` and labelled with it and `app.kubernetes.io/name: rehearsal`, which nothing else selects; no Service and no route.
+A copy being deleted, as one on a node that is gone stays, counts neither toward the limit below nor against the next copy, which takes a name of its own.
 Its API server is the render of the tenant's at the step's version, with only these changes:
 
 | the render | the copy |
@@ -43,7 +44,7 @@ So the copy does not check the next minor's start writes against the tenant's we
 Through the copy: aggregated discovery of `/api` and `/apis`; the `APIService`s, for those that name a Service; the CustomResourceDefinitions, 5 a page, for their conversion; then every resource that lists, at every version the copy serves, 500 a page, as a `Table` with `includeObject=None` ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apimachinery/pkg/apis/meta/v1/types.go#L1570-L1575)), the rows counted and nothing decoded.
 Through the tenant: its aggregated discovery, and for each resource that fails through the copy, the same list.
 Each read goes through `internal/tenantclient`, one at a time, the copy's at the pod's address with the API server's name, and is read with `internal/jsonscan` ([one-client-for-a-tenant](one-client-for-a-tenant.md)).
-A pass reads for at most 45 s of its minute, a read at most 30 s, the time a conversion webhook may take ([webhook.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/util/webhook/webhook.go#L36-L38)), and the next pass comes at once with the sweep kept in memory by the copy's UID; a read that gets no answer is sent again on the next pass, and a restarted operator sweeps a copy from its start.
+A pass reads for at most 45 s of its minute, a read at most 30 s, the time a conversion webhook may take ([webhook.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/util/webhook/webhook.go#L36-L38)), and the next pass comes at once with the sweep kept in memory by the copy's UID; a read that gets no answer is sent again 5 s later, within the copy's 15 minutes, and a restarted operator sweeps a copy from its start.
 
 **The verdict.**
 
@@ -51,8 +52,8 @@ A pass reads for at most 45 s of its minute, a read at most 30 s, the time a con
 |---|---|
 | the copy's kube-apiserver exits, or runs and is not ready 5 minutes after the pod's creation | False `APIServerFailed`, its termination message quoted |
 | a resource lists through the tenant and not through the copy; a group-version or resource of a CRD the tenant serves and the copy does not | False `ListFailed` |
-| the copy did not run its API server within 15 minutes of its creation: not scheduled, an image not pulled, the snapshot, the restore or etcd failing | False `CopyFailed`, the pod's last reason or the init container's message |
-| the management cluster refuses the Pod or the NetworkPolicy, or another owner keeps one under its name | False `Refused` or `ObjectsControlledElsewhere` |
+| the copy did not run its API server within 15 minutes of its creation: not scheduled, an image not pulled, the snapshot, the restore or etcd failing; or it gave no verdict within them, a ready copy whose node is gone among them | False `CopyFailed`, the pod's last reason, the init container's message or the sweep's last failed read |
+| the management cluster refuses the Pod or the NetworkPolicy, or another owner keeps the NetworkPolicy under its name | False `Refused` or `ObjectsControlledElsewhere` |
 | a resource that fails through both | reported: it fails before the step too |
 | a group-version or resource only one side serves | reported: what the next minor removes or adds |
 | a group-version whose `APIService` names a Service, one the copy's discovery marks stale | reported: not read through a copy |
@@ -102,7 +103,7 @@ A step without a free place is `Rehearsed` Unknown `RehearsalLimit`, and looks a
 
 - `internal/controller/workloads/rehearsalcopy.go` — `rehearsalCopy`, the copy as the API server's render with the changes above, and `copyPolicy`; `rehearsalcopy_internal_test.go` holds the golden files `testdata/render/rehearsal-*.yaml` of a `nodePort`, a highly available and a `gateway` tenant, every other flag, the resources and the placement kept, and the policy.
 - `internal/controller/workloads/rehearsal.go` — `RehearsalReconciler`: the step it rehearses, the place under the fence, the verdict from the pod, the deletion; `rehearsalsweep.go` — the sweep and its projections.
-  `rehearsal_test.go` runs it in Workloads' suite as `lodia-workloads`, with the test standing in for the kubelet and a second envtest API server behind the tenant's serving certificate for the copy: the copy and its policy, `Passed` with its report and the reads it made, two tenants under a limit of 1, an exit with `unrecognized feature gate`, the failed verdict kept while it runs again, a new generation, `CopyFailed` at the deadline and unscheduled, an API server not ready at 5 minutes, a copy that does not answer read again, an object the copy cannot decode and one neither can, and an aggregated API and a webhook-converted CRD reported and not read.
+  `rehearsal_test.go` runs it in Workloads' suite as `lodia-workloads`, with the test standing in for the kubelet and a second envtest API server behind the tenant's serving certificate for the copy: the copy and its policy, `Passed` with its report and the reads it made, two tenants under a limit of 1, an exit with `unrecognized feature gate`, the failed verdict kept while it runs again and its wait across a restart, a NetworkPolicy another owner keeps tried again sooner, a new generation, `CopyFailed` at the deadline and unscheduled, a ready copy whose node is gone `CopyFailed` 20 minutes, an hour and a day after its creation and, while it is being deleted, neither counted nor in the next copy's way, an API server not ready at 5 minutes, a copy that does not answer read again, an object the copy cannot decode and one neither can, and an aggregated API and a webhook-converted CRD reported and not read.
 - `internal/controller/lifecycle/decide.go` — `rehearse`, the step from the preflight to `Rehearsal` and, on `Passed` for the step's version at the object's generation, to `Backup` in the same write, and back to `Rehearsal` from a `Backup` step whose generation moved; `decide_internal_test.go` holds the waits, the verdicts of another version and an older generation, `Failed`, `settle`, a limit of 0 and a patch step, and `upgrade_test.go` the `Backup` that comes in the pass the rehearsal passes and a spec edited at the `Backup` step, rehearsed before the target moves.
 - `internal/controller/datastore/networkpolicy.go` — the copy's rule on the etcd's client port.
 - `internal/versions` — `Step`, the version of a minor step, and `EtcdImage`.

@@ -89,15 +89,25 @@ func expectRehearsed(ctx context.Context, t *testing.T, k8s client.Client, key c
 func expectNoCopy(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) {
 	t.Helper()
 	until(ctx, t, time.Minute, "no copy is left", func(ctx context.Context) error {
-		name := client.ObjectKey{Namespace: key.Namespace, Name: key.Name + "-rehearsal"}
-		if err := k8s.Get(ctx, name, &corev1.Pod{}); !apierrors.IsNotFound(err) {
-			return fmt.Errorf("Pod %s: %w", name.Name, err)
+		pods, err := copyPods(ctx, k8s, key)
+		switch {
+		case err != nil:
+			return err
+		case len(pods) > 0:
+			return fmt.Errorf("Pod %s is there", pods[0].Name)
 		}
+		name := client.ObjectKey{Namespace: key.Namespace, Name: key.Name + "-rehearsal"}
 		if err := k8s.Get(ctx, name, &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("NetworkPolicy %s: %w", name.Name, err)
 		}
 		return nil
 	})
+}
+
+func copyPods(ctx context.Context, k8s client.Client, key client.ObjectKey) ([]corev1.Pod, error) {
+	list := &corev1.PodList{}
+	err := k8s.List(ctx, list, client.InNamespace(key.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: key.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent})
+	return list.Items, err
 }
 
 type copyTimeline struct {
@@ -113,17 +123,16 @@ func watchCopy(ctx context.Context, k8s client.Client, key client.ObjectKey) *co
 	go func() {
 		defer close(tl.done)
 		for watching.Err() == nil {
-			pod := &corev1.Pod{}
-			err := k8s.Get(watching, client.ObjectKey{Namespace: key.Namespace, Name: key.Name + "-rehearsal"}, pod)
+			pods, err := copyPods(watching, k8s, key)
 			now := time.Now()
 			tl.mu.Lock()
 			switch {
-			case err == nil && tl.created.IsZero():
-				tl.created = pod.CreationTimestamp.Time
-			case apierrors.IsNotFound(err) && !tl.created.IsZero() && tl.gone.IsZero():
+			case err == nil && len(pods) > 0 && tl.created.IsZero():
+				tl.created = pods[0].CreationTimestamp.Time
+			case err == nil && len(pods) == 0 && !tl.created.IsZero() && tl.gone.IsZero():
 				tl.gone = now
 			}
-			if err == nil && tl.ready.IsZero() && slices.ContainsFunc(pod.Status.ContainerStatuses, func(c corev1.ContainerStatus) bool { return c.Name == lodiav1alpha1.APIServerComponent && c.Ready }) {
+			if err == nil && len(pods) > 0 && tl.ready.IsZero() && slices.ContainsFunc(pods[0].Status.ContainerStatuses, func(c corev1.ContainerStatus) bool { return c.Name == lodiav1alpha1.APIServerComponent && c.Ready }) {
 				tl.ready = now
 			}
 			tl.mu.Unlock()
@@ -276,7 +285,7 @@ func noCopyIdentity(ctx context.Context, t *testing.T, access *tenantAccess, key
 	var hosts []string
 	for _, l := range leases.Items {
 		hosts = append(hosts, l.Labels[corev1.LabelHostname])
-		if l.Labels[corev1.LabelHostname] == key.Name+"-rehearsal" {
+		if strings.HasPrefix(l.Labels[corev1.LabelHostname], key.Name+"-rehearsal-") {
 			t.Errorf("the tenant holds the copy's identity Lease %s", l.Name)
 		}
 	}
