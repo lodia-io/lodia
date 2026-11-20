@@ -385,7 +385,7 @@ func (f facts) minorStep(c *change) {
 			c.unsupported = notInTable(nextMinor)
 			return
 		}
-		if c.upgrade.Step == lodiav1alpha1.UpgradeStepRehearsal || f.rehearsals > 0 && !passedAt(cp, next) {
+		if c.upgrade.Step == lodiav1alpha1.UpgradeStepRehearsal || !passedAt(cp, next) {
 			c.upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepRehearsal, StartedAt: c.upgrade.StartedAt}
 			f.rehearse(c, next, nextMinor)
 			return
