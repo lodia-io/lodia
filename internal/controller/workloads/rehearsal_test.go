@@ -783,6 +783,7 @@ func TestTheWaitBeforeARunAgainSurvivesARestart(t *testing.T) {
 			failed := expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed)
 			expectNoCopy(t, cp)
 
+			copies := watchCopies(t, cp)
 			rehearsalClock.offset.Store(int64(c.restart))
 			t.Cleanup(func() { rehearsalClock.offset.Store(0) })
 			restarted := newRehearsal()
@@ -790,14 +791,16 @@ func TestTheWaitBeforeARunAgainSurvivesARestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if pod := copyOf(t, cp); pod != nil || result.RequeueAfter <= c.mark-c.restart-time.Minute || result.RequeueAfter > c.mark-c.restart {
+			if pod := created(copies, time.Second); pod != nil || result.RequeueAfter <= c.mark-c.restart-time.Minute || result.RequeueAfter > c.mark-c.restart {
 				t.Errorf("a restarted operator %s after the verdict of %s made a copy (%t) and waits %s, want no copy and the rest of the time to the %s mark", c.restart, failed.LastTransitionTime, pod != nil, result.RequeueAfter, c.mark)
 			}
 			rehearsalClock.offset.Store(int64(c.mark + time.Second))
 			if _, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 				t.Fatal(err)
 			}
-			eventuallyCopy(t, cp, get(t, cp).Generation)
+			if created(copies, 30*time.Second) == nil {
+				t.Errorf("a restarted operator made no copy at the %s mark", c.mark)
+			}
 		})
 	}
 }
@@ -821,14 +824,43 @@ func TestARunAgainThatFailsWaitsForTheNextMarkFromItsEnd(t *testing.T) {
 	if !again.LastTransitionTime.Equal(&failed.LastTransitionTime) {
 		t.Errorf("the failed verdict's lastTransitionTime moved from %s to %s", failed.LastTransitionTime, again.LastTransitionTime)
 	}
+	copies := watchCopies(t, cp)
 	poke(t, cp)
-	time.Sleep(3 * time.Second)
-	if pod := copyOf(t, cp); pod != nil {
+	if pod := created(copies, 3*time.Second); pod != nil {
 		t.Fatalf("a run again that ended 11 minutes after the verdict was followed by %s before the 20-minute mark", pod.Name)
 	}
 	at(20*time.Minute + time.Second)
 	poke(t, cp)
-	eventuallyCopy(t, cp, generation)
+	if created(copies, 30*time.Second) == nil {
+		t.Error("no copy at the 20-minute mark")
+	}
+}
+
+func watchCopies(t *testing.T, cp *lodiav1alpha1.ControlPlane) <-chan watch.Event {
+	t.Helper()
+	w, err := k8s.Watch(t.Context(), &corev1.PodList{}, client.InNamespace(cp.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(w.Stop)
+	return w.ResultChan()
+}
+
+func created(copies <-chan watch.Event, within time.Duration) *corev1.Pod {
+	deadline := time.After(within)
+	for {
+		select {
+		case event, open := <-copies:
+			if !open {
+				return nil
+			}
+			if pod, ok := event.Object.(*corev1.Pod); ok && event.Type == watch.Added {
+				return pod
+			}
+		case <-deadline:
+			return nil
+		}
+	}
 }
 
 func TestAPolicyAnotherOwnerKeepsIsTriedAgainSooner(t *testing.T) {
