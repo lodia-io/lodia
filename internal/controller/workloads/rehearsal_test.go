@@ -611,39 +611,44 @@ func keep(t *testing.T, pod *corev1.Pod) {
 	})
 }
 
-func TestAnotherOwnersPodWithTheCopysLabelsIsNeitherJudgedNorDeleted(t *testing.T) {
+func TestAPodWithTheCopysLabelsNoControlPlaneControlsIsNeitherCountedNorJudged(t *testing.T) {
 	cp := controlPlaneForRehearsal(t)
 	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "owner"}}
 	if err := k8s.Create(t.Context(), owner); err != nil {
 		t.Fatal(err)
 	}
+	labels := map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}
+	spec := corev1.PodSpec{Containers: []corev1.Container{{Name: "kube-apiserver", Image: "registry.example/kube-apiserver:" + version}}}
 	foreign := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: cp.Namespace, Name: cp.Name + "-rehearsal-foreign",
-			Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent},
+			Namespace: cp.Namespace, Name: cp.Name + "-rehearsal-foreign", Labels: labels,
 			OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: owner.Name, UID: owner.UID, Controller: new(true)}},
 		},
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "kube-apiserver", Image: "registry.example/kube-apiserver:" + version}}},
+		Spec: spec,
 	}
-	if err := k8s.Create(t.Context(), foreign); err != nil {
-		t.Fatal(err)
+	elsewhere := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: namespace(t), Name: "not-a-copy", Labels: map[string]string{lodiav1alpha1.ControlPlaneLabel: "anything", lodiav1alpha1.ComponentLabel: lodiav1alpha1.RehearsalComponent}}, Spec: spec}
+	for _, pod := range []*corev1.Pod{foreign, elsewhere} {
+		if err := k8s.Create(t.Context(), pod); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := client.IgnoreNotFound(k8s.Delete(context.Background(), pod, client.GracePeriodSeconds(0))); err != nil {
+				t.Error(err)
+			}
+		})
+		setCopy(t, pod, readyCopy())
 	}
-	setCopy(t, foreign, readyCopy())
 	startRehearsal(t, cp)
-	expectRehearsed(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsalLimit)
-	time.Sleep(2 * time.Second)
-	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), foreign); err != nil || !foreign.DeletionTimestamp.IsZero() {
-		t.Fatalf("the other owner's Pod is gone or being deleted: %v", err)
-	}
-	if c, _ := rehearsed(t, cp); c.Reason != lodiav1alpha1.ReasonRehearsalLimit {
-		t.Errorf("Rehearsed is %s beside the other owner's Pod, want RehearsalLimit", c.Reason)
-	}
-	if err := k8s.Delete(t.Context(), foreign); err != nil {
-		t.Fatal(err)
-	}
-	poke(t, cp)
-	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	pod := eventuallyCopy(t, cp, get(t, cp).Generation)
+	expectRehearsed(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsing)
+	setCopy(t, pod, readyCopy())
 	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
+	expectNoCopy(t, cp)
+	for _, pod := range []*corev1.Pod{foreign, elsewhere} {
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(pod), pod); err != nil || !pod.DeletionTimestamp.IsZero() {
+			t.Errorf("the Pod %s/%s no ControlPlane controls is gone or being deleted: %v", pod.Namespace, pod.Name, err)
+		}
+	}
 }
 
 func TestACopyItsNodeEndedHoldsNoPlaceWhileItsControlPlaneIsPaused(t *testing.T) {

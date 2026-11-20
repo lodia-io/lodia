@@ -86,7 +86,7 @@ func GatewayAPI(cfg *rest.Config) (bool, error) {
 }
 
 // Cache holds Lodia's own kinds whole, TLSRoutes and Gateways whole where
-// gatewayAPI says they are served, the Pods of the rehearsals' copies alone,
+// gatewayAPI says they are served, the Pods labelled as rehearsals' copies alone,
 // and of every other kind only the objects labelled with their ControlPlane,
 // without their managed fields. The cache
 // maps every kind it holds when it is built, and fails on one not served.
