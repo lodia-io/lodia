@@ -335,8 +335,7 @@ func (r *RehearsalReconciler) judge(ctx context.Context, cp *lodiav1alpha1.Contr
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed,
 			fmt.Sprintf("the copy's kube-apiserver at %s exited %s", version, exit))
 	case age >= copyDeadline:
-		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
-			fmt.Sprintf("the copy at %s gave no verdict within %s of its creation%s", version, copyDeadline, r.lastRead(pod)))
+		return r.expired(ctx, cp, version, pod)
 	case api != nil && api.Ready:
 		return r.sweep(ctx, cp, version, verdict, pod)
 	case started && age >= readyWithin:

@@ -59,14 +59,21 @@ var rehearsalClock = &offsetClock{}
 
 type copies struct {
 	*httptest.Server
-	refuse  atomic.Bool
-	refused atomic.Int32
-	admin   client.Client
-	etcd    string
-	tenant  string
-	mu      sync.Mutex
-	paths   []string
-	tenants []string
+	tenantProxy   *httptest.Server
+	tenantAddress string
+	refuse        atomic.Bool
+	refused       atomic.Int32
+	admin         client.Client
+	etcd          string
+	tenant        string
+	mu            sync.Mutex
+	paths         []string
+	faults        map[string]*fault
+}
+
+type fault struct {
+	code, left int
+	served     atomic.Int32
 }
 
 var (
@@ -104,19 +111,76 @@ func startCopies(env *testenv.Env) *copies {
 	if err != nil {
 		env.Fatal("the serving certificate", err)
 	}
-	c := &copies{admin: admin, etcd: env.SecondEtcd(), tenant: env.Etcd()}
+	tenantTransport, err := rest.TransportFor(testenvAdmin)
+	if err != nil {
+		env.Fatal("the tenant's transport", err)
+	}
+	tenant, err := url.Parse(testenvAdmin.Host)
+	if err != nil {
+		env.Fatal("the tenant's address", err)
+	}
+	c := &copies{admin: admin, etcd: env.SecondEtcd(), tenant: env.Etcd(), tenantAddress: tenant.Host, faults: map[string]*fault{}}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = transport
 	c.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		c.paths = append(c.paths, r.URL.Path)
 		c.mu.Unlock()
-		proxy.ServeHTTP(w, r)
+		if !c.fail("copy", w, r) {
+			proxy.ServeHTTP(w, r)
+		}
 	}))
 	c.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	c.StartTLS()
+	toTenant := httputil.NewSingleHostReverseProxy(tenant)
+	toTenant.Transport = tenantTransport
+	c.tenantProxy = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !c.fail("tenant", w, r) {
+			toTenant.ServeHTTP(w, r)
+		}
+	}))
+	c.tenantProxy.TLS = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	c.tenantProxy.StartTLS()
 	copyServers = c
 	return c
+}
+
+func (c *copies) Close() {
+	c.tenantProxy.Close()
+	c.Server.Close()
+}
+
+func (c *copies) inject(t *testing.T, side, path string, code, times int) *fault {
+	t.Helper()
+	f := &fault{code: code, left: times}
+	c.mu.Lock()
+	c.faults[side+" "+path] = f
+	c.mu.Unlock()
+	t.Cleanup(func() {
+		c.mu.Lock()
+		delete(c.faults, side+" "+path)
+		c.mu.Unlock()
+	})
+	return f
+}
+
+func (c *copies) fail(side string, w http.ResponseWriter, r *http.Request) bool {
+	c.mu.Lock()
+	f := c.faults[side+" "+r.URL.Path]
+	answer := f != nil && f.left != 0
+	if answer && f.left > 0 {
+		f.left--
+	}
+	c.mu.Unlock()
+	if !answer {
+		return false
+	}
+	f.served.Add(1)
+	reason := map[int]string{http.StatusTooManyRequests: "TooManyRequests", http.StatusServiceUnavailable: "ServiceUnavailable"}[f.code]
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(f.code)
+	_, _ = fmt.Fprintf(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"injected","reason":%q,"code":%d}`, reason, f.code)
+	return true
 }
 
 func (c *copies) dial(ctx context.Context, network, address string) (net.Conn, error) {
@@ -126,10 +190,8 @@ func (c *copies) dial(ctx context.Context, network, address string) (net.Conn, e
 			return nil, errors.New("connection refused")
 		}
 		address = c.Listener.Addr().String()
-	} else {
-		c.mu.Lock()
-		c.tenants = append(c.tenants, address)
-		c.mu.Unlock()
+	} else if address == c.tenantAddress {
+		address = c.tenantProxy.Listener.Addr().String()
 	}
 	return (&net.Dialer{}).DialContext(ctx, network, address)
 }
@@ -727,6 +789,47 @@ func TestAnObjectTheCopyCannotReadStopsTheStepAndOneNeitherCanIsReported(t *test
 	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed,
 		"podtemplates of v1 lists through the tenant and not through the copy: ",
 		"reported: ", "controllerrevisions of apps/v1 fails through the tenant too: ")
+	expectNoCopy(t, cp)
+}
+
+func TestATenantThatAnswers503OnceDoesNotHideWhatTheCopyCannotRead(t *testing.T) {
+	ns := namespace(t)
+	corrupt(t, copyServers.etcd, "/registry/podtemplates/"+ns+"/broken")
+	once := copyServers.inject(t, "tenant", "/api/v1/podtemplates", http.StatusServiceUnavailable, 1)
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed, "podtemplates of v1 lists through the tenant and not through the copy: ")
+	if n := once.served.Load(); n != 1 {
+		t.Errorf("the tenant answered 503 %d times, want once", n)
+	}
+}
+
+func TestATransientAnswerOfTheCopyIsReadAgain(t *testing.T) {
+	discovery := copyServers.inject(t, "copy", "/api", http.StatusTooManyRequests, 1)
+	list := copyServers.inject(t, "copy", "/api/v1/configmaps", http.StatusServiceUnavailable, 1)
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
+	if discovery.served.Load() != 1 || list.served.Load() != 1 {
+		t.Errorf("the copy answered 429 %d times and 503 %d times, want once each", discovery.served.Load(), list.served.Load())
+	}
+}
+
+func TestAListThatStillFailsThroughTheCopyAtItsDeadlineStopsTheStep(t *testing.T) {
+	always := copyServers.inject(t, "copy", "/api/v1/configmaps", http.StatusServiceUnavailable, -1)
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	testenv.Eventually(t, func() error {
+		if always.served.Load() == 0 {
+			return errors.New("the copy has not answered the list of configmaps")
+		}
+		return nil
+	})
+	expectRehearsed(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsing)
+	rehearsalClock.offset.Store(int64(16 * time.Minute))
+	t.Cleanup(func() { rehearsalClock.offset.Store(0) })
+	poke(t, cp)
+	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed, "the list of configmaps of v1 still fails after 15m0s: injected")
 	expectNoCopy(t, cp)
 }
 

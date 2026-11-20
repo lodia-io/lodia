@@ -62,7 +62,10 @@ const (
 	tableAccept     = "application/json;as=Table;v=v1;g=meta.k8s.io"
 )
 
-var errBudget = errors.New("the pass's reads are over")
+var (
+	errBudget = errors.New("the pass's reads are over")
+	errAgain  = errors.New("a read is sent again")
+)
 
 type stage int
 
@@ -96,8 +99,17 @@ type sweep struct {
 	checked int
 
 	stopping, reported []string
-	// failing is the error of the read the sweep sends again.
-	failing string
+	// failing is the read the sweep sends again.
+	failing *failing
+}
+
+// failing is a read whose error was transient: what it read, its error, and
+// whether it stops the step once the copy's 15 minutes are over, as a read
+// through the copy that got an answer and the tenant's check of a resource
+// the copy failed do.
+type failing struct {
+	what, err string
+	stops     bool
 }
 
 // served is a group-version in a discovery: whether it is stale, and its
@@ -127,13 +139,12 @@ func (r *RehearsalReconciler) sweep(ctx context.Context, cp *lodiav1alpha1.Contr
 	defer cancel()
 	switch err := s.run(pass); {
 	case errors.Is(err, errBudget):
-		s.failing = ""
 		return ctrl.Result{RequeueAfter: min(sweepAgain, left)}, r.rehearsingNow(ctx, cp, version, verdict)
-	case err != nil:
-		s.failing = err.Error()
+	case errors.Is(err, errAgain):
 		return ctrl.Result{RequeueAfter: min(readAgain, left)}, r.rehearsingNow(ctx, cp, version, verdict)
+	case err != nil:
+		return ctrl.Result{}, err
 	}
-	s.failing = ""
 	took := r.Clock.Since(pod.CreationTimestamp.Time).Round(time.Second)
 	if len(s.stopping) > 0 {
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed,
@@ -143,14 +154,23 @@ func (r *RehearsalReconciler) sweep(ctx context.Context, cp *lodiav1alpha1.Contr
 		fmt.Sprintf("the copy at %s listed %d objects of %d resources, %s after its creation", version, s.objects, len(s.lists), took)+s.reports())
 }
 
-// lastRead says what the sweep of pod read last when that failed.
-func (r *RehearsalReconciler) lastRead(pod *corev1.Pod) string {
+// expired is the verdict on a copy whose 15 minutes are over while its API
+// server runs: ListFailed while a read its sweep sends again stops the step,
+// and CopyFailed otherwise, with that read's error.
+func (r *RehearsalReconciler) expired(ctx context.Context, cp *lodiav1alpha1.ControlPlane, version string, pod *corev1.Pod) (ctrl.Result, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if s := r.sweeps[pod.UID]; s != nil && s.failing != "" {
-		return ": " + quoted(s.failing)
+	s := r.sweeps[pod.UID]
+	r.mu.Unlock()
+	if s != nil && s.failing != nil && s.failing.stops {
+		s.stopping = append(s.stopping, fmt.Sprintf("%s still fails after %s: %s", s.failing.what, copyDeadline, s.failing.err))
+		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed,
+			fmt.Sprintf("through the copy at %s: %s", version, findings(s.stopping))+s.reports())
 	}
-	return ""
+	message := fmt.Sprintf("the copy at %s gave no verdict within %s of its creation", version, copyDeadline)
+	if s != nil && s.failing != nil {
+		message += ": " + s.failing.what + ": " + s.failing.err
+	}
+	return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed, message)
 }
 
 func (s *sweep) reports() string {
@@ -249,8 +269,9 @@ func (r *RehearsalReconciler) kubeconfig(ctx context.Context, cp *lodiav1alpha1.
 }
 
 // run reads on from where the sweep stands until it is swept, or returns
-// errBudget once the pass's reads are over. A read the copy answers with an
-// error is a finding; a read the tenant does not answer is the pass's error.
+// errBudget once the pass's reads are over, or errAgain for a read whose error
+// was transient, which the next pass sends again. Any other error of a read
+// through the copy is a finding.
 func (s *sweep) run(pass context.Context) error {
 	for {
 		var err error
@@ -271,7 +292,23 @@ func (s *sweep) run(pass context.Context) error {
 		if err != nil {
 			return err
 		}
+		s.failing = nil
 	}
+}
+
+// again keeps a read whose error was transient to be sent again.
+func (s *sweep) again(what string, err error, stops bool) error {
+	s.failing = &failing{what: what, err: quoted(err.Error()), stops: stops}
+	return errAgain
+}
+
+// transient says whether a read may answer when sent again: one that got no
+// answer or none in time, kube-apiserver's 429, 503, 504 and ServerTimeout,
+// and an answer that is no Status but carries Retry-After.
+func transient(err error) bool {
+	_, delay := apierrors.SuggestsClientDelay(err)
+	return delay || isTransport(err) || errors.Is(err, errSlow) || apierrors.IsTooManyRequests(err) ||
+		apierrors.IsServiceUnavailable(err) || apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err)
 }
 
 // read sends one read and gives its body. Its error is errBudget once the
@@ -302,11 +339,14 @@ func read(pass context.Context, c *tenantclient.Client, path, accept string, par
 var errSlow = fmt.Errorf("no answer within %s", readTimeout)
 
 // failedThroughCopy ends the sweep on a read of the copy that is not a list
-// of a resource: without it nothing can be listed. A read that got no answer
-// is the pass's error, and is sent again on the next.
+// of a resource: without it nothing can be listed. A transient error is sent
+// again.
 func (s *sweep) failedThroughCopy(what string, err error) error {
-	if errors.Is(err, errBudget) || isTransport(err) {
+	switch {
+	case errors.Is(err, errBudget):
 		return err
+	case transient(err):
+		return s.again(what, err, !isTransport(err))
 	}
 	s.stopping = append(s.stopping, what+": "+quoted(err.Error()))
 	s.stage = swept
@@ -323,7 +363,7 @@ func (s *sweep) discover(pass context.Context) error {
 		if errors.Is(err, errBudget) {
 			return err
 		}
-		return fmt.Errorf("the tenant's discovery: %w", err)
+		return s.again("the tenant's discovery", err, false)
 	}
 	s.copyAPIs, s.tenantAPIs = copyAPIs, tenantAPIs
 	s.aggregated, s.crds, s.webhooks = map[string]bool{}, map[string]bool{}, map[string]bool{}
@@ -469,8 +509,8 @@ func (s *sweep) listCopy(pass context.Context) error {
 	switch {
 	case errors.Is(err, errBudget):
 		return err
-	case isTransport(err):
-		return fmt.Errorf("list %s through the copy: %w", l.name, err)
+	case transient(err):
+		return s.again("the list of "+l.name, err, !isTransport(err))
 	case err != nil:
 		l.err = quoted(err.Error())
 		s.failed = append(s.failed, l)
@@ -485,8 +525,9 @@ func (s *sweep) listCopy(pass context.Context) error {
 }
 
 // checkTenant lists through the tenant each resource that failed through the
-// copy: one that lists there stops the step, and one that fails there too
-// fails before the step and is reported.
+// copy: one that lists there stops the step, and one whose list fails there
+// too, for a reason that is not transient, fails before the step and is
+// reported with each side's error.
 func (s *sweep) checkTenant(pass context.Context) error {
 	if s.checked == len(s.failed) {
 		s.stage = swept
@@ -500,10 +541,10 @@ func (s *sweep) checkTenant(pass context.Context) error {
 	case apierrors.IsResourceExpired(err):
 		s.token = ""
 		return nil
-	case isTransport(err):
-		return fmt.Errorf("list %s through the tenant: %w", l.name, err)
+	case transient(err):
+		return s.again("the tenant's list of "+l.name+" (through the copy: "+l.err+")", err, true)
 	case err != nil:
-		s.reported = append(s.reported, l.name+" fails through the tenant too: "+l.err)
+		s.reported = append(s.reported, l.name+" fails through the tenant too: "+quoted(err.Error())+"; through the copy: "+l.err)
 	case page.next != "":
 		s.token = page.next
 		return nil
