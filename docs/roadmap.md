@@ -107,7 +107,7 @@ Scope, to a first release:
 - One client of a tenant for PKI, Tenant and Health, with Health's bounds on every read, and the Secrets it needs read from the cache.
 - Read-your-writes: a controller's next pass sees the status it wrote, whatever its cache's lag.
 - Structured authentication: `apiServer.authentication.jwt` as upstream's `JWTAuthenticator`, an issuer's edit applied without a restart.
-- The rehearsal of a minor step: before the API server moves, a short-lived copy of the tenant's data under the next minor's API server shows that the step will start and every resource still reads; Kubernetes 1.38 joins the version table after it.
+- The rehearsal of a minor step: before the API server moves, a short-lived copy of the tenant's data under the next minor's API server shows that the step will start and every resource still reads ([rehearse-a-minor-step](decisions/rehearse-a-minor-step.md)); Kubernetes 1.38 joins the version table after it.
 - etcd-druid v0.39.2, nightlies that pin how Lodia asks it to reconcile and how a member restores through delta snapshots, and a seam that keeps its types out of the controllers ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md)).
 - A first release: the release workflow, signed images, the chart at a version, Renovate ([releases-and-support](decisions/releases-and-support.md)).
 
