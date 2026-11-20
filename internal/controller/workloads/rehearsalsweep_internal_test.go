@@ -18,9 +18,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -413,5 +416,36 @@ func TestTwoPlacesAtOnceUnderALimitOfOneCreateOneCopy(t *testing.T) {
 	}
 	if len(list.Items) != 1 {
 		t.Errorf("two places at once under a limit of 1 created %d copies", len(list.Items))
+	}
+}
+
+func TestACopyLeftBesideAPassedVerdictIsDeleted(t *testing.T) {
+	s := scheme(t)
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := networkingv1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	cp := &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "dev", UID: "cp-uid", Generation: 3},
+		Spec:       lodiav1alpha1.ControlPlaneSpec{Version: "v1.37.1"},
+		Status: lodiav1alpha1.ControlPlaneStatus{
+			Target:     &lodiav1alpha1.Target{Version: "v1.36.6"},
+			Kubernetes: &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepRehearsal}},
+			Rehearsal:  &lodiav1alpha1.RehearsalStatus{Version: "v1.37.1"},
+			Conditions: []metav1.Condition{{Type: lodiav1alpha1.ConditionRehearsed, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonPassed, ObservedGeneration: 3, LastTransitionTime: metav1.Now()}},
+		},
+	}
+	left := &corev1.Pod{ObjectMeta: objectMeta(cp, copyName(cp.Name)+"-left")}
+	left.Labels = podLabels(cp.Name, lodiav1alpha1.RehearsalComponent)
+	left.Annotations = map[string]string{versionAnnotation: "v1.37.1", generationAnnotation: "3"}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, left).WithStatusSubresource(cp).Build()
+	r := &RehearsalReconciler{Client: c, Reader: c, MaxConcurrent: 1, Clock: clock.RealClock{}}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(left), &corev1.Pod{}); !apierrors.IsNotFound(err) {
+		t.Errorf("the copy left beside a Passed verdict is still there: %v", err)
 	}
 }
