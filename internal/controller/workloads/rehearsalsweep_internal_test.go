@@ -291,17 +291,23 @@ func TestAResourceThatFailsThroughBothIsReportedWithEachSidesError(t *testing.T)
 
 func TestAReadThatStillFailsStopsTheStepOnlyWithAnAnswer(t *testing.T) {
 	for _, c := range []struct {
-		name         string
-		copy, tenant []answer
-		what         string
-		stops        bool
+		name   string
+		copy   map[string][]answer
+		tenant []answer
+		what   string
+		stops  bool
 	}{
-		{"a list through the copy answered 503", []answer{status(http.StatusServiceUnavailable, "ServiceUnavailable", "injected")}, nil, "the list of configmaps of v1", true},
-		{"a list through the copy without an answer", []answer{dropped}, nil, "the list of configmaps of v1", false},
-		{"the tenant's list of a resource the copy failed", []answer{undecodable}, []answer{status(http.StatusTooManyRequests, "TooManyRequests", "injected")}, "the tenant's list of configmaps of v1 (through the copy: proto: illegal wireType 6)", true},
+		{"a list through the copy answered 503", map[string][]answer{configMapsPath: {status(http.StatusServiceUnavailable, "ServiceUnavailable", "injected")}}, nil, "the list of configmaps of v1", true},
+		{"a list through the copy without an answer", map[string][]answer{configMapsPath: {dropped}}, nil, "the list of configmaps of v1", false},
+		{"a list through the copy cut", map[string][]answer{configMapsPath: {cutMidBody}}, nil, "the list of configmaps of v1", true},
+		{"the copy's discovery cut", map[string][]answer{"/api": {cutMidBody}}, nil, "its discovery", true},
+		{"the copy's list of APIServices cut", map[string][]answer{"/apis/apiregistration.k8s.io/v1/apiservices": {cutMidBody}}, nil, "its list of APIServices", true},
+		{"the copy's list of CustomResourceDefinitions cut", map[string][]answer{"/apis/apiextensions.k8s.io/v1/customresourcedefinitions": {cutMidBody}}, nil, "its list of CustomResourceDefinitions", true},
+		{"the tenant's list of a resource the copy failed", map[string][]answer{configMapsPath: {undecodable}}, []answer{status(http.StatusTooManyRequests, "TooManyRequests", "injected")}, "the tenant's list of configmaps of v1 (through the copy: proto: illegal wireType 6)", true},
+		{"the tenant's list of a resource the copy failed, cut", map[string][]answer{configMapsPath: {undecodable}}, []answer{cutMidBody}, "the tenant's list of configmaps of v1 (through the copy: proto: illegal wireType 6)", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			copyClient, _ := stub(t, map[string][]answer{configMapsPath: c.copy})
+			copyClient, _ := stub(t, c.copy)
 			answers := map[string][]answer{}
 			if c.tenant != nil {
 				answers[configMapsPath] = c.tenant
