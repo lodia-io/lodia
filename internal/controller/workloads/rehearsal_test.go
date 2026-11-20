@@ -933,6 +933,28 @@ func TestACopyThatDoesNotRunItsAPIServerFailsTheStep(t *testing.T) {
 	expectNoCopy(t, unscheduled)
 }
 
+func TestACopyThatWasReadyIsReadOnWhenItLosesItsReadiness(t *testing.T) {
+	failing := copyServers.inject(t, "copy", "/api/v1/configmaps", http.StatusServiceUnavailable, 3)
+	cp := rehearsing(t)
+	pod := eventuallyCopy(t, cp, get(t, cp).Generation)
+	setCopy(t, pod, readyCopy())
+	testenv.Eventually(t, func() error {
+		if failing.served.Load() == 0 {
+			return errors.New("the copy has not answered the list of configmaps")
+		}
+		return nil
+	})
+	rehearsalClock.offset.Store(int64(6 * time.Minute))
+	t.Cleanup(func() { rehearsalClock.offset.Store(0) })
+	notReady := readyCopy()
+	notReady.ContainerStatuses[0].Ready = false
+	setCopy(t, pod, notReady)
+	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
+	if n := failing.served.Load(); n != 3 {
+		t.Errorf("the copy answered 503 %d times, want 3", n)
+	}
+}
+
 func TestACopyItsNodeEndsIsCopyFailedWhateverRanBefore(t *testing.T) {
 	ended := func(state corev1.ContainerState) corev1.PodStatus {
 		return corev1.PodStatus{
@@ -960,7 +982,16 @@ func TestACopyItsNodeEndsIsCopyFailedWhateverRanBefore(t *testing.T) {
 				State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
 				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
 			}},
-		}, "its node ended the copy's kube-apiserver at " + version + " at its memory limit: exited 137 (OOMKilled)"},
+		}, "its node ended the copy at " + version + " at its memory limit: its kube-apiserver exited 137 (OOMKilled)"},
+		{"an OOM kill of the etcd of a ready copy", corev1.PodStatus{
+			Phase: corev1.PodRunning, PodIP: copyIP,
+			InitContainerStatuses: []corev1.ContainerStatus{{
+				Name: "etcd", Image: "etcd", Started: new(true), Ready: true,
+				State:                corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}},
+				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
+			}},
+			ContainerStatuses: []corev1.ContainerStatus{{Name: "kube-apiserver", Image: "registry.k8s.io/kube-apiserver:" + version, Started: new(true), Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}}},
+		}, "its node ended the copy at " + version + " at its memory limit: its etcd exited 137 (OOMKilled)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cp := rehearsing(t)

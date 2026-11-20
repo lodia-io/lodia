@@ -242,6 +242,14 @@ func (r *RehearsalReconciler) sweepOf(ctx context.Context, cp *lodiav1alpha1.Con
 	return s, nil
 }
 
+// sweeping says whether the sweep of the copy pod has begun.
+func (r *RehearsalReconciler) sweeping(pod types.UID) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.sweeps[pod]
+	return ok
+}
+
 // endSweeps forgets the sweeps of cp's copies but that of keep.
 func (r *RehearsalReconciler) endSweeps(cp, keep types.UID) {
 	r.mu.Lock()

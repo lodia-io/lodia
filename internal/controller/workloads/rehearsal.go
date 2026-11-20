@@ -322,12 +322,13 @@ func (r *RehearsalReconciler) class(ctx context.Context, cp *lodiav1alpha1.Contr
 }
 
 // judge reads the copy's verdict from its pod, or sweeps it once its API
-// server is ready.
+// server is ready, and on while it is not ready again: readyWithin holds only
+// until its sweep begins.
 func (r *RehearsalReconciler) judge(ctx context.Context, cp *lodiav1alpha1.ControlPlane, version string, verdict *metav1.Condition, pod *corev1.Pod) (ctrl.Result, error) {
 	age := r.Clock.Since(pod.CreationTimestamp.Time)
 	api := containerStatus(pod.Status.ContainerStatuses, apiServer)
 	started := api != nil && (api.State.Running != nil || api.State.Terminated != nil || api.LastTerminationState.Terminated != nil)
-	switch exit := exited(api); {
+	switch exit, killed := exited(api), outOfMemory(pod); {
 	case !started && (pod.Status.Phase == corev1.PodFailed || age >= copyDeadline):
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
 			fmt.Sprintf("the copy did not run its API server at %s within %s of its creation: %s", version, copyDeadline, lastReason(pod)))
@@ -337,15 +338,15 @@ func (r *RehearsalReconciler) judge(ctx context.Context, cp *lodiav1alpha1.Contr
 			message += "; its kube-apiserver last exited " + exit
 		}
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed, message)
-	case terminated(api) != nil && terminated(api).Reason == oomKilled:
+	case killed != nil:
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
-			fmt.Sprintf("its node ended the copy's kube-apiserver at %s at its memory limit: exited %s", version, exit))
+			fmt.Sprintf("its node ended the copy at %s at its memory limit: its %s exited %s", version, killed.Name, exited(killed)))
 	case exit != "":
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed,
 			fmt.Sprintf("the copy's kube-apiserver at %s exited %s", version, exit))
 	case age >= copyDeadline:
 		return r.expired(ctx, cp, version, pod)
-	case api != nil && api.Ready:
+	case api != nil && (api.Ready || r.sweeping(pod.UID)):
 		return r.sweep(ctx, cp, version, verdict, pod)
 	case started && age >= readyWithin:
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed,
@@ -382,6 +383,19 @@ func exited(c *corev1.ContainerStatus) string {
 		out += ": " + quoted(m)
 	}
 	return out
+}
+
+// outOfMemory is the first of the copy's containers its node ended at its
+// memory limit, nil while none.
+func outOfMemory(pod *corev1.Pod) *corev1.ContainerStatus {
+	for _, statuses := range [][]corev1.ContainerStatus{pod.Status.ContainerStatuses, pod.Status.InitContainerStatuses} {
+		for i := range statuses {
+			if t := terminated(&statuses[i]); t != nil && t.Reason == oomKilled {
+				return &statuses[i]
+			}
+		}
+	}
+	return nil
 }
 
 // terminated is how the container last ended, nil while it has never ended.
