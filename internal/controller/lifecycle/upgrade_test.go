@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -488,44 +489,78 @@ func TestASpecEditedAtTheBackupIsRehearsedBeforeTheTargetMoves(t *testing.T) {
 }
 
 func TestAnEditThatOvertakesTheWriteMovingTheTargetIsRehearsedFirst(t *testing.T) {
-	cp := quietControlPlane(t)
-	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
-	applyQuiet(t, cp, "test/rehearsal", map[string]any{
-		"rehearsal":  map[string]any{"version": "v1.37.1"},
-		"conditions": []any{map[string]any{"type": lodiav1alpha1.ConditionRehearsed, "status": "True", "reason": lodiav1alpha1.ReasonPassed, "message": "listed", "observedGeneration": getQuiet(t, cp).Generation, "lastTransitionTime": startedAt.Format(time.RFC3339)}},
-	})
-	createBackup(t, cp, preUpgrade(cp), metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted)
-	edited := false
-	overtaken := interceptor.NewClient(quiet, interceptor.Funcs{
-		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
-			if !edited {
-				edited = true
-				fresh := getQuiet(t, cp)
-				patch := client.MergeFrom(fresh.DeepCopy())
-				fresh.Spec.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"APIServerTracing": true}}
-				if err := quiet.Patch(ctx, fresh, patch); err != nil {
-					return err
-				}
+	for _, tc := range []struct {
+		name      string
+		ready     metav1.ConditionStatus
+		reason    string
+		takesSlot bool
+	}{
+		{"a Backup that completed", metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, false},
+		{"a Backup of a class with no store", metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, false},
+		{"a pass that also takes a slot of the fleet", metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := quietControlPlane(t)
+			seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
+			applyQuiet(t, cp, "test/rehearsal", map[string]any{
+				"rehearsal":  map[string]any{"version": "v1.37.1"},
+				"conditions": []any{map[string]any{"type": lodiav1alpha1.ConditionRehearsed, "status": "True", "reason": lodiav1alpha1.ReasonPassed, "message": "listed", "observedGeneration": getQuiet(t, cp).Generation, "lastTransitionTime": startedAt.Format(time.RFC3339)}},
+			})
+			createBackup(t, cp, preUpgrade(cp), tc.ready, tc.reason)
+			if tc.takesSlot {
+				class := datastoreClass(t, quiet, "overtaken-"+cp.Namespace)
+				applyQuiet(t, cp, "test/datastore", runsClass(class, 1))
+				applyQuiet(t, cp, lifecycle.FieldManager, map[string]any{
+					"target":     map[string]any{"version": "v1.36.6", "operatorRevision": runningRevision, "datastoreClass": map[string]any{"uid": string(class.UID), "generation": int64(1)}},
+					"kubernetes": map[string]any{"upgrade": map[string]any{"step": string(lodiav1alpha1.UpgradeStepBackup), "startedAt": startedAt.Format(time.RFC3339)}},
+				})
+				editClass(t, quiet, class.Name)
 			}
-			return c.SubResource(subResource).Apply(ctx, obj, opts...)
-		},
-	})
-	pass := func(c client.Client) error {
-		r := &lifecycle.Reconciler{Client: c, Reader: quiet, Clock: clocktesting.NewFakePassiveClock(later), Revision: runningRevision, MaxConcurrentRollouts: 5, MaxConcurrentRehearsals: 5, Settling: settlingTime}
-		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
-		return err
-	}
-	if err := pass(overtaken); !apierrors.IsConflict(err) {
-		t.Fatalf("the pass an edit overtook returned %v, want a conflict", err)
-	}
-	if fresh := getQuiet(t, cp); fresh.Status.Target.Version != "v1.36.6" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepBackup {
-		t.Fatalf("after the edit overtook the write the target is %s and the upgrade %+v, want v1.36.6 at step Backup", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade)
-	}
-	if err := pass(quiet); err != nil {
-		t.Fatal(err)
-	}
-	if fresh := getQuiet(t, cp); fresh.Status.Target.Version != "v1.36.6" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal || !fresh.Status.Kubernetes.Upgrade.StartedAt.Time.Equal(startedAt) {
-		t.Errorf("the next pass leaves the target at %s and the upgrade %+v, want v1.36.6 at step Rehearsal since %s", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade, startedAt)
+			var fleetLists atomic.Int32
+			reader := interceptor.NewClient(quiet, interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*lodiav1alpha1.ControlPlaneList); ok {
+						fleetLists.Add(1)
+					}
+					return c.List(ctx, list, opts...)
+				},
+			})
+			edited := false
+			overtaken := interceptor.NewClient(quiet, interceptor.Funcs{
+				SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+					if !edited {
+						edited = true
+						fresh := getQuiet(t, cp)
+						patch := client.MergeFrom(fresh.DeepCopy())
+						fresh.Spec.APIServer = &lodiav1alpha1.APIServer{FeatureGates: map[string]bool{"APIServerTracing": true}}
+						if err := quiet.Patch(ctx, fresh, patch); err != nil {
+							return err
+						}
+					}
+					return c.SubResource(subResource).Apply(ctx, obj, opts...)
+				},
+			})
+			pass := func(c client.Client, reader client.Reader) error {
+				r := &lifecycle.Reconciler{Client: c, Reader: reader, Clock: clocktesting.NewFakePassiveClock(later), Revision: runningRevision, MaxConcurrentRollouts: 5, MaxConcurrentRehearsals: 5, Settling: settlingTime}
+				_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+				return err
+			}
+			if err := pass(overtaken, reader); !apierrors.IsConflict(err) {
+				t.Fatalf("the pass an edit overtook returned %v, want a conflict", err)
+			}
+			if taken := fleetLists.Load() > 0; taken != tc.takesSlot {
+				t.Errorf("the pass listed the fleet from the API server %d times, want it to take a slot: %t", fleetLists.Load(), tc.takesSlot)
+			}
+			if fresh := getQuiet(t, cp); fresh.Status.Target.Version != "v1.36.6" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepBackup {
+				t.Fatalf("after the edit overtook the write the target is %s and the upgrade %+v, want v1.36.6 at step Backup", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade)
+			}
+			if err := pass(quiet, quiet); err != nil {
+				t.Fatal(err)
+			}
+			if fresh := getQuiet(t, cp); fresh.Status.Target.Version != "v1.36.6" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal || !fresh.Status.Kubernetes.Upgrade.StartedAt.Time.Equal(startedAt) {
+				t.Errorf("the next pass leaves the target at %s and the upgrade %+v, want v1.36.6 at step Rehearsal since %s", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade, startedAt)
+			}
+		})
 	}
 }
 
