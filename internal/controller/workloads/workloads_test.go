@@ -113,11 +113,14 @@ func TestMain(m *testing.M) {
 		env.Fatal("controller", err)
 	}
 	copies := startCopies(env)
-	rehearsal := &workloads.RehearsalReconciler{
-		Client: mgr.GetClient(), Reader: apiReader, Secrets: secretcache.New(mgr.GetCache(), apiReader), Clock: rehearsalClock, SignerImage: signerImage,
-		OperatorNamespace: operatorNamespace, MaxConcurrent: 1, Timeout: 5 * time.Second, Dial: copies.dial,
+	secrets := secretcache.New(mgr.GetCache(), apiReader)
+	newRehearsal = func() *workloads.RehearsalReconciler {
+		return &workloads.RehearsalReconciler{
+			Client: mgr.GetClient(), Reader: apiReader, Secrets: secrets, Clock: rehearsalClock, SignerImage: signerImage,
+			OperatorNamespace: operatorNamespace, MaxConcurrent: 1, Timeout: 5 * time.Second, Dial: copies.dial,
+		}
 	}
-	if err := rehearsal.SetupWithManager(mgr, 2); err != nil {
+	if err := newRehearsal().SetupWithManager(mgr, 2); err != nil {
 		env.Fatal("rehearsal", err)
 	}
 	env.StartManager(mgr)

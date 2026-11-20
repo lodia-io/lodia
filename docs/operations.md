@@ -333,7 +333,7 @@ A clone restores through the API, as Velero does, which gives every object a new
 
 1. `status.kubernetes.upgrade.step` says the step, `Progressing`'s message what failed; the upgrade resumes when the cause is gone.
 2. `Rehearsal` step failing: `Rehearsed`'s message says what the copy of the API server at the next minor found ([rehearse-a-minor-step](decisions/rehearse-a-minor-step.md)).
-   A gate or a flag the next minor removed, `APIServerFailed` with kube-apiserver's own message, is fixed in `spec`, and the rehearsal runs again at once at the new generation; any other verdict runs again 10 minutes after it.
+   A gate or a flag the next minor removed, `APIServerFailed` with kube-apiserver's own message, is fixed in `spec`, and the rehearsal runs again at once at the new generation; any other verdict runs again every 10 minutes counted from `Rehearsed`'s `lastTransitionTime`, and `Refused` and `ObjectsControlledElsewhere` sooner.
    `CopyFailed` quotes the pod's last reason: an image the node cannot pull, a pod that is not scheduled, or a snapshot the etcd's NetworkPolicy does not admit yet.
    A rehearsal that stops a tenant wrongly is turned off for the whole operator with `fleet.maxConcurrentRehearsals: 0` for the length of that tenant's step: the step then goes to its `Backup`, and `Progressing` says no rehearsal ran.
 3. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>`.

@@ -34,9 +34,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -70,6 +72,7 @@ var (
 	copyServers  *copies
 	testenvAdmin *rest.Config
 	apis         client.Client
+	newRehearsal func() *workloads.RehearsalReconciler
 )
 
 func startCopies(env *testenv.Env) *copies {
@@ -169,6 +172,13 @@ func copyCRDs(tenant, copyAdmin client.Client) error {
 
 func rehearsing(t *testing.T) *lodiav1alpha1.ControlPlane {
 	t.Helper()
+	cp := controlPlaneForRehearsal(t)
+	startRehearsal(t, cp)
+	return cp
+}
+
+func controlPlaneForRehearsal(t *testing.T) *lodiav1alpha1.ControlPlane {
+	t.Helper()
 	cp := controlPlane(t, loadBalancer())
 	setTargetAt(t, cp, rehearsedFrom, "")
 	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
@@ -178,9 +188,13 @@ func rehearsing(t *testing.T) *lodiav1alpha1.ControlPlane {
 	}})
 	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
 	writeKubeconfig(t, cp)
+	return cp
+}
+
+func startRehearsal(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+	t.Helper()
 	applyStatus(t, cp, "test/lifecycle", step(lodiav1alpha1.UpgradeStepRehearsal))
 	t.Cleanup(func() { endRehearsal(t, cp) })
-	return cp
 }
 
 func step(s lodiav1alpha1.UpgradeStep) map[string]any {
@@ -458,6 +472,61 @@ func TestAnAPIServerThatExitsFailsTheRehearsalWhichRunsAgainKeepingItsVerdict(t 
 	}
 	setCopy(t, again, readyCopy())
 	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
+}
+
+func TestTheWaitBeforeARunAgainSurvivesARestart(t *testing.T) {
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), exitedCopy(unknownGate))
+	failed := expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed)
+	expectNoCopy(t, cp)
+
+	rehearsalClock.offset.Store(int64(4 * time.Minute))
+	t.Cleanup(func() { rehearsalClock.offset.Store(0) })
+	restarted := newRehearsal()
+	result, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod := copyOf(t, cp); pod != nil || result.RequeueAfter <= 5*time.Minute || result.RequeueAfter > 6*time.Minute {
+		t.Errorf("a restarted operator 4 minutes after the verdict of %s made a copy (%t) and waits %s, want no copy and the rest of the 10 minutes", failed.LastTransitionTime, pod != nil, result.RequeueAfter)
+	}
+	rehearsalClock.offset.Store(int64(10*time.Minute + time.Second))
+	if _, err := restarted.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	eventuallyCopy(t, cp, get(t, cp).Generation)
+}
+
+func TestAPolicyAnotherOwnerKeepsIsTriedAgainSooner(t *testing.T) {
+	cp := controlPlaneForRehearsal(t)
+	foreign := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: cp.Name + "-rehearsal"},
+		Spec:       networkingv1.NetworkPolicySpec{PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}},
+	}
+	if err := k8s.Create(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "owner"}}
+	if err := k8s.Create(t.Context(), owner); err != nil {
+		t.Fatal(err)
+	}
+	foreign.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: owner.Name, UID: owner.UID, Controller: new(true)}}
+	if err := k8s.Update(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	startRehearsal(t, cp)
+	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, "NetworkPolicy "+cp.Name+"-rehearsal")
+	if err := k8s.Delete(t.Context(), foreign); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(foreign), &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
+			return fmt.Errorf("the other owner's NetworkPolicy is still there: %w", err)
+		}
+		return nil
+	})
+	poke(t, cp)
+	eventuallyCopy(t, cp, get(t, cp).Generation)
 }
 
 func poke(t *testing.T, cp *lodiav1alpha1.ControlPlane) {

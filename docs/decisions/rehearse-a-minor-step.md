@@ -61,7 +61,8 @@ A pass reads for at most 45 s of its minute, a read at most 30 s, the time a con
 
 The message names the version, the objects and resources listed and the time since the pod's creation, then the first five findings of each kind and a count of the rest; each transition is an event.
 The verdict stays on the `ControlPlane` until the next step's rehearsal, and the copy and its NetworkPolicy are deleted once it is written.
-A failed verdict runs again 10 minutes after it, and at once on a new generation, the owner's fix among them; while it runs again at the same generation it stays, so that `Progressing` does not flip.
+A failed verdict runs again at once on a new generation, the owner's fix among them, and otherwise at the first of every 10 minutes from `Rehearsed`'s `lastTransitionTime` after the last run ended, or after the operator started, so that a restart neither runs it at once nor loses the wait; `Refused` and `ObjectsControlledElsewhere`, about the copy's objects on the management cluster, run again sooner, on the controller's backoff and within a minute.
+While it runs again at the same generation the verdict stays, so that `Progressing` does not flip.
 A paused `ControlPlane` starts no copy, and one already running ends at its deadline.
 
 **How many.**

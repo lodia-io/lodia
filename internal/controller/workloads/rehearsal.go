@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,8 +46,8 @@ const (
 	// readyWithin is how long after the copy's creation its API server may
 	// run without being ready.
 	readyWithin = 5 * time.Minute
-	// rehearseAgain is how long after a failed verdict the rehearsal runs
-	// again at the same generation.
+	// rehearseAgain is how often a failed verdict runs again at the same
+	// generation.
 	rehearseAgain = 10 * time.Minute
 	// placeAgain is how often a rehearsal looks for a free place.
 	placeAgain = 30 * time.Second
@@ -85,9 +86,11 @@ type RehearsalReconciler struct {
 
 	places fence.Fence
 
-	mu       sync.Mutex
-	tenants  *tenantclient.Clients
-	sweeps   map[types.UID]*sweep
+	mu      sync.Mutex
+	tenants *tenantclient.Clients
+	sweeps  map[types.UID]*sweep
+	// verdicts is when this operator last concluded a verdict for a
+	// ControlPlane, or first saw its failed one.
 	verdicts map[types.UID]time.Time
 }
 
@@ -111,7 +114,7 @@ func (r *RehearsalReconciler) SetupWithManager(mgr ctrl.Manager, workers int) er
 
 // Reconcile runs a copy while status.kubernetes.upgrade.step is Rehearsal and
 // Rehearsed has no verdict for the step's version at the object's
-// generation, or a False one 10 minutes old, and removes any copy otherwise.
+// generation, or a False one due to run again, and removes any copy otherwise.
 // A paused ControlPlane starts no copy, and one already running ends at its
 // deadline.
 func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -157,9 +160,9 @@ func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return r.judge(ctx, cp, version, verdict, pod)
 	}
-	if verdict != nil {
-		if since := r.sinceVerdict(cp.UID); since < rehearseAgain {
-			return ctrl.Result{RequeueAfter: rehearseAgain - since}, nil
+	if verdict != nil && !slices.Contains(soonerAgain, verdict.Reason) {
+		if wait := r.againAt(cp.UID, verdict).Sub(r.Clock.Now()); wait > 0 {
+			return ctrl.Result{RequeueAfter: wait}, nil
 		}
 	}
 	return r.start(ctx, cp, version, verdict)
@@ -422,16 +425,32 @@ func (r *RehearsalReconciler) conclude(ctx context.Context, cp *lodiav1alpha1.Co
 	return ctrl.Result{}, nil
 }
 
-// sinceVerdict is how long ago this operator wrote cp's last verdict; one it
-// did not write counts as long ago, so a restarted operator runs again at once.
-func (r *RehearsalReconciler) sinceVerdict(uid types.UID) time.Duration {
+// soonerAgain are the failed verdicts about the copy's objects on the
+// management cluster, which run again on their own requeue and not 10
+// minutes on.
+var soonerAgain = []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere}
+
+// againAt is when a failed verdict runs again: at the first of every 10
+// minutes from Rehearsed's last transition after this operator last
+// concluded a verdict for cp, or first saw this one. A failed verdict stays
+// through its runs again, so the transition does not move, and a restarted
+// operator waits for the next mark instead of running at once.
+func (r *RehearsalReconciler) againAt(uid types.UID, failed *metav1.Condition) time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	at, ok := r.verdicts[uid]
-	if !ok {
-		return rehearseAgain
+	if r.verdicts == nil {
+		r.verdicts = map[types.UID]time.Time{}
 	}
-	return r.Clock.Since(at)
+	since, ok := r.verdicts[uid]
+	if !ok {
+		since = r.Clock.Now()
+		r.verdicts[uid] = since
+	}
+	from := failed.LastTransitionTime.Time
+	if since.Before(from) {
+		return from.Add(rehearseAgain)
+	}
+	return from.Add(since.Sub(from).Truncate(rehearseAgain) + rehearseAgain)
 }
 
 // remove deletes the copy and its NetworkPolicy, those cp controls, and
