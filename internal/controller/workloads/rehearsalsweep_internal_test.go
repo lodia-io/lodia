@@ -126,6 +126,12 @@ func transients() map[string][]answer {
 		"504":           {status(http.StatusGatewayTimeout, "Timeout", "request did not complete within the allotted timeout")},
 		"ServerTimeout": {status(http.StatusInternalServerError, "ServerTimeout", "the server cannot complete the requested operation at this time, try again later")},
 		"no answer":     {dropped, dropped},
+		"a 502 that is no Status with Retry-After": {func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("upstream is restarting"))
+		}},
 	}
 }
 
@@ -155,6 +161,22 @@ func TestATransientErrorThroughTheCopyIsReadAgain(t *testing.T) {
 				t.Errorf("the sweep sent %d reads again and ends with %d objects, failed %v, stopping %q, want 1, 2 and nothing", again, s.objects, s.failed, s.stopping)
 			}
 		})
+	}
+}
+
+func TestAPageWithNoAnswerInTimeIsReadAgain(t *testing.T) {
+	t.Parallel()
+	late := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(readTimeout + 5*time.Second):
+		case <-r.Context().Done():
+		}
+	}
+	copyClient, _ := stub(t, map[string][]answer{configMapsPath: {late, rows(2, "")}})
+	tenant, _ := stub(t, nil)
+	s := &sweep{copy: copyClient, tenant: tenant}
+	if again := sweptAll(t, s); again != 1 || len(s.stopping) > 0 || len(s.failed) > 0 || s.objects != 2 {
+		t.Errorf("the sweep sent %d reads again and ends with %d objects, failed %v, stopping %q, want 1, 2 and nothing", again, s.objects, s.failed, s.stopping)
 	}
 }
 

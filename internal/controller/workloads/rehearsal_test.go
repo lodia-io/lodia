@@ -69,6 +69,12 @@ type copies struct {
 	mu            sync.Mutex
 	paths         []string
 	faults        map[string]*fault
+	delays        map[string]*delays
+}
+
+type delays struct {
+	each    []time.Duration
+	queries []string
 }
 
 type fault struct {
@@ -119,13 +125,25 @@ func startCopies(env *testenv.Env) *copies {
 	if err != nil {
 		env.Fatal("the tenant's address", err)
 	}
-	c := &copies{admin: admin, etcd: env.SecondEtcd(), tenant: env.Etcd(), tenantAddress: tenant.Host, faults: map[string]*fault{}}
+	c := &copies{admin: admin, etcd: env.SecondEtcd(), tenant: env.Etcd(), tenantAddress: tenant.Host, faults: map[string]*fault{}, delays: map[string]*delays{}}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = transport
 	c.Server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		c.paths = append(c.paths, r.URL.Path)
+		var wait time.Duration
+		if d := c.delays[r.URL.Path]; d != nil {
+			d.queries = append(d.queries, r.URL.RawQuery)
+			if len(d.each) > 0 {
+				wait, d.each = d.each[0], d.each[1:]
+			}
+		}
 		c.mu.Unlock()
+		select {
+		case <-time.After(wait):
+		case <-r.Context().Done():
+			return
+		}
 		if !c.fail("copy", w, r) {
 			proxy.ServeHTTP(w, r)
 		}
@@ -162,6 +180,26 @@ func (c *copies) inject(t *testing.T, side, path string, code, times int) *fault
 		c.mu.Unlock()
 	})
 	return f
+}
+
+func (c *copies) slow(t *testing.T, path string, each ...time.Duration) *delays {
+	t.Helper()
+	d := &delays{each: each}
+	c.mu.Lock()
+	c.delays[path] = d
+	c.mu.Unlock()
+	t.Cleanup(func() {
+		c.mu.Lock()
+		delete(c.delays, path)
+		c.mu.Unlock()
+	})
+	return d
+}
+
+func (c *copies) queries(d *delays) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(d.queries)
 }
 
 func (c *copies) fail(side string, w http.ResponseWriter, r *http.Request) bool {
@@ -499,6 +537,9 @@ func TestAReadyCopyWhoseNodeIsGoneEndsAtItsDeadline(t *testing.T) {
 				}
 				return nil
 			})
+			if result, err := newRehearsal().Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil || result.RequeueAfter <= 0 || result.RequeueAfter > 5*time.Second {
+				t.Errorf("a pass over the copy that does not answer ends with %v and waits %s, want the read sent again within 5 s", err, result.RequeueAfter)
+			}
 			rehearsalClock.offset.Store(int64(after))
 			t.Cleanup(func() { rehearsalClock.offset.Store(0) })
 			poke(t, cp)
@@ -911,6 +952,37 @@ func TestAListThatStillFailsThroughTheCopyAtItsDeadlineStopsTheStep(t *testing.T
 	poke(t, cp)
 	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed, "the list of configmaps of v1 still fails after 15m0s: injected")
 	expectNoCopy(t, cp)
+}
+
+func TestASweepGoesOnFromItsContinueTokenAfterItsPassBudget(t *testing.T) {
+	ns := namespace(t)
+	if err := copyServers.admin.Create(t.Context(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 501 {
+		if err := copyServers.admin.Create(t.Context(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: fmt.Sprintf("page-%03d", i)}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		if err := copyServers.admin.DeleteAllOf(context.Background(), &corev1.ConfigMap{}, client.InNamespace(ns)); err != nil {
+			t.Error(err)
+		}
+	})
+	pages := copyServers.slow(t, "/api/v1/configmaps", 20*time.Second, 40*time.Second)
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	testenv.EventuallyWithin(t, 2*time.Minute, func() error {
+		if c, _ := rehearsed(t, cp); c == nil || c.Status == metav1.ConditionUnknown {
+			return fmt.Errorf("Rehearsed is %+v", c)
+		}
+		return nil
+	})
+	expectRehearsed(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonPassed)
+	queries := copyServers.queries(pages)
+	if len(queries) != 3 || strings.Contains(queries[0], "continue=") || !strings.Contains(queries[1], "continue=") || queries[2] != queries[1] {
+		t.Errorf("the copy's lists of configmaps were %q, want a first page, then the second cut by the pass's 45 s and read again with its continue token", queries)
+	}
 }
 
 func corrupt(t *testing.T, endpoint, key string) {
