@@ -339,6 +339,7 @@ A clone restores through the API, as Velero does, which gives every object a new
 3. `Backup` step failing: the `Ready` message of the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>`.
    A failed `Backup` is final: delete it, and Lifecycle takes it again.
    A class without a backup store skips it, and `Progressing`'s message says so.
+   A step whose rehearsal passed waits here, its `Backup` `Completed`, while a failure named elsewhere stands, and `Progressing` names it; a fix in `spec` is rehearsed again first, and the target then moves on the `Backup` taken before the wait: if that took long, delete the `Backup` first, so that the upgrade starts from a fresh one.
 4. API server step failing: what a rehearsal does not reach, a webhook of the tenant that refuses the next minor's start writes among them, or a removed flag or feature gate while rehearsals are off; fix the cause, the step retries.
 5. In-tenant step failing: an object the tenant refuses, named in `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards, and an image they cannot pull (air gap, registry mirror missing) shows in `AddonsAvailable`, not here.
 6. `MaintenanceFailed`: a new operator revision the tenant failed in its slot of the fleet, `Progressing`'s message saying what; the tenant keeps the slot, through an edit of its spec or a pause, and takes the next release at once, and the slot is free once the cause is gone and `Ready` has been True for the settling time.
