@@ -54,6 +54,9 @@ const (
 	placeAgain = 30 * time.Second
 	// maxQuoted bounds what a verdict quotes of a container or of an answer.
 	maxQuoted = 1024
+	// oomKilled is the reason of a container its node's memory limit ended
+	// (https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/kuberuntime/helpers.go#L175).
+	oomKilled = "OOMKilled"
 )
 
 // RehearsalReconciler rehearses a minor step on a copy of the API server
@@ -316,12 +319,21 @@ func (r *RehearsalReconciler) judge(ctx context.Context, cp *lodiav1alpha1.Contr
 	api := containerStatus(pod.Status.ContainerStatuses, apiServer)
 	started := api != nil && (api.State.Running != nil || api.State.Terminated != nil || api.LastTerminationState.Terminated != nil)
 	switch exit := exited(api); {
+	case !started && (pod.Status.Phase == corev1.PodFailed || age >= copyDeadline):
+		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
+			fmt.Sprintf("the copy did not run its API server at %s within %s of its creation: %s", version, copyDeadline, lastReason(pod)))
+	case pod.Status.Phase == corev1.PodFailed:
+		message := fmt.Sprintf("its node ended the copy at %s before a verdict: %s", version, podIs(pod))
+		if exit != "" {
+			message += "; its kube-apiserver last exited " + exit
+		}
+		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed, message)
+	case terminated(api) != nil && terminated(api).Reason == oomKilled:
+		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
+			fmt.Sprintf("its node ended the copy's kube-apiserver at %s at its memory limit: exited %s", version, exit))
 	case exit != "":
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed,
 			fmt.Sprintf("the copy's kube-apiserver at %s exited %s", version, exit))
-	case pod.Status.Phase == corev1.PodFailed || !started && age >= copyDeadline:
-		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
-			fmt.Sprintf("the copy did not run its API server at %s within %s of its creation: %s", version, copyDeadline, lastReason(pod)))
 	case age >= copyDeadline:
 		return r.conclude(ctx, cp, version, pod, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed,
 			fmt.Sprintf("the copy at %s gave no verdict within %s of its creation%s", version, copyDeadline, r.lastRead(pod)))
@@ -353,13 +365,7 @@ func containerStatus(statuses []corev1.ContainerStatus, name string) *corev1.Con
 // message, empty while it has never ended: the copy's API server never exits
 // on its own.
 func exited(c *corev1.ContainerStatus) string {
-	if c == nil {
-		return ""
-	}
-	t := c.State.Terminated
-	if t == nil {
-		t = c.LastTerminationState.Terminated
-	}
+	t := terminated(c)
 	if t == nil {
 		return ""
 	}
@@ -368,6 +374,17 @@ func exited(c *corev1.ContainerStatus) string {
 		out += ": " + quoted(m)
 	}
 	return out
+}
+
+// terminated is how the container last ended, nil while it has never ended.
+func terminated(c *corev1.ContainerStatus) *corev1.ContainerStateTerminated {
+	if c == nil {
+		return nil
+	}
+	if c.State.Terminated != nil {
+		return c.State.Terminated
+	}
+	return c.LastTerminationState.Terminated
 }
 
 // lastReason is why the copy did not run its API server: the last init
@@ -396,6 +413,10 @@ func lastReason(pod *corev1.Pod) string {
 			return "not scheduled: " + c.Reason + ": " + quoted(c.Message)
 		}
 	}
+	return podIs(pod)
+}
+
+func podIs(pod *corev1.Pod) string {
 	if pod.Status.Reason != "" {
 		return "the pod is " + pod.Status.Reason + ": " + quoted(pod.Status.Message)
 	}

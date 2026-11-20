@@ -679,6 +679,44 @@ func TestACopyThatDoesNotRunItsAPIServerFailsTheStep(t *testing.T) {
 	expectNoCopy(t, unscheduled)
 }
 
+func TestACopyItsNodeEndsIsCopyFailedWhateverRanBefore(t *testing.T) {
+	ended := func(state corev1.ContainerState) corev1.PodStatus {
+		return corev1.PodStatus{
+			Phase: corev1.PodFailed, Reason: "DeadlineExceeded", Message: "Pod was active on the node longer than the specified deadline", PodIP: copyIP,
+			ContainerStatuses: []corev1.ContainerStatus{{Name: "kube-apiserver", Image: "registry.k8s.io/kube-apiserver:" + version, Started: new(false), State: state}},
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		status corev1.PodStatus
+		want   string
+	}{
+		{"its deadline after the API server exited 0", ended(corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}}),
+			"its node ended the copy at " + version + " before a verdict: the pod is DeadlineExceeded: Pod was active on the node longer than the specified deadline; its kube-apiserver last exited 0 (Completed)"},
+		{"its deadline after the API server was killed", ended(corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}}),
+			"the pod is DeadlineExceeded: Pod was active on the node longer than the specified deadline; its kube-apiserver last exited 137 (Error)"},
+		{"an eviction of a ready copy", corev1.PodStatus{
+			Phase: corev1.PodFailed, Reason: "Evicted", Message: "The node was low on resource: memory.", PodIP: copyIP,
+			ContainerStatuses: []corev1.ContainerStatus{{Name: "kube-apiserver", Image: "registry.k8s.io/kube-apiserver:" + version, Started: new(true), Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Now()}}}},
+		}, "its node ended the copy at " + version + " before a verdict: the pod is Evicted: The node was low on resource: memory."},
+		{"an OOM kill of the API server", corev1.PodStatus{
+			Phase: corev1.PodRunning, PodIP: copyIP,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "kube-apiserver", Image: "registry.k8s.io/kube-apiserver:" + version,
+				State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+				LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
+			}},
+		}, "its node ended the copy's kube-apiserver at " + version + " at its memory limit: exited 137 (OOMKilled)"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := rehearsing(t)
+			setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), c.status)
+			expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed, c.want)
+			expectNoCopy(t, cp)
+		})
+	}
+}
+
 func TestAnObjectTheCopyCannotReadStopsTheStepAndOneNeitherCanIsReported(t *testing.T) {
 	ns := namespace(t)
 	corrupt(t, copyServers.etcd, "/registry/podtemplates/"+ns+"/broken")
