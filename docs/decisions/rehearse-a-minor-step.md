@@ -63,7 +63,9 @@ A pass reads for at most 45 s of its minute, a read at most 30 s, the time a con
 
 The message names the version, the objects and resources listed and the time since the pod's creation, then the first five findings of each kind and a count of the rest; each transition is an event.
 The verdict stays on the `ControlPlane` until the next step's rehearsal, and the copy and its NetworkPolicy are deleted once it is written.
-A failed verdict runs again at once on a new generation, the owner's fix among them, and otherwise at the first of every 10 minutes from `Rehearsed`'s `lastTransitionTime` after the last run ended, or after the operator started, so that a restart neither runs it at once nor loses the wait; `Refused` and `ObjectsControlledElsewhere`, about the copy's objects on the management cluster, run again sooner, on the controller's backoff and within a minute.
+A failed verdict runs again at once on a new generation, the owner's fix among them, and otherwise at the first of every 10 minutes from `Rehearsed`'s `lastTransitionTime` after the last run ended, or after this operator's first pass over the verdict, so that a restart neither runs it at once nor loses the wait.
+A run longer than 10 minutes skips a mark: a copy that runs to its 15-minute deadline, `CopyFailed`, runs again every 20 minutes.
+`ObjectsControlledElsewhere` runs again every minute, and `Refused` on the controller's backoff, which doubles from 5 ms to at most 1,000 s ([controller.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/controller/controller.go#L271-L277)), so a refusal that stands, as of a quota, is tried again up to 16 minutes 40 seconds apart.
 While it runs again at the same generation the verdict stays, so that `Progressing` does not flip.
 A paused `ControlPlane` starts no copy, and one already running ends at its deadline.
 
