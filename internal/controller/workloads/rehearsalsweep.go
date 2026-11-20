@@ -89,8 +89,10 @@ type sweep struct {
 
 	copyAPIs, tenantAPIs map[string]served
 	aggregated           map[string]bool
-	crds                 map[string]bool
-	webhooks             map[string]bool
+	// crds are the resources at each version the copy's own
+	// CustomResourceDefinitions serve, keyed by group-version and plural.
+	crds     map[string]bool
+	webhooks map[string]bool
 
 	lists   []list
 	next    int
@@ -424,7 +426,7 @@ func (s *sweep) readCRDs(pass context.Context) error {
 			s.webhooks[c.group+"/"+c.plural] = true
 		}
 		for _, v := range c.served {
-			s.crds[groupVersion(c.group, v)] = true
+			s.crds[groupVersion(c.group, v)+"/"+c.plural] = true
 		}
 	}
 	if s.token = page.next; s.token == "" {
@@ -436,8 +438,10 @@ func (s *sweep) readCRDs(pass context.Context) error {
 
 // plan lists every resource of every group-version the copy serves but those
 // an APIService serves from a Service and those a webhook converts, which it
-// reports, as it reports what one side serves alone and stops on a
-// CustomResourceDefinition's the copy does not serve.
+// reports, as it reports what one side serves alone, and stops on a resource
+// the tenant serves that the copy's own CustomResourceDefinitions serve and
+// its discovery does not: one created after the snapshot is the tenant's
+// alone.
 func (s *sweep) plan() {
 	webhooks := map[string]bool{}
 	for _, key := range slices.Sorted(maps.Keys(s.copyAPIs)) {
@@ -470,18 +474,17 @@ func (s *sweep) plan() {
 	for _, key := range slices.Sorted(maps.Keys(s.tenantAPIs)) {
 		tenant := s.tenantAPIs[key]
 		copyServes, both := s.copyAPIs[key]
+		held := slices.ContainsFunc(tenant.resources, func(resource string) bool { return s.crds[key+"/"+resource] })
 		switch {
 		case s.aggregated[key] && both, tenant.stale:
-		case !both && s.crds[key]:
-			s.stopping = append(s.stopping, "the copy does not serve "+key+", which a CustomResourceDefinition serves through the tenant")
-		case !both:
+		case !both && !held:
 			s.reported = append(s.reported, "only the tenant serves "+key)
 		default:
 			for _, resource := range tenant.resources {
 				switch {
 				case slices.Contains(copyServes.resources, resource):
-				case s.crds[key]:
-					s.stopping = append(s.stopping, "the copy does not serve "+resource+" of "+key+", which a CustomResourceDefinition serves through the tenant")
+				case s.crds[key+"/"+resource]:
+					s.stopping = append(s.stopping, "the copy does not serve "+resource+" of "+key+", which its own CustomResourceDefinition serves")
 				default:
 					s.reported = append(s.reported, "only the tenant serves "+resource+" of "+key)
 				}

@@ -268,3 +268,59 @@ func TestASweepGoesOnWhereThePassBudgetEndedIt(t *testing.T) {
 		t.Errorf("the sweep ends with %d objects, failed %v and stopping %q after the lists %q, want 503 objects and the second page read again with its token", s.objects, s.failed, s.stopping, lists)
 	}
 }
+
+func crdsOfTheCopy(crds ...string) answer {
+	var items []string
+	for _, crd := range crds {
+		plural, version, _ := strings.Cut(crd, "/")
+		items = append(items, `{"spec":{"group":"example.com","names":{"plural":"`+plural+`"},"versions":[{"name":"`+version+`","served":true}]}}`)
+	}
+	return body(`{"kind":"List","metadata":{},"items":[` + strings.Join(items, ",") + `]}`)
+}
+
+func serves(versions map[string][]string) answer {
+	var out []string
+	for _, version := range slices.Sorted(maps.Keys(versions)) {
+		var resources []string
+		for _, r := range versions[version] {
+			resources = append(resources, `{"resource":"`+r+`","verbs":["list"]}`)
+		}
+		out = append(out, `{"version":"`+version+`","resources":[`+strings.Join(resources, ",")+`]}`)
+	}
+	if len(out) == 0 {
+		return body(noGroups)
+	}
+	return body(`{"kind":"APIGroupDiscoveryList","apiVersion":"apidiscovery.k8s.io/v2","metadata":{},"items":[{"metadata":{"name":"example.com"},"versions":[` + strings.Join(out, ",") + `]}]}`)
+}
+
+func TestACustomResourceTheTenantServesStopsTheStepOnlyWhenTheCopysOwnCRDServesIt(t *testing.T) {
+	for _, c := range []struct {
+		name               string
+		crds               []string
+		copyServes, tenant map[string][]string
+		stopping, reported []string
+	}{
+		{"a CRD the copy holds and does not serve, its group-version missing", []string{"as/v1"}, nil, map[string][]string{"v1": {"as"}},
+			[]string{"the copy does not serve as of example.com/v1, which its own CustomResourceDefinition serves"}, nil},
+		{"a CRD the copy holds and does not serve, beside one it serves", []string{"as/v1", "bs/v1"}, map[string][]string{"v1": {"as"}}, map[string][]string{"v1": {"as", "bs"}},
+			[]string{"the copy does not serve bs of example.com/v1, which its own CustomResourceDefinition serves"}, nil},
+		{"a CRD created after the snapshot beside one the copy serves", []string{"as/v1"}, map[string][]string{"v1": {"as"}}, map[string][]string{"v1": {"as", "bs"}},
+			nil, []string{"only the tenant serves bs of example.com/v1"}},
+		{"a version added after the snapshot to a CRD the copy holds", []string{"as/v1"}, map[string][]string{"v1": {"as"}}, map[string][]string{"v1": {"as"}, "v2": {"as"}},
+			nil, []string{"only the tenant serves example.com/v2"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			copyClient, _ := stub(t, map[string][]answer{
+				"/apis": {serves(c.copyServes)},
+				"/apis/apiextensions.k8s.io/v1/customresourcedefinitions": {crdsOfTheCopy(c.crds...)},
+				"/apis/example.com/v1/as":                                 {rows(1, "")},
+			})
+			tenant, _ := stub(t, map[string][]answer{"/apis": {serves(c.tenant)}})
+			s := &sweep{copy: copyClient, tenant: tenant}
+			sweptAll(t, s)
+			if !slices.Equal(s.stopping, c.stopping) || !slices.Equal(s.reported, c.reported) {
+				t.Errorf("the sweep stops on %q and reports %q, want %q and %q", s.stopping, s.reported, c.stopping, c.reported)
+			}
+		})
+	}
+}
