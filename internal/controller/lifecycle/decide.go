@@ -716,7 +716,7 @@ func (c change) upgradingMessage(f facts, rolling []string) string {
 		return c.rehearsal
 	}
 	if c.upgrade.Step == lodiav1alpha1.UpgradeStepBackup {
-		if f.rehearsals == 0 {
+		if next, _, _ := versions.Step(f.cp.Spec.Version, c.target); f.rehearsals == 0 && !passed(f.cp, next) {
 			return c.backup + "; " + noRehearsal
 		}
 		return c.backup
