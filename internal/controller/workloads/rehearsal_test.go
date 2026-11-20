@@ -935,6 +935,25 @@ func TestAnObjectTheCopyCannotReadStopsTheStepAndOneNeitherCanIsReported(t *test
 	expectNoCopy(t, cp)
 }
 
+func TestATenantsDiscoveryThatFailsIsReadAgainWithinTheDeadline(t *testing.T) {
+	failing := copyServers.inject(t, "tenant", "/apis", http.StatusInternalServerError, -1)
+	cp := rehearsing(t)
+	setCopy(t, eventuallyCopy(t, cp, get(t, cp).Generation), readyCopy())
+	testenv.Eventually(t, func() error {
+		if failing.served.Load() == 0 {
+			return errors.New("the tenant's discovery has not been read")
+		}
+		return nil
+	})
+	if result, err := newRehearsal().Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil || result.RequeueAfter <= 0 || result.RequeueAfter > 5*time.Second {
+		t.Errorf("a pass over a tenant whose discovery fails ends with %v and waits %s, want the read sent again within 5 s", err, result.RequeueAfter)
+	}
+	rehearsalClock.offset.Store(int64(16 * time.Minute))
+	t.Cleanup(func() { rehearsalClock.offset.Store(0) })
+	poke(t, cp)
+	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed, "gave no verdict within 15m0s of its creation: the tenant's discovery: ")
+}
+
 func TestATenantThatAnswers503OnceDoesNotHideWhatTheCopyCannotRead(t *testing.T) {
 	ns := namespace(t)
 	corrupt(t, copyServers.etcd, "/registry/podtemplates/"+ns+"/broken")

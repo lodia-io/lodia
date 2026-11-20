@@ -449,3 +449,20 @@ func TestACopyLeftBesideAPassedVerdictIsDeleted(t *testing.T) {
 		t.Errorf("the copy left beside a Passed verdict is still there: %v", err)
 	}
 }
+
+func TestPlaceFindsTheCopyTheCacheMissed(t *testing.T) {
+	s := scheme(t)
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatal(err)
+	}
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a", Name: "dev", UID: "cp-uid"}}
+	created := &corev1.Pod{ObjectMeta: objectMeta(cp, copyName(cp.Name)+"-created")}
+	created.Labels = podLabels(cp.Name, lodiav1alpha1.RehearsalComponent)
+	api := fake.NewClientBuilder().WithScheme(s).WithObjects(created).Build()
+	r := &RehearsalReconciler{Client: fake.NewClientBuilder().WithScheme(s).Build(), Reader: api, MaxConcurrent: 5}
+	another := &corev1.Pod{ObjectMeta: objectMeta(cp, "")}
+	another.GenerateName, another.Labels = copyName(cp.Name)+"-", created.Labels
+	if _, err := r.place(t.Context(), cp, another); !errors.Is(err, errCopied) {
+		t.Errorf("place over a copy the cache lacks ends with %v, want errCopied", err)
+	}
+}
