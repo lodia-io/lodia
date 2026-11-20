@@ -406,6 +406,41 @@ func TestTheBackupIsCreatedOnceWithTheMinorsNameAndNoOwner(t *testing.T) {
 	}
 }
 
+func TestTheBackupWaitsForTheRehearsalAndComesInThePassItPasses(t *testing.T) {
+	cp := quietControlPlane(t)
+	seedQuiet(t, cp, "v1.36.6", "", all("v1.36.6"), "v1.36.6")
+	rehearse := func() {
+		t.Helper()
+		r := &lifecycle.Reconciler{Client: quiet, Reader: quiet, Clock: clocktesting.NewFakePassiveClock(later), Revision: runningRevision, MaxConcurrentRollouts: 5, MaxConcurrentRehearsals: 5, Settling: settlingTime}
+		if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backups := func() int {
+		t.Helper()
+		list := &lodiav1alpha1.BackupList{}
+		if err := quiet.List(t.Context(), list, client.InNamespace(cp.Namespace)); err != nil {
+			t.Fatal(err)
+		}
+		return len(list.Items)
+	}
+	rehearse()
+	if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepRehearsal || backups() != 0 {
+		t.Fatalf("after the preflight the upgrade is %+v with %d Backups, want step Rehearsal and none", u, backups())
+	}
+	applyQuiet(t, cp, "test/rehearsal", map[string]any{
+		"rehearsal":  map[string]any{"version": "v1.37.1"},
+		"conditions": []any{map[string]any{"type": lodiav1alpha1.ConditionRehearsed, "status": "True", "reason": lodiav1alpha1.ReasonPassed, "message": "listed", "observedGeneration": getQuiet(t, cp).Generation, "lastTransitionTime": startedAt.Format(time.RFC3339)}},
+	})
+	rehearse()
+	if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepBackup || backups() != 1 {
+		t.Errorf("after the rehearsal passed the upgrade is %+v with %d Backups, want step Backup and its Backup", u, backups())
+	}
+	if err := quiet.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: preUpgrade(cp)}, &lodiav1alpha1.Backup{}); err != nil {
+		t.Error(err)
+	}
+}
+
 func TestAPredecessorsBackupOfTheSameNameDoesNotStandIn(t *testing.T) {
 	cp := quietControlPlane(t)
 	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")

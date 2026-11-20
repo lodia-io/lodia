@@ -25,16 +25,18 @@ import (
 // names, noClass while none is named or it is gone. fleet holds the other
 // tenants that hold a slot of the fleet or wait for one, read only while a
 // change is pending; limit is how many may hold one, and settling how long a
-// change Lodia started keeps its slot once it has rolled out.
+// change Lodia started keeps its slot once it has rolled out. rehearsals is
+// fleet.maxConcurrentRehearsals, 0 when no minor step is rehearsed.
 type facts struct {
-	cp       *lodiav1alpha1.ControlPlane
-	backup   *lodiav1alpha1.Backup
-	class    lodiav1alpha1.DatastoreClassGeneration
-	now      time.Time
-	revision string
-	fleet    []member
-	limit    int
-	settling time.Duration
+	cp         *lodiav1alpha1.ControlPlane
+	backup     *lodiav1alpha1.Backup
+	class      lodiav1alpha1.DatastoreClassGeneration
+	now        time.Time
+	revision   string
+	fleet      []member
+	limit      int
+	settling   time.Duration
+	rehearsals int
 }
 
 // noClass stands for no class: none named, or one that is gone.
@@ -79,6 +81,9 @@ type change struct {
 	preflight *metav1.Condition
 	// waits says the next minor step waits for what every part reports.
 	waits string
+	// rehearsal says how the rehearsal of a minor step stands, and
+	// rehearsalFailed its failed verdict.
+	rehearsal, rehearsalFailed string
 	// backup says how the pre-upgrade Backup stands, and backupFailed its failure.
 	backup, backupFailed string
 	createBackup         string
@@ -350,9 +355,10 @@ func moved(upgrade *lodiav1alpha1.UpgradeStatus, now time.Time) *lodiav1alpha1.U
 }
 
 // settle derives the step from what runs: the first part not at the target,
-// and no upgrade once all four are. The Backup step alone is recorded.
+// and no upgrade once all four are. The Rehearsal and Backup steps alone are
+// recorded.
 func (c *change) settle(cp *lodiav1alpha1.ControlPlane) {
-	if c.upgrade == nil || c.upgrade.Step == lodiav1alpha1.UpgradeStepBackup {
+	if c.upgrade == nil || recorded(c.upgrade.Step) {
 		return
 	}
 	for _, part := range parts(cp) {
@@ -364,13 +370,23 @@ func (c *change) settle(cp *lodiav1alpha1.ControlPlane) {
 	c.upgrade = nil
 }
 
+// recorded says whether step is one Lifecycle records, since what runs during
+// it is what a finished step leaves.
+func recorded(step lodiav1alpha1.UpgradeStep) bool {
+	return step == lodiav1alpha1.UpgradeStepRehearsal || step == lodiav1alpha1.UpgradeStepBackup
+}
+
 func (f facts) minorStep(c *change) {
 	cp := f.cp
 	next, nextMinor, inTable := versions.Step(cp.Spec.Version, c.target)
 	switch {
-	case c.upgrade != nil && c.upgrade.Step == lodiav1alpha1.UpgradeStepBackup:
+	case c.upgrade != nil && recorded(c.upgrade.Step):
 		if !inTable {
 			c.unsupported = notInTable(nextMinor)
+			return
+		}
+		if c.upgrade.Step == lodiav1alpha1.UpgradeStepRehearsal {
+			f.rehearse(c, next, nextMinor)
 			return
 		}
 		f.takeBackup(c, next, nextMinor)
@@ -414,8 +430,38 @@ func (f facts) minorStep(c *change) {
 			fmt.Sprintf("the minor step to %s waits until the controller manager is no longer held", next))
 		return
 	}
-	c.upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepBackup, StartedAt: metav1.NewTime(f.now).Rfc3339Copy()}
-	f.takeBackup(c, next, nextMinor)
+	c.upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepRehearsal, StartedAt: metav1.NewTime(f.now).Rfc3339Copy()}
+	f.rehearse(c, next, nextMinor)
+}
+
+const noRehearsal = "no rehearsal ran: fleet.maxConcurrentRehearsals is 0"
+
+// rehearse waits for Rehearsed's verdict on the step to next at the object's
+// generation, and on Passed takes the pre-upgrade Backup in the same pass; with
+// rehearsals off it takes it at once.
+func (f facts) rehearse(c *change, next, minor string) {
+	cp := f.cp
+	backup := func() {
+		c.upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepBackup, StartedAt: c.upgrade.StartedAt}
+		f.takeBackup(c, next, minor)
+	}
+	if f.rehearsals == 0 {
+		backup()
+		return
+	}
+	rehearsed := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
+	about := rehearsed != nil && cp.Status.Rehearsal != nil && cp.Status.Rehearsal.Version == next
+	switch {
+	case about && rehearsed.ObservedGeneration == cp.Generation && rehearsed.Status == metav1.ConditionTrue && rehearsed.Reason == lodiav1alpha1.ReasonPassed:
+		backup()
+	case about && rehearsed.ObservedGeneration == cp.Generation && rehearsed.Status == metav1.ConditionFalse:
+		c.rehearsalFailed = fmt.Sprintf("%s: %s: %s", lodiav1alpha1.ConditionRehearsed, rehearsed.Reason, rehearsed.Message)
+	default:
+		c.rehearsal = "rehearsing the step to " + next + " on a copy"
+		if about && rehearsed.Message != "" {
+			c.rehearsal += ": " + rehearsed.Message
+		}
+	}
 }
 
 // maxKubeletSkew is the kubelet's skew the version skew policy allows
@@ -470,8 +516,8 @@ func noBackupStore(ready *metav1.Condition) bool {
 
 // backupMinor is the minor whose pre-upgrade Backup concerns cp: the one an
 // upgrade under way took, or the next minor when a minor step is at its
-// Backup, or starts on this pass, which an upgrade whose last part just
-// reached the target does.
+// Rehearsal or Backup, or starts on this pass, which an upgrade whose last
+// part just reached the target does.
 func backupMinor(cp *lodiav1alpha1.ControlPlane) string {
 	target, upgrade := targetOf(cp), upgradeOf(cp)
 	if target == "" {
@@ -480,7 +526,7 @@ func backupMinor(cp *lodiav1alpha1.ControlPlane) string {
 	targetMinor, _ := versions.Minor(target)
 	ahead, ok := versions.MinorsAhead(target, cp.Spec.Version)
 	later := ok && ahead > 0
-	if upgrade != nil && upgrade.Step != lodiav1alpha1.UpgradeStepBackup && (!later || !allAtTarget(cp, target)) {
+	if upgrade != nil && !recorded(upgrade.Step) && (!later || !allAtTarget(cp, target)) {
 		return targetMinor
 	}
 	if !later {
@@ -570,6 +616,9 @@ func (c change) failed(f facts, granted string) string {
 // cause is the first condition Ready is built from that stops a change, or
 // the pre-upgrade Backup's failure.
 func (c change) cause(cp *lodiav1alpha1.ControlPlane) string {
+	if c.rehearsalFailed != "" {
+		return c.rehearsalFailed
+	}
 	if c.backupFailed != "" {
 		return c.backupFailed
 	}
@@ -651,7 +700,13 @@ func (c change) reason(f facts, m maintenance) *metav1.Condition {
 }
 
 func (c change) upgradingMessage(f facts, rolling []string) string {
+	if c.upgrade.Step == lodiav1alpha1.UpgradeStepRehearsal {
+		return c.rehearsal
+	}
 	if c.upgrade.Step == lodiav1alpha1.UpgradeStepBackup {
+		if f.rehearsals == 0 {
+			return c.backup + "; " + noRehearsal
+		}
 		return c.backup
 	}
 	message := fmt.Sprintf("upgrading to %s, step %s", c.target, c.upgrade.Step)
@@ -661,7 +716,15 @@ func (c change) upgradingMessage(f facts, rolling []string) string {
 	if ready := backupReady(f.backup); noBackupStore(ready) && !f.backup.CreationTimestamp.Time.Before(c.upgrade.StartedAt.Add(-clockSkew)) {
 		message += "; no pre-upgrade Backup was taken: " + ready.Message
 	}
+	if f.rehearsals == 0 && f.backup != nil && !f.backup.CreationTimestamp.Time.Before(c.upgrade.StartedAt.Add(-clockSkew)) && !passed(f.cp, c.target) {
+		message += "; " + noRehearsal
+	}
 	return message
+}
+
+func passed(cp *lodiav1alpha1.ControlPlane, version string) bool {
+	return cp.Status.Rehearsal != nil && cp.Status.Rehearsal.Version == version &&
+		meta.IsStatusConditionTrue(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
 }
 
 func backupReady(backup *lodiav1alpha1.Backup) *metav1.Condition {

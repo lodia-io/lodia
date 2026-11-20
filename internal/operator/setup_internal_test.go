@@ -72,12 +72,16 @@ func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
 	cfg.Health.Period = metav1.Duration{Duration: 7 * time.Second}
 	cfg.Health.FailuresBeforeFalse = 4
 	cfg.Fleet.MaxConcurrentRollouts = 2
+	cfg.Fleet.MaxConcurrentRehearsals = 0
 	got := newLifecycle(nil, nil, cfg, "v1.0.0+0")
 	if want := 4*(7*time.Second+newHealth(nil, nil, nil, cfg.Health).Timeout) + 15*time.Second; got.Settling != want {
 		t.Errorf("Settling = %s, want %s", got.Settling, want)
 	}
-	if got.MaxConcurrentRollouts != 2 || got.Revision != "v1.0.0+0" {
-		t.Errorf("MaxConcurrentRollouts = %d and Revision = %q, want 2 and v1.0.0+0", got.MaxConcurrentRollouts, got.Revision)
+	if got.MaxConcurrentRollouts != 2 || got.MaxConcurrentRehearsals != 0 || got.Revision != "v1.0.0+0" {
+		t.Errorf("MaxConcurrentRollouts = %d, MaxConcurrentRehearsals = %d and Revision = %q, want 2, 0 and v1.0.0+0", got.MaxConcurrentRollouts, got.MaxConcurrentRehearsals, got.Revision)
+	}
+	if got := newLifecycle(nil, nil, DefaultConfig(), "v1.0.0+0"); got.MaxConcurrentRehearsals != 5 {
+		t.Errorf("at the defaults MaxConcurrentRehearsals = %d, want 5", got.MaxConcurrentRehearsals)
 	}
 }
 

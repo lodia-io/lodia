@@ -42,6 +42,9 @@ type world struct {
 	backupStatus        metav1.ConditionStatus
 	backupAbsentReady   bool
 	backupDeleting      bool
+	rehearsals          int
+	rehearsed           *metav1.Condition
+	rehearsedFor        string
 }
 
 func at(version string) [4]string { return [4]string{version, version, version, version} }
@@ -106,11 +109,15 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 	if !w.nodesAbsent {
 		cp.Status.Nodes = &lodiav1alpha1.NodesStatus{OldestKubelet: w.oldestKubelet, Truncated: w.nodesTruncated}
 	}
+	if w.rehearsed != nil {
+		cp.Status.Conditions = append(cp.Status.Conditions, *w.rehearsed)
+		cp.Status.Rehearsal = &lodiav1alpha1.RehearsalStatus{Version: w.rehearsedFor}
+	}
 	return cp
 }
 
 func (w world) facts() facts {
-	f := facts{cp: w.controlPlane(), now: present}
+	f := facts{cp: w.controlPlane(), now: present, rehearsals: w.rehearsals}
 	if w.backupReason != "" || w.backupAbsentReady || w.backupDeleting {
 		backup := &lodiav1alpha1.Backup{ObjectMeta: metav1.ObjectMeta{Name: lodiav1alpha1.PreUpgradeBackupName("dev", backupMinor(f.cp), uid), Namespace: "team", CreationTimestamp: started}}
 		if w.backupDeleting {
@@ -573,5 +580,53 @@ func TestDecideWritesTheRunningRevision(t *testing.T) {
 				t.Errorf("a second pass over what the first wrote still differs: %+v", again.status)
 			}
 		})
+	}
+}
+
+func rehearsed(status metav1.ConditionStatus, reason string, generation int64) *metav1.Condition {
+	return &metav1.Condition{Type: lodiav1alpha1.ConditionRehearsed, Status: status, Reason: reason, Message: reason + " says so", ObservedGeneration: generation}
+}
+
+func TestAMinorStepIsRehearsedBeforeItsBackup(t *testing.T) {
+	t0 := &started
+	for _, c := range []struct {
+		name  string
+		world world
+		want  want
+	}{
+		{"the preflight records Rehearsal and creates no Backup", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6"), rehearsals: 5},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepRehearsal, since: startedNow, message: "rehearsing the step to v1.37.1 on a copy", version: "v1.36.6"}},
+		{"Rehearsing is quoted", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionUnknown, lodiav1alpha1.ReasonRehearsing, 3), rehearsedFor: "v1.37.1"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "rehearsing the step to v1.37.1 on a copy: Rehearsing says so", version: "v1.36.6"}},
+		{"Passed at the generation for the step's version takes the Backup in the same pass", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionTrue, lodiav1alpha1.ReasonPassed, 3), rehearsedFor: "v1.37.1"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: t0, backup: name137, message: name137, lacks: noRehearsal, version: "v1.36.6"}},
+		{"Passed for 1.36 does not move a chain's 1.37 step", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionTrue, lodiav1alpha1.ReasonPassed, 3), rehearsedFor: "v1.36.6"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "rehearsing the step to v1.37.1 on a copy", lacks: "Passed says so", version: "v1.36.6"}},
+		{"Passed at an older generation waits", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionTrue, lodiav1alpha1.ReasonPassed, 2), rehearsedFor: "v1.37.1"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "rehearsing the step to v1.37.1 on a copy", version: "v1.36.6"}},
+		{"False at the generation is Failed with its reason and message, and the target stays", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed, 3), rehearsedFor: "v1.37.1"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "Rehearsed: APIServerFailed: APIServerFailed says so", version: "v1.36.6"}},
+		{"a copy that could not run is Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionFalse, lodiav1alpha1.ReasonCopyFailed, 3), rehearsedFor: "v1.37.1"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "Rehearsed: CopyFailed: CopyFailed says so", version: "v1.36.6"}},
+		{"a resource the copy cannot list is Failed", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionFalse, lodiav1alpha1.ReasonListFailed, 3), rehearsedFor: "v1.37.1"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonFailed, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "Rehearsed: ListFailed: ListFailed says so", version: "v1.36.6"}},
+		{"False at an older generation waits for the rehearsal at the new one", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5, rehearsed: rehearsed(metav1.ConditionFalse, lodiav1alpha1.ReasonAPIServerFailed, 2), rehearsedFor: "v1.37.1"},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "rehearsing the step to v1.37.1 on a copy: APIServerFailed says so", version: "v1.36.6"}},
+		{"settle keeps Rehearsal", world{spec: "v1.35.10", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6"), rehearsals: 5},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUnsupported, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, version: "v1.36.6"}},
+		{"a next minor that left the table at step Rehearsal is Unsupported", world{spec: "v1.35.1", target: "v1.33.9", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.33.9"), rehearsals: 5},
+			want{target: "v1.33.9", reason: lodiav1alpha1.ReasonUnsupported, step: lodiav1alpha1.UpgradeStepRehearsal, since: t0, message: "the next minor, 1.34", version: "v1.33.9"}},
+		{"a limit of 0 takes the preflight to the Backup and says so", world{spec: "v1.37.1", target: "v1.36.6", reports: at("v1.36.6")},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: startedNow, backup: name137, message: name137 + " is being created before the target moves to v1.37.1; " + noRehearsal, version: "v1.36.6"}},
+		{"a limit of 0 takes a step at Rehearsal to the Backup", world{spec: "v1.37.1", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepRehearsal, reports: at("v1.36.6")},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: t0, backup: name137, message: noRehearsal, version: "v1.36.6"}},
+		{"a limit of 0 says so after the target moved", world{spec: "v1.37.1", target: "v1.37.1", step: lodiav1alpha1.UpgradeStepAPIServer, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonCompleted, backupStatus: metav1.ConditionTrue},
+			want{target: "v1.37.1", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: t0, message: noRehearsal, version: "v1.36.6"}},
+		{"a passed rehearsal is not denied once the limit is 0", world{spec: "v1.37.1", target: "v1.37.1", step: lodiav1alpha1.UpgradeStepAPIServer, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonCompleted, backupStatus: metav1.ConditionTrue, rehearsed: rehearsed(metav1.ConditionTrue, lodiav1alpha1.ReasonPassed, 3), rehearsedFor: "v1.37.1"},
+			want{target: "v1.37.1", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: t0, lacks: noRehearsal, version: "v1.36.6"}},
+		{"a patch step has no rehearsal", world{spec: "v1.36.6", target: "v1.36.4", reports: at("v1.36.4"), rehearsals: 5},
+			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: startedNow, lacks: "rehears", version: "v1.36.4"}},
+	} {
+		t.Run(c.name, func(t *testing.T) { check(t, c.world.facts(), c.want) })
 	}
 }

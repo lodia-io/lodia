@@ -383,11 +383,12 @@ Built so far: the version steps below, a minor at a time through a preflight and
 ### Upgrades and windows
 
 One minor at a time, in the order the version skew policy allows ([decision](decisions/upgrades-and-maintenance-windows.md)).
+Each minor step is rehearsed first on a copy of the API server at the next minor, which stops the step, before anything of it moves, on a gate, a flag or an object the next minor refuses ([rehearse-a-minor-step](decisions/rehearse-a-minor-step.md)).
 Changes Lodia initiates, a new operator revision, a patch update and an edit of the tenant's `DatastoreClass`, roll in each tenant's window, within the fleet limit, each keeping its slot for a settling time once it has rolled out, all of them at once on a new `lodia.io/maintain-requested-at`, and the revision also on an edit of the tenant's spec ([the rules](decisions/upgrades-and-maintenance-windows.md#decision)).
 
 ```mermaid
 flowchart LR
-  v["preflight: next minor in the table,<br/>DatastoreReady, kubelets ≤ 3 minors behind,<br/>no hold"] --> b["the pre-upgrade Backup"] --> kas["kube-apiserver rolls<br/>every replica updated and ready"] --> kcm["controller manager, scheduler roll<br/>at the API server's version"] --> add["kube-proxy, CoreDNS, agents<br/>applied at the oldest component's"] --> done["status.kubernetes.version = vX<br/>nodes: owner's pace"]
+  v["preflight: next minor in the table,<br/>DatastoreReady, kubelets ≤ 3 minors behind,<br/>no hold"] --> r["the rehearsal: a copy of the API server<br/>at the next minor lists every resource"] --> b["the pre-upgrade Backup"] --> kas["kube-apiserver rolls<br/>every replica updated and ready"] --> kcm["controller manager, scheduler roll<br/>at the API server's version"] --> add["kube-proxy, CoreDNS, agents<br/>applied at the oldest component's"] --> done["status.kubernetes.version = vX<br/>nodes: owner's pace"]
 ```
 
 ### Hibernation

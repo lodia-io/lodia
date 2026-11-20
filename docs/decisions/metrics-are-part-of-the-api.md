@@ -50,7 +50,7 @@ A metric changes in the three periods of `v1alpha1` that check 11 of the [review
 | `lodia_controlplane_operator_revision_granted` | | 1 when `status.target.operatorRevision` is the running operator's revision, else 0: how far a release has reached | yes |
 | `lodia_controlplane_maintenance_slot_since_timestamp_seconds` | | `status.maintenance.slotSince`: the tenant's slot of the fleet | yes |
 | `lodia_controlplane_maintenance_scheduled_for_timestamp_seconds` | | `status.target.scheduledFor`: at or before now, the tenant is queued for a slot; later, it waits for its window | yes |
-| `lodia_controlplane_upgrade_started_timestamp_seconds` | `step` (`UpgradeStep`) | `status.kubernetes.upgrade.startedAt` and `.step` | yes |
+| `lodia_controlplane_upgrade_started_timestamp_seconds` | `step` (`UpgradeStep`: `Rehearsal`, `Backup`, `APIServer`, `ControllerManager`, `Scheduler`, `Addons`) | `status.kubernetes.upgrade.startedAt` and `.step` | yes |
 | `lodia_controlplane_certificates_expiration_timestamp_seconds` | | `status.credentials.notAfter` | yes |
 | `lodia_controlplane_datastore_quota_bytes` | | the `Etcd`'s `spec.etcd.quota` | yes |
 | `lodia_controlplane_datastore_delta_snapshot_period_seconds` | | the `Etcd`'s `spec.backup.deltaSnapshotPeriod`, absent below 1 second or without a store | yes |

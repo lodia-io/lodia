@@ -70,6 +70,9 @@ type Reconciler struct {
 	// Settling is how long a change Lodia started keeps its slot once it has
 	// rolled out.
 	Settling time.Duration
+	// MaxConcurrentRehearsals is fleet.maxConcurrentRehearsals: 0 takes a
+	// minor step from its preflight to its Backup with no rehearsal.
+	MaxConcurrentRehearsals int
 
 	slots fence.Fence
 }
@@ -181,7 +184,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // DatastoreClass the Etcd runs from the cache, and, while a change is
 // pending, the fleet through fleet.
 func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane, fleet client.Reader) (facts, error) {
-	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision, limit: r.MaxConcurrentRollouts, settling: r.Settling}
+	f := facts{cp: cp, now: r.Clock.Now(), revision: r.Revision, limit: r.MaxConcurrentRollouts, settling: r.Settling, rehearsals: r.MaxConcurrentRehearsals}
 	if minor := backupMinor(cp); minor != "" {
 		backup := &lodiav1alpha1.Backup{}
 		switch err := r.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: lodiav1alpha1.PreUpgradeBackupName(cp.Name, minor, cp.UID)}, backup); {

@@ -279,8 +279,9 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision string) *lifecycle.Reconciler {
 	return &lifecycle.Reconciler{
 		Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: revision,
-		MaxConcurrentRollouts: cfg.Fleet.MaxConcurrentRollouts,
-		Settling:              time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
+		MaxConcurrentRollouts:   cfg.Fleet.MaxConcurrentRollouts,
+		MaxConcurrentRehearsals: cfg.Fleet.MaxConcurrentRehearsals,
+		Settling:                time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
 	}
 }
 
