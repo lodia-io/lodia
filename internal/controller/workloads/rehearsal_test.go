@@ -27,6 +27,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/watch"
@@ -752,6 +753,27 @@ func TestAPolicyAnotherOwnerKeepsIsTriedAgainSooner(t *testing.T) {
 		return nil
 	})
 	poke(t, cp)
+	eventuallyCopy(t, cp, get(t, cp).Generation)
+}
+
+func TestAPodTheAPIServerRefusesIsRefusedAndTriedAgainSooner(t *testing.T) {
+	cp := controlPlaneForRehearsal(t)
+	quota := &corev1.ResourceQuota{
+		ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "no-pods"},
+		Spec:       corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("0")}},
+	}
+	if err := k8s.Create(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	quota.Status = corev1.ResourceQuotaStatus{Hard: quota.Spec.Hard, Used: corev1.ResourceList{corev1.ResourcePods: resource.MustParse("0")}}
+	if err := k8s.Status().Update(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	startRehearsal(t, cp)
+	expectRehearsed(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Pod "+cp.Name+"-rehearsal-…")
+	if err := k8s.Delete(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
 	eventuallyCopy(t, cp, get(t, cp).Generation)
 }
 

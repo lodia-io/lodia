@@ -37,7 +37,7 @@ const (
 	// (https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/apiserver/pkg/util/webhook/webhook.go#L36-L38).
 	readTimeout = 30 * time.Second
 	sweepAgain  = time.Millisecond
-	// readAgain is how soon a read that got no answer is sent again.
+	// readAgain is how soon a read whose error was transient is sent again.
 	readAgain = 5 * time.Second
 
 	listPage = 500

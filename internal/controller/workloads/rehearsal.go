@@ -244,7 +244,7 @@ func (r *RehearsalReconciler) start(ctx context.Context, cp *lodiav1alpha1.Contr
 	case errors.Is(err, errCopied) || apierrors.IsAlreadyExists(err):
 		return ctrl.Result{RequeueAfter: copyGrace}, nil
 	case err != nil:
-		return ctrl.Result{}, r.refused(ctx, cp, version, "Pod", pod.Name, err)
+		return ctrl.Result{}, r.refused(ctx, cp, version, "Pod", pod.GenerateName+"…", err)
 	case running >= r.MaxConcurrent:
 		if verdict != nil {
 			return ctrl.Result{RequeueAfter: placeAgain}, nil
