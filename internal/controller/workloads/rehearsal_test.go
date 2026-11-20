@@ -652,6 +652,15 @@ func TestAPodWithTheCopysLabelsNoControlPlaneControlsIsNeitherCountedNorJudged(t
 }
 
 func TestACopyItsNodeEndedHoldsNoPlaceWhileItsControlPlaneIsPaused(t *testing.T) {
+	endedCopyHoldsNoPlaceWhilePaused(t, corev1.PodStatus{Phase: corev1.PodFailed, Reason: "DeadlineExceeded", Message: "Pod was active on the node longer than the specified deadline", PodIP: copyIP})
+}
+
+func TestACopyThatSucceededHoldsNoPlaceWhileItsControlPlaneIsPaused(t *testing.T) {
+	endedCopyHoldsNoPlaceWhilePaused(t, corev1.PodStatus{Phase: corev1.PodSucceeded, PodIP: copyIP})
+}
+
+func endedCopyHoldsNoPlaceWhilePaused(t *testing.T, ended corev1.PodStatus) {
+	t.Helper()
 	paused := rehearsing(t)
 	pod := eventuallyCopy(t, paused, get(t, paused).Generation)
 	pause := func(ctx context.Context, on bool) error {
@@ -672,7 +681,7 @@ func TestACopyItsNodeEndedHoldsNoPlaceWhileItsControlPlaneIsPaused(t *testing.T)
 		}
 	})
 	time.Sleep(2 * time.Second)
-	setCopy(t, pod, corev1.PodStatus{Phase: corev1.PodFailed, Reason: "DeadlineExceeded", Message: "Pod was active on the node longer than the specified deadline", PodIP: copyIP})
+	setCopy(t, pod, ended)
 
 	other := rehearsing(t)
 	eventuallyCopy(t, other, get(t, other).Generation)
