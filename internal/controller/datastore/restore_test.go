@@ -391,6 +391,18 @@ func (r *restore) copied(t *testing.T) *druidv1alpha1.Etcd {
 	return etcd
 }
 
+func (r *restore) setReady(t *testing.T, condition druidv1alpha1.Condition) {
+	t.Helper()
+	setEtcdStatus(t, r.ns, restoredCP, druidtest.Condition(condition))
+	poke(t, r.ns)
+	testenv.Eventually(t, func() error {
+		if ready := managerReads.readyOf(client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}); ready == nil || !equality.Semantic.DeepEqual(*ready, condition) {
+			return fmt.Errorf("the suite's manager has read Ready %+v, want %+v", ready, condition)
+		}
+		return nil
+	})
+}
+
 func (r *restore) marker(t *testing.T) int64 {
 	t.Helper()
 	response := r.etcd.get(t, datastore.RestoreMarkerKey(r.controlPlane(t).UID))
@@ -996,15 +1008,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	now := clocktesting.NewFakePassiveClock(time.Now())
 	setReady := func(q quorum) {
 		t.Helper()
-		condition := druidtest.Ready(q.quorate, q.at, metav1.NewTime(now.Now()).Rfc3339Copy().Time)
-		setEtcdStatus(t, r.ns, restoredCP, druidtest.Condition(condition))
-		poke(t, r.ns)
-		testenv.Eventually(t, func() error {
-			if ready := managerReads.readyOf(client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}); ready == nil || !equality.Semantic.DeepEqual(*ready, condition) {
-				return fmt.Errorf("the suite's manager has read Ready %+v, want %+v", ready, condition)
-			}
-			return nil
-		})
+		r.setReady(t, druidtest.Ready(q.quorate, q.at, metav1.NewTime(now.Now()).Rfc3339Copy().Time))
 	}
 	setReady(quorate(readyAt))
 	r.etcd.unreachable.Store(false)
@@ -1108,6 +1112,7 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 	r := newRestore(t, restoreSetup{})
 	created := r.copied(t).CreationTimestamp.Time
 	marker := r.cleanedUp(t)
+	r.setReady(t, druidtest.Ready(false, created.Add(5*time.Minute), time.Now().Truncate(time.Second)))
 	now := clocktesting.NewFakePassiveClock(time.Now())
 	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
 	pass := func() error {
@@ -1146,6 +1151,7 @@ func TestALeaseThatReachesTheMarkerWhileTheNextFullSnapshotWaitsCompletesTheRest
 	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	created := r.copied(t).CreationTimestamp.Time
+	r.setReady(t, druidtest.Ready(true, created, time.Now().Truncate(time.Second)))
 	marker := r.cleanedUp(t)
 	lease := restoredCP + "-etcd-full-snap"
 	createLease(t, r.ns, lease, strconv.FormatInt(marker-1, 10))
