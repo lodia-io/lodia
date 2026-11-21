@@ -18,7 +18,7 @@ import (
 // +kubebuilder:printcolumn:name="User",type=string,JSONPath=".spec.user"
 // +kubebuilder:printcolumn:name="Access",type=string,JSONPath=".spec.access"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
-// +kubebuilder:printcolumn:name="Expires",type=date,JSONPath=".status.expirationTimestamp"
+// +kubebuilder:printcolumn:name="Expires",type=string,JSONPath=".status.expirationTimestamp"
 type KubeconfigRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
