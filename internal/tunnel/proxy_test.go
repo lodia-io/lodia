@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -770,6 +771,35 @@ func TestProxyStopsBeforeItHasLoaded(t *testing.T) {
 	}
 }
 
+func TestTheProxyFixtureStartsOnAnotherAddressWhenOneIsTaken(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	var taken string
+	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) {
+		taken = p.Listen
+		occupy(t, taken)
+	})
+	if f.Listen == taken {
+		t.Fatalf("still on the taken address %s", taken)
+	}
+	if err := tripThrough(t, f.Listen); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTheProxyFixtureReportsARunThatFailsAtOnce(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	f := newProxyFixture(t, upstream.addr, func(p *Proxy) { p.Listen = "no port" })
+	writeVolume(t, f.certDir, pairFiles(t, client(t, ca)))
+	writeVolume(t, f.caDir, caFiles(t, ca))
+	f.start(t)
+	var addrErr *net.AddrError
+	if err := f.awaitReady(t); !errors.As(err, &addrErr) {
+		t.Fatalf("awaitReady returned %v, want the error of Run", err)
+	}
+}
+
 func TestProxyFailsWhenItCannotBind(t *testing.T) {
 	ca := newCA(t, "cluster")
 	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
@@ -1046,7 +1076,7 @@ type proxyFixture struct {
 	*Proxy
 	certDir, caDir string
 	logs           *logBuffer
-	stop           func() error
+	process        *runner
 }
 
 func newProxyFixture(t *testing.T, upstream string, tune func(*Proxy)) *proxyFixture {
@@ -1064,24 +1094,32 @@ func newProxyFixture(t *testing.T, upstream string, tune func(*Proxy)) *proxyFix
 
 func (f *proxyFixture) start(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- f.Run(ctx) }()
-	var once sync.Once
-	var result error
-	f.stop = func() error {
-		once.Do(func() {
-			cancel()
-			result = <-done
-		})
-		return result
-	}
-	t.Cleanup(func() { _ = f.stop() })
+	f.process = startRunner(t, f.Run)
+}
+
+func (f *proxyFixture) stop() error {
+	return f.process.stop()
 }
 
 func (f *proxyFixture) waitReady(t *testing.T) {
 	t.Helper()
-	eventually(t, "proxy's socket", func() bool { return Probe(context.Background(), f.Socket) == nil })
+	if err := f.awaitReady(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *proxyFixture) awaitReady(t *testing.T) error {
+	t.Helper()
+	ready := func() bool { return Probe(context.Background(), f.Socket) == nil }
+	for attempt := 1; !f.process.await(t, "proxy's socket", ready); attempt++ {
+		err := f.process.err
+		if attempt == bindAttempts || addrInUse(err) != f.Listen {
+			return fmt.Errorf("proxy returned before its socket answered: %w", err)
+		}
+		f.Listen = freeAddr(t)
+		f.start(t)
+	}
+	return nil
 }
 
 func startProxy(t *testing.T, upstream string, pair, ca map[string][]byte, tune func(*Proxy)) *proxyFixture {

@@ -5,6 +5,7 @@ package tunnel
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,8 +25,9 @@ import (
 )
 
 const (
-	tunnelHost = "tunnel.lodia.test"
-	waitFor    = 10 * time.Second
+	tunnelHost   = "tunnel.lodia.test"
+	waitFor      = 10 * time.Second
+	bindAttempts = 5
 )
 
 var (
@@ -190,6 +193,71 @@ func freeAddr(t *testing.T) string {
 	}
 	defer func() { _ = ln.Close() }()
 	return ln.Addr().String()
+}
+
+func occupy(t *testing.T, addr string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+}
+
+func addrInUse(err error) string {
+	var opErr *net.OpError
+	if !errors.Is(err, syscall.EADDRINUSE) || !errors.As(err, &opErr) {
+		return ""
+	}
+	return opErr.Addr.String()
+}
+
+type runner struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	err    error
+}
+
+func startRunner(t *testing.T, run func(context.Context) error) *runner {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &runner{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		r.err = run(ctx)
+		close(r.done)
+	}()
+	t.Cleanup(func() { _ = r.stop() })
+	return r
+}
+
+func (r *runner) stop() error {
+	r.cancel()
+	<-r.done
+	return r.err
+}
+
+func (r *runner) exited() bool {
+	select {
+	case <-r.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *runner) await(t *testing.T, what string, ready func() bool) bool {
+	t.Helper()
+	eventually(t, what, func() bool { return r.exited() || ready() })
+	return !r.exited()
 }
 
 func socketPath(t *testing.T) string {
