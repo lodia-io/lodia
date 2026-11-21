@@ -1050,20 +1050,21 @@ func TestBackupReadyFollowsEtcdDruid(t *testing.T) {
 
 	writeGeneration(t, ns, "backed", 1)
 	waitEtcd(t, ns, "backed", namesGeneration(1))
-	readyOn(t, ns, "backed", 1)
 	waitBackupReady(t, ns, "backed", metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotsPending, "etcd-druid reports no BackupReady of Etcd backed-etcd yet")
+	readyOn(t, ns, "backed", 1)
 	for _, row := range []struct {
-		druid   druidv1alpha1.ConditionStatus
-		status  metav1.ConditionStatus
-		reason  string
-		message string
+		druid       druidv1alpha1.ConditionStatus
+		druidReason string
+		status      metav1.ConditionStatus
+		reason      string
+		message     string
 	}{
-		{druidv1alpha1.ConditionUnknown, metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotsPending, "etcd-druid reports BackupReady Unknown (NotChecked) of Etcd backed-etcd: "},
-		{druidv1alpha1.ConditionTrue, metav1.ConditionTrue, lodiav1alpha1.ReasonBackupSucceeded, "etcd-druid reports of Etcd backed-etcd: "},
-		{druidv1alpha1.ConditionFalse, metav1.ConditionFalse, lodiav1alpha1.ReasonBackupFailed, "etcd-druid reports of Etcd backed-etcd: "},
+		{druidv1alpha1.ConditionUnknown, "Unknown", metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotsPending, "etcd-druid reports BackupReady Unknown (Unknown) of Etcd backed-etcd: "},
+		{druidv1alpha1.ConditionTrue, "BackupSucceeded", metav1.ConditionTrue, lodiav1alpha1.ReasonBackupSucceeded, "etcd-druid reports of Etcd backed-etcd: "},
+		{druidv1alpha1.ConditionFalse, "BackupFailed", metav1.ConditionFalse, lodiav1alpha1.ReasonBackupFailed, "etcd-druid reports of Etcd backed-etcd: "},
 	} {
 		message := "snapshots are " + string(row.druid)
-		setEtcdStatus(t, ns, "backed", druidtest.BackupReady(row.druid, map[bool]string{true: "NotChecked", false: "Backup" + string(row.druid)}[row.druid == druidv1alpha1.ConditionUnknown], message))
+		setEtcdStatus(t, ns, "backed", druidtest.BackupReady(row.druid, row.druidReason, message))
 		waitBackupReady(t, ns, "backed", row.status, row.reason, row.message+message)
 	}
 

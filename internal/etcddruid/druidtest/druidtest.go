@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -51,13 +52,15 @@ type Option func(etcd string, generation int64, s *druidv1alpha1.EtcdStatus)
 
 // SetStatus writes the status of the Etcd of the ControlPlane cp as
 // etcd-druid reports one whose spec it reconciled and whose one member, the
-// leader, runs that spec and renews its Lease, then as each option says; the
+// leader, runs that spec and renews its Leases, then as each option says; the
 // last operation stays as it is. etcd-druid stamps the generation it
 // reconciled (internal/controller/etcd/reconcile_complete.go#L33-L41), counts
 // the StatefulSet's pods (internal/controller/etcd/reconcile_status.go#L70-L92),
 // lists the members from their Leases (internal/health/etcdmember/check_ready.go#L59-L111)
-// and writes AllMembersUpdated from the StatefulSet's revisions
-// (internal/health/condition/check_all_members_updated.go#L21-L52).
+// and writes the condition of each of its checks
+// (internal/health/status/check.go#L36-L44, internal/health/condition/builder.go#L91-L117),
+// BackupReady only for an Etcd with a store
+// (internal/health/condition/check_backup_ready.go#L43-L47).
 func SetStatus(ctx context.Context, c client.Client, namespace, cp string, options ...Option) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		etcd := &druidv1alpha1.Etcd{}
@@ -71,10 +74,7 @@ func SetStatus(ctx context.Context, c client.Client, namespace, cp string, optio
 			Replicas:           1,
 			ReadyReplicas:      1,
 			CurrentReplicas:    1,
-			Conditions: []druidv1alpha1.Condition{{
-				Type: druidv1alpha1.ConditionTypeAllMembersUpdated, Status: druidv1alpha1.ConditionTrue, Reason: "AllMembersUpdated",
-				Message: "All members reflect latest desired spec", LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-			}},
+			Conditions:         synced(etcd),
 			Members: []druidv1alpha1.EtcdMemberStatus{{
 				Name: druidv1alpha1.GetOrdinalPodName(etcd.ObjectMeta, 0), ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
 				Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
@@ -85,6 +85,32 @@ func SetStatus(ctx context.Context, c client.Client, namespace, cp string, optio
 		}
 		return c.Status().Update(ctx, etcd)
 	})
+}
+
+func synced(etcd *druidv1alpha1.Etcd) []druidv1alpha1.Condition {
+	now := metav1.Now()
+	condition := func(conditionType druidv1alpha1.ConditionType, status druidv1alpha1.ConditionStatus, reason, message string) druidv1alpha1.Condition {
+		return druidv1alpha1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, LastTransitionTime: now, LastUpdateTime: now}
+	}
+	conditions := []druidv1alpha1.Condition{
+		condition(druidv1alpha1.ConditionTypeAllMembersReady, druidv1alpha1.ConditionTrue, "AllMembersReady", "All members are ready"),
+		condition(druidv1alpha1.ConditionTypeAllMembersUpdated, druidv1alpha1.ConditionTrue, "AllMembersUpdated", "All members reflect latest desired spec"),
+		condition(druidv1alpha1.ConditionTypeClusterIDMismatch, druidv1alpha1.ConditionFalse, "NoClusterIDMismatchDetected", "No cluster ID mismatch detected among ETCD members"),
+		condition(druidv1alpha1.ConditionTypeDataVolumesReady, druidv1alpha1.ConditionTrue, "NoWarningsFoundForDataVolumes", "No warning events found for PVCs used by StatefulSet "+etcd.Namespace+"/"+etcd.Name),
+		condition(druidv1alpha1.ConditionTypeReady, druidv1alpha1.ConditionTrue, "Quorate", "The majority of ETCD members is ready"),
+	}
+	if store := etcd.Spec.Backup.Store; store != nil && ptr.Deref(store.Provider, "") != "" {
+		conditions = append(conditions, condition(druidv1alpha1.ConditionTypeBackupReady, druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
+	}
+	return conditions
+}
+
+func put(s *druidv1alpha1.EtcdStatus, condition druidv1alpha1.Condition) {
+	if i := slices.IndexFunc(s.Conditions, func(c druidv1alpha1.Condition) bool { return c.Type == condition.Type }); i >= 0 {
+		s.Conditions[i] = condition
+		return
+	}
+	s.Conditions = append(s.Conditions, condition)
 }
 
 // Members counts replicas pods of the StatefulSet, ready of them ready, and
@@ -131,12 +157,15 @@ func Observed(generation int64) Option {
 	}
 }
 
-// SyncedAt writes the time of a status sync into every condition, as
-// etcd-druid's periodic sync does (internal/health/condition/builder.go#L84-L103).
+// SyncedAt writes the time of a status sync into every condition the sync
+// writes, which leaves ScaleOperationComplete as it was
+// (internal/health/condition/builder.go#L91-L128).
 func SyncedAt(at time.Time) Option {
 	return func(_ string, _ int64, s *druidv1alpha1.EtcdStatus) {
 		for i := range s.Conditions {
-			s.Conditions[i].LastUpdateTime = metav1.NewTime(at)
+			if s.Conditions[i].Type != druidv1alpha1.ConditionTypeScaleOperationComplete {
+				s.Conditions[i].LastUpdateTime = metav1.NewTime(at)
+			}
 		}
 	}
 }
@@ -172,7 +201,7 @@ func Scale(reason string) Option {
 		if reason != "" {
 			complete.Status, complete.Reason = druidv1alpha1.ConditionFalse, reason
 		}
-		s.Conditions = append(s.Conditions, complete)
+		put(s, complete)
 	}
 }
 
@@ -180,7 +209,7 @@ func Scale(reason string) Option {
 // (internal/health/condition/check_backup_ready.go#L34-L125).
 func BackupReady(status druidv1alpha1.ConditionStatus, reason, message string) Option {
 	return func(_ string, _ int64, s *druidv1alpha1.EtcdStatus) {
-		s.Conditions = append(s.Conditions, druidv1alpha1.Condition{
+		put(s, druidv1alpha1.Condition{
 			Type: druidv1alpha1.ConditionTypeBackupReady, Status: status, Reason: reason, Message: message, LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
 		})
 	}
@@ -200,10 +229,10 @@ func Ready(quorate bool, transition, update time.Time) druidv1alpha1.Condition {
 	return ready
 }
 
-// Condition adds a condition Ready gave.
+// Condition writes a condition Ready gave.
 func Condition(condition druidv1alpha1.Condition) Option {
 	return func(_ string, _ int64, s *druidv1alpha1.EtcdStatus) {
-		s.Conditions = append(s.Conditions, condition)
+		put(s, condition)
 	}
 }
 
