@@ -407,6 +407,9 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"event-ttl of an hour in two halves", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "30m30m"})}, ""},
 		{"event-ttl of two and a half hours as a fraction", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "2.5h"})}, ""},
 		{"event-ttl of a week", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "168h"})}, ""},
+		{"event-ttl of an hour with a point and no fraction", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1.h"})}, ""},
+		{"event-ttl of an hour and a quarter with a leading point", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": ".5h45m"})}, ""},
+		{"event-ttl of an hour in minutes after zero hours", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "0h60m"})}, ""},
 		{"event-ttl of a second short of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "59m59s"})}, floor},
 		{"event-ttl of a nanosecond short of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3599999999999ns"})}, floor},
 		{"event-ttl of half an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "30m"})}, floor},
@@ -441,7 +444,11 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 			for _, mutate := range c.mutate {
 				mutate(t, obj)
 			}
-			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+			err := k8s.Create(context.Background(), obj, client.DryRunAll)
+			expect(t, err, c.want)
+			if c.want == floor && strings.Contains(err.Error(), grammar) {
+				t.Fatalf("the format refused a value the floor refuses: %v", err)
+			}
 		})
 	}
 }
