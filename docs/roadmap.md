@@ -20,9 +20,9 @@ Scope:
 - Repository: Go module, `make verify` (golangci-lint, unit tests, envtest), GitHub Actions, DCO check, the community files.
 - The CRD types for `ControlPlane`, `DatastoreClass`, `KubeconfigRequest` and `Backup` with every CEL rule from [`api/controlplane.md`](api/controlplane.md), and an envtest table of accepted and rejected manifests.
 - The e2e harness: a kind cluster named `kind-lodia-e2e-*`, and the refusal to run elsewhere ([decision](decisions/e2e-on-a-named-cluster.md)).
-- **The hard way, once:** one tenant control plane assembled by hand in kind, following [`hard-way.md`](hard-way.md): certificates with `openssl`, etcd, kube-apiserver with konnectivity-server, controller manager, scheduler, then `kubeadm join` of a container running the kind node image.
+- **The hard way, once:** one tenant control plane assembled by hand in kind, following [`hard-way.md`](https://github.com/lodia-io/lodia/blob/005734e/docs/hard-way.md): certificates with `openssl`, etcd, kube-apiserver with konnectivity-server, controller manager, scheduler, then `kubeadm join` of a container running the kind node image.
   Its *What we learned* table feeds the decisions, its files become the first templates, and it is where the team learns every flag it will automate.
-  Run on 2026-10-25: [What we learned](hard-way.md#what-we-learned).
+  Run on 2026-10-25: [What we learned](https://github.com/lodia-io/lodia/blob/005734e/docs/hard-way.md#what-we-learned).
 - The etcd spike: etcd-druid installed from its Helm chart on a plain kind cluster with `enableEtcdSpecAutoReconcile`, an `Etcd` of one member with our own CA, snapshots to an S3-compatible store.
   Then: scale to three, lose one member's volume, hibernate with `replicas: 0` and wake, delete the data of a single member and watch the sidecar restore it, and a kube-apiserver on top through all of it.
   Measured: idle memory and CPU per member and sidecar, snapshot and restore time, time to scale 1 → 3, what assumes Gardener.
@@ -33,7 +33,7 @@ Gate:
 
 - `make verify` is green in CI on a pull request.
 - The hand-built control plane runs `kubectl run` a pod on its joined node, and `kubectl logs` reaches it through konnectivity.
-- `docs/hard-way.md` and the spike's numbers are committed.
+- [`docs/hard-way.md`](https://github.com/lodia-io/lodia/blob/005734e/docs/hard-way.md) and the spike's numbers are committed.
 
 ## Phase 1 · Walking skeleton
 
