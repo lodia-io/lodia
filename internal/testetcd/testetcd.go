@@ -75,6 +75,7 @@ type Cluster struct {
 	token   string
 	sockets atomic.Int32
 	port    func() (string, error)
+	wanted  string
 }
 
 // Member is one etcd process.
@@ -95,6 +96,7 @@ type Member struct {
 }
 
 type process struct {
+	cmd    *exec.Cmd
 	cancel context.CancelFunc
 	log    *tail
 	done   chan struct{}
@@ -160,7 +162,7 @@ func newCluster(t testing.TB) *Cluster {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Cluster{t: t, dir: dir, token: strings.ReplaceAll(t.Name(), "/", "-"), port: freePort}
+	c := &Cluster{t: t, dir: dir, token: strings.ReplaceAll(t.Name(), "/", "-"), port: freePort, wanted: versions.EtcdVersion}
 	t.Cleanup(func() { c.cleanup() })
 	return c
 }
@@ -284,7 +286,7 @@ func (m *Member) launch(binary, state, initial string) {
 	cmd.Dir = c.dir
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = stopWithin
-	p := &process{cancel: cancel, log: &tail{}, done: make(chan struct{})}
+	p := &process{cmd: cmd, cancel: cancel, log: &tail{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = p.log, p.log
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -340,7 +342,7 @@ func (m *Member) version() error {
 	if err != nil {
 		return errNotReady
 	}
-	if want := strings.TrimPrefix(versions.EtcdVersion, "v"); status.Version != want {
+	if want := strings.TrimPrefix(m.cluster.wanted, "v"); status.Version != want {
 		return fmt.Errorf("%s is etcd %s, want %s", os.Getenv(BinaryEnv), status.Version, want)
 	}
 	return nil

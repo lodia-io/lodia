@@ -55,11 +55,16 @@ func (f *failing) Fatal(args ...any) { f.Fatalf("%s", fmt.Sprint(args...)) }
 
 func startFailing(t *testing.T, cfg Config) string {
 	t.Helper()
+	return runFailing(t, func(f testing.TB) { Start(f, cfg) })
+}
+
+func runFailing(t *testing.T, run func(testing.TB)) string {
+	t.Helper()
 	f := &failing{TB: t}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		Start(f, cfg)
+		run(f)
 	}()
 	<-done
 	for _, cleanup := range slices.Backward(f.cleanups) {
@@ -210,6 +215,38 @@ func TestAMemberThatExitsAtOnceFailsTheTestWithItsLog(t *testing.T) {
 	t.Setenv(BinaryEnv, script)
 	message := startFailing(t, Config{})
 	for _, want := range []string{"exit status 3", "the log of a member"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the failure %q does not say %q", message, want)
+		}
+	}
+}
+
+func TestAMemberOfAnotherVersionFailsTheTestWithBothVersions(t *testing.T) {
+	t.Parallel()
+	message := runFailing(t, func(f testing.TB) {
+		cluster := newCluster(f)
+		cluster.wanted = "v3.5.0"
+		m := cluster.Prepare("m0", Config{})
+		cluster.Members = []*Member{m}
+		cluster.boot(cluster.Members, "new", cluster.initialCluster(cluster.Members))
+	})
+	for _, want := range []string{"is etcd " + strings.TrimPrefix(versions.EtcdVersion, "v"), "want 3.5.0"} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the failure %q does not say %q", message, want)
+		}
+	}
+}
+
+func TestAMemberKilledBeforeTheTestEndsFailsIt(t *testing.T) {
+	t.Parallel()
+	message := runFailing(t, func(f testing.TB) {
+		m := Start(f, Config{})
+		if err := m.proc.cmd.Process.Kill(); err != nil {
+			f.Fatal(err)
+		}
+		<-m.proc.done
+	})
+	for _, want := range []string{"etcd m0 died before the test ended", "signal: killed"} {
 		if !strings.Contains(message, want) {
 			t.Errorf("the failure %q does not say %q", message, want)
 		}
