@@ -283,7 +283,7 @@ func (c restoreCheck) reported(cp *lodiav1alpha1.ControlPlane, readiness metav1.
 
 // restoreMembers runs a restore's check, once its Etcd exists, and says how
 // many members the Etcd asks for. An Etcd that starts on the store restores
-// one member, and etcd-druid adds the others as learners once the restore is
+// one member, and the others join it as learners once the restore is
 // complete. One created again over this ControlPlane's claims asks for the
 // members they held, each of which restarts with the members its data names;
 // an Etcd raised above one stays, whatever a check that could not run found.

@@ -376,7 +376,7 @@ func (e *Engine) Delete(ctx context.Context, c client.Client, s *Store) error {
 // <template>-<StatefulSet>-<ordinal>, and etcd-druid names the template after
 // the Etcd
 // (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_set_utils.go#L116-L119,
-// etcd-druid@v0.39.2 internal/component/statefulset/builder.go#L233).
+// etcd-druid@v0.39.2 internal/component/statefulset/builder.go#L234).
 func (e *Engine) ClaimOrdinal(cp, claim string) (int, bool) {
 	ordinal, named := strings.CutPrefix(claim, contract.EtcdName(cp)+"-"+contract.EtcdName(cp)+"-")
 	n, err := strconv.Atoi(ordinal)
