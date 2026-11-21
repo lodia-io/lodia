@@ -31,7 +31,7 @@ import (
 
 // allowUnhealthyPodEviction on an Etcd lets its PodDisruptionBudget evict an
 // unhealthy member always
-// (etcd-druid@v0.39.0 internal/component/poddistruptionbudget/poddisruptionbudget.go#L36-L38).
+// (etcd-druid@v0.39.2 internal/component/poddistruptionbudget/poddisruptionbudget.go#L36-L38).
 const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealthy-pod-eviction"
 
 // TLS is set on client, peer and backup-restore together: etcd-druid probes
@@ -47,14 +47,14 @@ const allowUnhealthyPodEviction = "resources.druid.gardener.cloud/allow-unhealth
 // class back outside the window. The backup prefix holds UIDs and no
 // name: etcd-backup-restore takes the last v1/ anywhere in a key for its
 // layout and ignores the snapshots it misreads
-// (etcd-backup-restore@v0.45.1 pkg/snapstore/snapshot.go#L39-L59).
+// (etcd-backup-restore@v0.45.3 pkg/snapstore/snapshot.go#L39-L59).
 func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, namespaceUID types.UID, generation int, current *druidv1alpha1.Etcd, claims []corev1.PersistentVolumeClaim, sts *appsv1.StatefulSet, members int32) (*druidv1alpha1.Etcd, string) {
 	secret := func(certificate contract.EtcdCertificateRole) corev1.SecretReference {
 		return corev1.SecretReference{Name: contract.EtcdCertificateSecretName(cp.Name, certificate, generation)}
 	}
 	// etcd-druid reads the CA under ca.crt for the members and under
 	// bundle.crt for its own calls to the sidecar unless the key is named
-	// (etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L468,
+	// (etcd-druid@v0.39.2 internal/component/statefulset/builder.go#L468,
 	// internal/controller/compaction/snapshot.go#L87).
 	ca := druidv1alpha1.SecretReference{SecretReference: secret(contract.EtcdCARole), DataKey: new(lodiav1alpha1.CACertKey)}
 	etcd := &druidv1alpha1.Etcd{
@@ -416,7 +416,7 @@ func readiness(etcd *druidv1alpha1.Etcd, missing []string) metav1.Condition {
 
 // backupReady reports etcd-druid's BackupReady of the Etcd the pass applied,
 // which reads the snapshot Leases' renewals
-// (etcd-druid@v0.39.0 internal/health/condition/check_backup_ready.go#L34-L125).
+// (etcd-druid@v0.39.2 internal/health/condition/check_backup_ready.go#L34-L125).
 func backupReady(etcd *druidv1alpha1.Etcd) metav1.Condition {
 	condition := func(status metav1.ConditionStatus, reason, message string) metav1.Condition {
 		return metav1.Condition{Type: lodiav1alpha1.ConditionBackupReady, Status: status, Reason: reason, Message: message}
@@ -451,7 +451,7 @@ func updatedMembers(etcd *druidv1alpha1.Etcd, sts *appsv1.StatefulSet) *int32 {
 }
 
 // etcd-druid refreshes every Etcd's status every 15 seconds
-// (etcd-druid@v0.39.0 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63)
+// (etcd-druid@v0.39.2 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63)
 // with new timestamps alone; only a change readiness, status.datastore,
 // membersHeld or a request to etcd-druid reads gets a pass.
 func etcdChanged() predicate.Funcs {

@@ -63,7 +63,7 @@ func DialEtcd(ctx context.Context, reader client.Reader, etcd *druidv1alpha1.Etc
 }
 
 // clientEndpoint is etcd-druid's client Service of the Etcd
-// (etcd-druid@v0.39.0 api/core/v1alpha1/helper.go#L27-L30).
+// (etcd-druid@v0.39.2 api/core/v1alpha1/helper.go#L27-L30).
 func clientEndpoint(etcd *druidv1alpha1.Etcd) (string, int32) {
 	return druidv1alpha1.GetClientServiceName(etcd.ObjectMeta) + "." + etcd.Namespace + ".svc", druidv1alpha1.GetClientPort(etcd)
 }

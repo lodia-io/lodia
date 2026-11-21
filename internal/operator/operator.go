@@ -47,7 +47,7 @@ const healthTimeout = 5 * time.Second
 
 // etcdDruidStatusSync is how often etcd-druid syncs an Etcd's status, its
 // chart's etcdStatusSyncPeriod
-// (https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L63).
+// (https://github.com/gardener/etcd-druid/blob/v0.39.2/charts/values.yaml#L63).
 const etcdDruidStatusSync = 15 * time.Second
 
 // Scheme holds the kinds the controllers read and write.

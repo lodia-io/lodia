@@ -24,7 +24,7 @@ import (
 )
 
 // etcd-druid's defaults for the ports Lodia leaves unset in the Etcd
-// (etcd-druid@v0.39.0 internal/common/constants.go#L55-L60). The policy names
+// (etcd-druid@v0.39.2 internal/common/constants.go#L55-L60). The policy names
 // them by number: the peer port and the sidecar's share the container port
 // name "server" (internal/component/statefulset/constants.go#L12-L15).
 const (

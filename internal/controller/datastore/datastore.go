@@ -632,7 +632,7 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 
 // requestReconcile asks etcd-druid, which reconciles a new Etcd's spec
 // unasked, past the wait below, and any other's only on request
-// (etcd-druid@v0.39.0 internal/controller/etcd/reconcile_spec.go#L200-L224),
+// (etcd-druid@v0.39.2 internal/controller/etcd/reconcile_spec.go#L200-L224),
 // to reconcile etcd until the request for its generation and stamp is
 // served: its annotation and Lodia's record of the request go together,
 // under the resourceVersion of the apply's response, so that a pass on an
@@ -956,7 +956,7 @@ func (r *Reconciler) secret(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 
 // A terminating Secret is still mounted: etcd-druid holds its finalizer on
 // every Secret an Etcd references until none does
-// (etcd-druid@v0.39.0 internal/controller/secret/reconciler.go#L44-L101).
+// (etcd-druid@v0.39.2 internal/controller/secret/reconciler.go#L44-L101).
 func (r *Reconciler) missingSecrets(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, secrets []metav1.PartialObjectMetadata) ([]string, error) {
 	configs := []*druidv1alpha1.TLSConfig{etcd.Spec.Etcd.ClientUrlTLS, etcd.Spec.Backup.TLS}
 	if peer := etcd.Spec.Etcd.PeerUrlTLS; peer != nil {
@@ -1030,7 +1030,7 @@ func namedGeneration(cp string, etcd *druidv1alpha1.Etcd) (int, bool) {
 // Claims are matched by the name the StatefulSet attaches them by,
 // <template>-<StatefulSet>-<ordinal> with the template named after the Etcd
 // (kubernetes/kubernetes@v1.35.0 pkg/controller/statefulset/stateful_set_utils.go#L116-L119,
-// etcd-druid@v0.39.0 internal/component/statefulset/builder.go#L233), not by
+// etcd-druid@v0.39.2 internal/component/statefulset/builder.go#L233), not by
 // labels, which a claim made by hand lacks.
 func (r *Reconciler) claims(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]corev1.PersistentVolumeClaim, error) {
 	list := &corev1.PersistentVolumeClaimList{}

@@ -56,7 +56,7 @@ const (
 	gatewayListener   = "tls"
 	druidNamespace    = "etcd-druid"
 	druidDeployment   = "etcd-druid"
-	druidVersion      = "v0.39.0"
+	druidVersion      = "v0.39.2"
 	operatorNamespace = "lodia-system"
 	operatorUser      = "system:serviceaccount:" + operatorNamespace + ":lodia"
 	// boundedBody is a list a tenant at Health's bounds answers: just under

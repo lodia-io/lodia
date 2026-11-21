@@ -52,7 +52,7 @@ const (
 	// backupTaskPrefix names a Backup's EtcdOpsTask and EtcdCopyBackupsTask,
 	// "backup-<Backup UID>": a UID is 36 characters, and the copy Job's pods
 	// carry the task's name and "-worker" as a label value of at most 63
-	// (etcd-druid@v0.39.0 internal/controller/etcdcopybackupstask/reconciler.go#L389-L396).
+	// (etcd-druid@v0.39.2 internal/controller/etcdcopybackupstask/reconciler.go#L389-L396).
 	backupTaskPrefix = "backup-"
 )
 
@@ -392,7 +392,7 @@ type secretField struct {
 }
 
 // secretFields are the keys of a provider's credentials that
-// etcd-backup-restore@v0.45.1 reads to find its store, never key material.
+// etcd-backup-restore@v0.45.3 reads to find its store, never key material.
 func secretFields(provider lodiav1alpha1.StoreProvider, fields *lodiav1alpha1.StoreSecretFields) []secretField {
 	switch provider {
 	case "S3":
@@ -410,7 +410,7 @@ func secretFields(provider lodiav1alpha1.StoreProvider, fields *lodiav1alpha1.St
 // storeSecretFields reads the store's keys from the credentials Secret the
 // way the sidecar does: for every provider but GCS from the first key ending
 // in .json when one exists, else each from the key of its name
-// (etcd-backup-restore@v0.45.1 pkg/snapstore/s3_snapstore.go#L106-L139).
+// (etcd-backup-restore@v0.45.3 pkg/snapstore/s3_snapstore.go#L106-L139).
 func storeSecretFields(ctx context.Context, reader client.Reader, etcd *druidv1alpha1.Etcd, name string) (*lodiav1alpha1.StoreSecretFields, error) {
 	secret := &corev1.Secret{}
 	if err := reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, secret); err != nil {
@@ -446,7 +446,7 @@ func storeSecretFields(ctx context.Context, reader client.Reader, etcd *druidv1a
 
 // jsonKey is the key the sidecar takes for its credentials file: the first
 // file of the mounted Secret, in name order, ending in .json
-// (etcd-backup-restore@v0.45.1 pkg/snapstore/utils.go#L221-L235).
+// (etcd-backup-restore@v0.45.3 pkg/snapstore/utils.go#L221-L235).
 func jsonKey(data map[string][]byte) string {
 	for _, key := range slices.Sorted(maps.Keys(data)) {
 		if path.Ext(key) == ".json" {
@@ -505,7 +505,7 @@ func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, u
 // flush asks etcd-druid for a full snapshot until the full snapshot Lease
 // shows the seal, and says what it waits for until then. The copy takes the
 // newest full snapshot with the deltas after it, and nothing from deltas alone
-// (etcd-backup-restore@v0.45.1 pkg/miscellaneous/miscellaneous.go#L196-L214),
+// (etcd-backup-restore@v0.45.3 pkg/miscellaneous/miscellaneous.go#L196-L214),
 // which a store moved through the credentials holds until its next scheduled
 // full snapshot. A task that finishes short of the seal is sent again as
 // resend says, from the Backup's start.
@@ -557,10 +557,10 @@ func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Back
 
 // resend deletes a finished EtcdOpsTask for the next once the time since
 // start, at most an hour, has passed since it finished (its
-// lastTransitionTime, etcd-druid@v0.39.0
+// lastTransitionTime, etcd-druid@v0.39.2
 // internal/controller/etcdopstask/utils.go#L95-L96), and says the task's state
 // and how long it waits, 0 once it deleted it. A finished task names no
-// revision (etcd-druid@v0.39.0 api/core/v1alpha1/etcdopstask.go#L137-L161),
+// revision (etcd-druid@v0.39.2 api/core/v1alpha1/etcdopstask.go#L137-L161),
 // so one short of the revision it was sent for is sent again, and a Lease
 // that never reaches that revision costs a full snapshot each time.
 func resend(ctx context.Context, c client.Client, now time.Time, task *druidv1alpha1.EtcdOpsTask, start time.Time) (string, time.Duration, error) {
@@ -578,7 +578,7 @@ func resend(ctx context.Context, c client.Client, now time.Time, task *druidv1al
 // fullSnapshotRevision is the last revision of the newest full snapshot the
 // Etcd's full snapshot Lease shows in its store: the sidecar sets its holder
 // after each full snapshot it uploaded and never lowers it
-// (etcd-backup-restore@v0.45.1 pkg/health/heartbeat/heartbeat.go#L200-L222).
+// (etcd-backup-restore@v0.45.3 pkg/health/heartbeat/heartbeat.go#L200-L222).
 // etcd-druid adopts a Lease of a predecessor of the same name with its holder,
 // so a Lease created before the Etcd counts for nothing, which the second
 // result says.

@@ -99,7 +99,7 @@ func TestTheRehearsalRunsOnTheFilesLimit(t *testing.T) {
 }
 
 func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T) {
-	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
 	in.Config.Fleet.MaxConcurrentRollouts = 2
 	revision, err := in.Revision()
 	if err != nil {
@@ -234,7 +234,7 @@ func TestEveryReconcilerThatReadsTheAccessSecretsReadsThemThroughTheOneReader(t 
 		secrets[key] = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: name, UID: types.UID("uid-" + name), ResourceVersion: "1"}, Data: data}
 	}
 	live := &liveSecrets{secrets: secrets}
-	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
 	c := newControllers(managerOf{cache: cacheOf{secrets: secrets}, reader: live}, in, "v1.0.0+0")
 
 	if _, ok := c.health.Secrets.(*secretcache.Reader); !ok {

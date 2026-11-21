@@ -37,7 +37,7 @@ const restoreTaskPrefix = "restore-"
 
 // cleanupBound is the operations etcd-backup-restore replays a revision of a
 // delta snapshot in, one transaction
-// (etcd-backup-restore@v0.45.1 pkg/types/restorer.go#L27): the cleanup's
+// (etcd-backup-restore@v0.45.3 pkg/types/restorer.go#L27): the cleanup's
 // deletions and the marker's Put must fit.
 const cleanupBound = 10240
 
@@ -186,7 +186,7 @@ func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.Control
 		return nil, 0, err
 	}
 	// The copier copies only what the target lacks
-	// (etcd-backup-restore@v0.45.1 pkg/snapshot/copier/copier.go#L127-L151),
+	// (etcd-backup-restore@v0.45.3 pkg/snapshot/copier/copier.go#L127-L151),
 	// so another task completes what a failed one left. The failed one stays a
 	// minute, so that its Job and status.lastError can be read.
 	if failed := copyCondition(task, druidv1alpha1.EtcdCopyBackupsTaskFailed); failed != nil {
@@ -484,12 +484,12 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 // does for a seal, and says the task's state and how long it waits. resend
 // is timed from when the Etcd's Ready condition turned True, without which
 // etcd-druid takes no on-demand snapshot
-// (etcd-druid@v0.39.0 internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188),
+// (etcd-druid@v0.39.2 internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188),
 // and from the Etcd's creation while it is not True or, for a task etcd-druid
 // ran rather than rejected at admission
-// (etcd-druid@v0.39.0 internal/controller/etcdopstask/reconcile_task.go#L83-L121),
+// (etcd-druid@v0.39.2 internal/controller/etcdopstask/reconcile_task.go#L83-L121),
 // when it turned True after etcd-druid admitted the task (its startedAt,
-// etcd-druid@v0.39.0 internal/controller/etcdopstask/utils.go#L91-L94), so
+// etcd-druid@v0.39.2 internal/controller/etcdopstask/utils.go#L91-L94), so
 // that a member back from an outage does not shorten the wait after a full
 // snapshot.
 func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (string, time.Duration, error) {

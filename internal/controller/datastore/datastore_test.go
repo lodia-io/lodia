@@ -105,7 +105,7 @@ func (r *reads) pausedAt(key client.ObjectKey) int64 {
 const (
 	druidNamespace    = "druid-system"
 	druidDeployment   = "etcd-druid"
-	druidVersion      = "v0.39.0"
+	druidVersion      = "v0.39.2"
 	operatorNamespace = "lodia-system"
 	revision          = "v0.0.0-test+running"
 	previousRevision  = "v0.0.0-test+previous"
@@ -1074,7 +1074,7 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	}
 }
 
-const snapshotParser = "https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L34-L59"
+const snapshotParser = "https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/snapshot.go#L34-L59"
 
 func snapshotPrefix(key string) string {
 	for _, version := range []string{"v1/", "v2/"} {
@@ -1105,7 +1105,7 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 		{"prod/team-v1/v1/" + string(cp.UID) + "/v2/Full-00000000-00000052-1761500000.gz", "prod/team-v1/v1/"},
 	} {
 		if got := snapshotPrefix(c.key); got != c.prefix {
-			t.Errorf("etcd-backup-restore v0.45.1 reads %s under %q, want %q (%s)", c.key, got, c.prefix, snapshotParser)
+			t.Errorf("etcd-backup-restore v0.45.3 reads %s under %q, want %q (%s)", c.key, got, c.prefix, snapshotParser)
 		}
 	}
 
