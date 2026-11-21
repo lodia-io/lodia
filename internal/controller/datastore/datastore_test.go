@@ -51,6 +51,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/datastore/datastoretest"
 	"go.lodia.io/lodia/internal/etcddruid"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -118,7 +119,7 @@ func newDruid() *etcddruid.Engine {
 
 func TestMain(m *testing.M) {
 	testenv.SkipUnlessAvailable("the datastore controller tests")
-	druid, err := testenv.DruidCRDs()
+	druid, err := druidtest.CRDs()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "etcd-druid CRDs:", err)
 		os.Exit(1)

@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -62,24 +61,6 @@ func Scheme(extra ...func(*runtime.Scheme) error) *runtime.Scheme {
 		utilruntime.Must(add(scheme))
 	}
 	return scheme
-}
-
-// DruidCRDs returns etcd-druid's CRDs for Kubernetes 1.35, the minor of
-// ENVTEST_K8S_VERSION.
-func DruidCRDs() ([]*apiextensionsv1.CustomResourceDefinition, error) {
-	manifests, err := crds.GetAll("1.35")
-	if err != nil {
-		return nil, err
-	}
-	var out []*apiextensionsv1.CustomResourceDefinition
-	for name, manifest := range manifests {
-		crd := &apiextensionsv1.CustomResourceDefinition{}
-		if err := yaml.Unmarshal([]byte(manifest), crd); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-		out = append(out, crd)
-	}
-	return out, nil
 }
 
 // Options is what differs between suites: the kinds the clients know (Scheme()

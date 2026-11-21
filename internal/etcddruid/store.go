@@ -114,6 +114,19 @@ func (e *Engine) Raised(ctx context.Context, reader client.Reader, current *Stor
 	return etcd.Spec.Replicas > 1, nil
 }
 
+// List lists the Etcds reader holds, by their keys.
+func (e *Engine) List(ctx context.Context, reader client.Reader) (map[types.NamespacedName]*Store, error) {
+	var etcds druidv1alpha1.EtcdList
+	if err := reader.List(ctx, &etcds); err != nil {
+		return nil, err
+	}
+	byName := make(map[types.NamespacedName]*Store, len(etcds.Items))
+	for i := range etcds.Items {
+		byName[client.ObjectKeyFromObject(&etcds.Items[i])] = &Store{etcd: &etcds.Items[i]}
+	}
+	return byName, nil
+}
+
 // Rollout reads etcd-druid's StatefulSet of cp's Etcd from reader, nil when
 // there is none. etcd-druid syncs the StatefulSet before it removes its
 // annotation (etcd-druid@v0.39.2 internal/controller/etcd/reconciler.go#L119-L142),

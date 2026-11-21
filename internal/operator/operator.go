@@ -12,7 +12,6 @@ import (
 	"net"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -56,7 +55,7 @@ func Scheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(lodiav1alpha1.AddToScheme(scheme))
-	utilruntime.Must(druidv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(etcddruid.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	return scheme
 }
@@ -144,11 +143,13 @@ type Inputs struct {
 // Sources are the controllers Setup registers whose memory Lodia's metrics
 // serve: Health, with its counter of failed probes, health-nodes, with its
 // histogram of lag and its counts of the nodes, and the etcd sampler, with its
-// samples. No registry holds the counter or the histogram.
+// samples, and the engine the collector reads the etcds through. No registry
+// holds the counter or the histogram.
 type Sources struct {
 	Health *health.Reconciler
 	Nodes  *health.NodesReconciler
 	Etcd   *datastore.SampleReconciler
+	Druid  *etcddruid.Engine
 }
 
 type controllers struct {
@@ -252,7 +253,7 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := c.rehearsal.SetupWithManager(mgr, workers.Rehearsal.Workers); err != nil {
 		return nil, fmt.Errorf("set up the rehearsal reconciler: %w", err)
 	}
-	return &Sources{Health: c.health, Nodes: c.nodes, Etcd: c.sampler}, nil
+	return &Sources{Health: c.health, Nodes: c.nodes, Etcd: c.sampler, Druid: c.sampler.Druid}, nil
 }
 
 // Metrics is Lodia's collector over a manager's cache and its Elected, and
@@ -265,7 +266,7 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 		return nil, err
 	}
 	return &metrics.Collector{
-		Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts, HoldFraction: sources.Nodes.HoldFraction,
+		Reader: reader, Druid: sources.Druid, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts, HoldFraction: sources.Nodes.HoldFraction,
 		EtcdSample: sources.Etcd.Sample, NodeCounts: sources.Nodes.Counts, SampleLag: sources.Nodes.SampleLag, ProbeFailures: sources.Health.ProbeFailures,
 	}, nil
 }

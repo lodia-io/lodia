@@ -31,6 +31,8 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	datastorectrl "go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/metrics"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -49,7 +51,7 @@ func TestMain(m *testing.M) {
 	if !testenv.Available() {
 		os.Exit(m.Run())
 	}
-	druid, err := testenv.DruidCRDs()
+	druid, err := druidtest.CRDs()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "etcd-druid CRDs:", err)
 		os.Exit(1)
@@ -79,7 +81,7 @@ func collectorOf(reader client.Reader, elected <-chan struct{}) *metrics.Collect
 	failures := metrics.NewProbeFailures()
 	failures.WithLabelValues(lodiav1alpha1.MetricProbeAPI).Add(3)
 	failures.WithLabelValues(lodiav1alpha1.MetricProbeTunnel).Inc()
-	return &metrics.Collector{Reader: reader, Elected: elected, Revision: running, MaxConcurrentRollouts: 3, HoldFraction: 750, EtcdSample: samplesOf(nil), NodeCounts: goldenCounts, SampleLag: lag, ProbeFailures: failures}
+	return &metrics.Collector{Reader: reader, Druid: &etcddruid.Engine{}, Elected: elected, Revision: running, MaxConcurrentRollouts: 3, HoldFraction: 750, EtcdSample: samplesOf(nil), NodeCounts: goldenCounts, SampleLag: lag, ProbeFailures: failures}
 }
 
 func TestEveryShapeOfControlPlaneMatchesTheGolden(t *testing.T) {

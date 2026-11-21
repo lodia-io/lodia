@@ -43,8 +43,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/operator"
-	"go.lodia.io/lodia/internal/testenv"
 )
 
 const (
@@ -73,7 +73,7 @@ func namespaceOf(i int) string { return fmt.Sprintf("fleet-%04d", i) }
 
 func startManagement(t *testing.T) (*rest.Config, client.Client) {
 	t.Helper()
-	druid, err := testenv.DruidCRDs()
+	druid, err := druidtest.CRDs()
 	if err != nil {
 		t.Fatal(err)
 	}
