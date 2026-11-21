@@ -100,8 +100,9 @@ func runID(etcd *druidv1alpha1.Etcd) string {
 // served says whether etcd-druid has reconciled the request for etcd's
 // generation and stamp: its annotation is gone, and a spec reconcile
 // succeeded under a run ID other than the recorded one. etcd-druid writes a
-// new run ID in a status patch at the start of every spec reconcile and syncs
-// the Etcd that patch returns (reconcile_spec.go#L33-L42,
+// new run ID and the type Reconcile in a status patch at the start of every
+// spec reconcile, a new Etcd's first included, and syncs the Etcd that patch
+// returns (reconcile_spec.go#L33-L42, reconcile_spec.go#L112-L118,
 // internal/controller/utils/etcdstatus.go#L83-L93), so such a reconcile read
 // the request's spec; one under the recorded run ID started before the request
 // landed, and may have removed the annotation without syncing that spec.
@@ -109,8 +110,7 @@ func served(etcd *druidv1alpha1.Etcd) bool {
 	asked, run, ok := cutLast(etcd.Annotations[lodiav1alpha1.EtcdReconcileRequestedAnnotation], "/")
 	last := etcd.Status.LastOperation
 	return ok && asked == requestOf(etcd) && !druidv1alpha1.HasReconcileOperationAnnotation(etcd.ObjectMeta) && last != nil &&
-		(last.Type == druidv1alpha1.LastOperationTypeCreate || last.Type == druidv1alpha1.LastOperationTypeReconcile) &&
-		last.State == druidv1alpha1.LastOperationStateSucceeded && last.RunID != run
+		last.Type == druidv1alpha1.LastOperationTypeReconcile && last.State == druidv1alpha1.LastOperationStateSucceeded && last.RunID != run
 }
 
 // specReconcileBound outlasts one spec reconcile of etcd-druid, which writes

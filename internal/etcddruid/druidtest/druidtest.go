@@ -214,12 +214,6 @@ func Run(ctx context.Context, c client.Client, namespace, cp, run string, state 
 	return lastOperation(ctx, c, namespace, cp, druidapicommon.LastOperation{RunID: run, Type: druidv1alpha1.LastOperationTypeReconcile, State: state, Description: "etcd-druid's stand-in", LastUpdateTime: metav1.NewTime(at)})
 }
 
-// Created writes the last operation of the reconcile that created the Etcd,
-// succeeded under run at.
-func Created(ctx context.Context, c client.Client, namespace, cp, run string, at time.Time) error {
-	return lastOperation(ctx, c, namespace, cp, druidapicommon.LastOperation{RunID: run, Type: druidv1alpha1.LastOperationTypeCreate, State: druidv1alpha1.LastOperationStateSucceeded, Description: "etcd-druid's stand-in", LastUpdateTime: metav1.NewTime(at)})
-}
-
 func lastOperation(ctx context.Context, c client.Client, namespace, cp string, last druidapicommon.LastOperation) error {
 	content, err := json.Marshal(last)
 	if err != nil {

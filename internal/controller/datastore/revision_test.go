@@ -1167,18 +1167,12 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 	})
 
 	for i, c := range []struct {
-		name   string
-		druid  func(t *testing.T)
-		served bool
-		run    string
+		name  string
+		druid func(t *testing.T)
+		run   string
 	}{
-		{"an annotation removed without a reconcile", func(*testing.T) {}, false, ""},
-		{"a reconcile under another run ID that failed", func(t *testing.T) { druidRuns(t, ns, cp, "failed", druidv1alpha1.LastOperationStateError) }, false, "failed"},
-		{"a create under another run ID that succeeded", func(t *testing.T) {
-			if err := druidtest.Created(t.Context(), k8s, ns, cp, "created", time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)); err != nil {
-				t.Fatal(err)
-			}
-		}, true, ""},
+		{"an annotation removed without a reconcile", func(*testing.T) {}, ""},
+		{"a reconcile under another run ID that failed", func(t *testing.T) { druidRuns(t, ns, cp, "failed", druidv1alpha1.LastOperationStateError) }, "failed"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			writeGeneration(t, ns, cp, i+2)
@@ -1189,15 +1183,8 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 			}
 			c.druid(t)
 			removeDruidAnnotation(t, ns, cp)
-			if !c.served {
-				asksAgain(t, r, ns, cp, request, cmp.Or(c.run, run))
-				answer(t, ns, cp)
-				return
-			}
-			mustPass(t, r, ns, cp)
-			if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil {
-				t.Errorf("a request served by a create: %v", err)
-			}
+			asksAgain(t, r, ns, cp, request, cmp.Or(c.run, run))
+			answer(t, ns, cp)
 		})
 	}
 }
