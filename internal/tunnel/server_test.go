@@ -776,6 +776,26 @@ func TestTheServerFixtureStartsOnAnotherAddressWhenOneIsTaken(t *testing.T) {
 	}
 }
 
+func TestTheServerFixtureKeepsAnAddressTheTestSet(t *testing.T) {
+	for name, address := range map[string]func(*Server) *string{
+		"the listener": func(s *Server) *string { return &s.Listen },
+		"/healthz":     func(s *Server) *string { return &s.HealthAddr },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cluster, tunnelCA := newCA(t, "cluster"), newCA(t, "tunnel")
+			taken := freeAddr(t)
+			occupy(t, taken)
+			f := newServerFixture(t, func(s *Server) { *address(s) = taken }, cluster, tunnelCA)
+			writeVolume(t, f.certDir, pairFiles(t, serving(t, cluster)))
+			writeVolume(t, f.caDir, caFiles(t, tunnelCA))
+			f.start(t)
+			if err := f.awaitHealthy(t); addrInUse(err) != taken {
+				t.Fatalf("awaitHealthy returned %v, want Run's address-in-use error for %s", err, taken)
+			}
+		})
+	}
+}
+
 func TestTheServerFixtureReportsARunThatFailsAtOnce(t *testing.T) {
 	cluster, tunnelCA := newCA(t, "cluster"), newCA(t, "tunnel")
 	f := newServerFixture(t, func(s *Server) { s.Listen = "no port" }, cluster, tunnelCA)
@@ -855,6 +875,8 @@ type serverFixture struct {
 	upstream       *plainUpstream
 	logs           *logBuffer
 	process        *runner
+	pickedListen   string
+	pickedHealth   string
 }
 
 func startServer(t *testing.T, tune func(*Server)) *serverFixture {
@@ -872,13 +894,15 @@ func newServerFixture(t *testing.T, tune func(*Server), cluster, tunnelCA *certs
 	t.Helper()
 	log, logs := newLog(t)
 	upstream := startPlainUpstream(t, echo)
-	s := NewServer(freeAddr(t), tunnelHost, t.TempDir(), t.TempDir(), upstream.addr, freeAddr(t), log)
+	listen, health := freeAddr(t), freeAddr(t)
+	s := NewServer(listen, tunnelHost, t.TempDir(), t.TempDir(), upstream.addr, health, log)
 	if tune != nil {
 		tune(s)
 	}
 	return &serverFixture{
 		Server: s, certDir: s.CertDir, caDir: s.ClientCADir, cluster: cluster, tunnelCA: tunnelCA,
 		clientPair: tlsPair(t, client(t, tunnelCA)), upstream: upstream, logs: logs,
+		pickedListen: listen, pickedHealth: health,
 	}
 }
 
@@ -927,13 +951,15 @@ func (f *serverFixture) awaitHealthy(t *testing.T) error {
 
 func (f *serverFixture) rebind(t *testing.T, err error) bool {
 	t.Helper()
-	switch addrInUse(err) {
-	case "":
+	switch addr := addrInUse(err); {
+	case addr == "":
 		return false
-	case f.Listen:
-		f.Listen = freeAddr(t)
-	case f.HealthAddr:
-		f.HealthAddr = freeAddr(t)
+	case addr == f.Listen && f.Listen == f.pickedListen:
+		f.pickedListen = freeAddr(t)
+		f.Listen = f.pickedListen
+	case addr == f.HealthAddr && f.HealthAddr == f.pickedHealth:
+		f.pickedHealth = freeAddr(t)
+		f.HealthAddr = f.pickedHealth
 	default:
 		return false
 	}
