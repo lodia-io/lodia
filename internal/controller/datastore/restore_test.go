@@ -49,6 +49,7 @@ import (
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/etcddruid"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -391,7 +392,7 @@ func (r *restore) copied(t *testing.T) *druidv1alpha1.Etcd {
 	finishCopy(t, r.ns, r.waitCopyTask(t).Name, druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
 	etcd := waitEtcd(t, r.ns, restoredCP, nil)
 	runStatefulSet(t, r.ns, restoredCP, 1)
-	setEtcdStatus(t, r.ns, restoredCP, nil)
+	setEtcdStatus(t, r.ns, restoredCP)
 	return etcd
 }
 
@@ -597,15 +598,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 
 func failCopy(t *testing.T, ns, name, message string, at time.Time) {
 	t.Helper()
-	task := &druidv1alpha1.EtcdCopyBackupsTask{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, task); err != nil {
-		t.Fatal(err)
-	}
-	task.Status.Conditions = []druidv1alpha1.Condition{{
-		Type: druidv1alpha1.EtcdCopyBackupsTaskFailed, Status: druidv1alpha1.ConditionTrue, Reason: "JobFailed", Message: message,
-		LastTransitionTime: metav1.NewTime(at), LastUpdateTime: metav1.NewTime(at),
-	}}
-	if err := k8s.Status().Update(t.Context(), task); err != nil {
+	if err := druidtest.FinishCopy(t.Context(), k8s, ns, name, druidv1alpha1.EtcdCopyBackupsTaskFailed, message, at); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -896,7 +889,7 @@ func TestARestoreCheckThatCannotRunHoldsTheRestore(t *testing.T) {
 
 	r.etcd.unreachable.Store(true)
 	runStatefulSet(t, r.ns, restoredCP, 1)
-	setEtcdStatus(t, r.ns, restoredCP, nil)
+	setEtcdStatus(t, r.ns, restoredCP)
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "waiting for etcd of b to answer")
 	if r.marker(t) != 0 {
 		t.Fatal("cleaned up through an etcd that does not answer")
@@ -930,7 +923,7 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 	}{
 		{"the etcd does not answer", func() { r.etcd.unreachable.Store(true) }, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd b-etcd has quorum, 1 of 1 members ready"},
 		{"no member ready", func() {
-			setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+			setEtcdStatus(t, r.ns, restoredCP, druidtest.Members(1, 0))
 			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "")
 		}, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd b-etcd has 0 of 1 members ready"},
 	} {
@@ -975,17 +968,17 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	created := r.copied(t).CreationTimestamp.Time
 	readyAt := created.Add(time.Second)
 	time.Sleep(time.Until(created.Add(2 * time.Second)))
-	quorate := func(at time.Time) druidv1alpha1.Condition {
-		return druidv1alpha1.Condition{Status: druidv1alpha1.ConditionTrue, Reason: "Quorate", Message: "The majority of ETCD members is ready", LastTransitionTime: metav1.NewTime(at)}
+	type quorum struct {
+		quorate bool
+		at      time.Time
 	}
-	lost := func(at time.Time) druidv1alpha1.Condition {
-		return druidv1alpha1.Condition{Status: druidv1alpha1.ConditionFalse, Reason: "QuorumLost", Message: "The majority of ETCD members is not ready", LastTransitionTime: metav1.NewTime(at)}
-	}
+	quorate := func(at time.Time) quorum { return quorum{true, at} }
+	lost := func(at time.Time) quorum { return quorum{false, at} }
 	now := clocktesting.NewFakePassiveClock(time.Now())
-	setReady := func(condition druidv1alpha1.Condition) {
+	setReady := func(q quorum) {
 		t.Helper()
-		condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, metav1.NewTime(now.Now()).Rfc3339Copy()
-		setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) { s.Conditions = append(s.Conditions, condition) })
+		condition := druidtest.Ready(q.quorate, q.at, metav1.NewTime(now.Now()).Rfc3339Copy().Time)
+		setEtcdStatus(t, r.ns, restoredCP, druidtest.Condition(condition))
 		poke(t, r.ns)
 		testenv.Eventually(t, func() error {
 			if ready := managerReads.readyOf(client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}); ready == nil || !equality.Semantic.DeepEqual(*ready, condition) {
@@ -1018,15 +1011,15 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	}
 	for _, round := range []struct {
 		state              druidv1alpha1.TaskState
-		ready              druidv1alpha1.Condition
-		after              []druidv1alpha1.Condition
+		ready              quorum
+		after              []quorum
 		started, start     time.Time
 		finished, interval time.Duration
 	}{
 		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, time.Time{}, readyAt, 10 * time.Minute, 10 * time.Minute},
 		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, time.Time{}, readyAt, 3 * time.Hour, time.Hour},
 		{druidv1alpha1.TaskStateSucceeded, lost(readyAt.Add(5 * time.Minute)), nil, time.Time{}, created, 20 * time.Minute, 20 * time.Minute},
-		{druidv1alpha1.TaskStateFailed, lost(created.Add(51 * time.Minute)), []druidv1alpha1.Condition{quorate(created.Add(52 * time.Minute))}, created.Add(time.Minute), created, 50 * time.Minute, 50 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, lost(created.Add(51 * time.Minute)), []quorum{quorate(created.Add(52 * time.Minute))}, created.Add(time.Minute), created, 50 * time.Minute, 50 * time.Minute},
 		{druidv1alpha1.TaskStateFailed, quorate(created.Add(90 * time.Minute)), nil, created.Add(90*time.Minute - time.Second), created, 2 * time.Hour, time.Hour},
 		{druidv1alpha1.TaskStateRejected, lost(readyAt), nil, time.Time{}, created, 30 * time.Minute, 30 * time.Minute},
 		{druidv1alpha1.TaskStateFailed, quorate(created.Add(4 * time.Hour)), nil, created.Add(4*time.Hour + time.Second), created.Add(4 * time.Hour), 10 * time.Minute, 10 * time.Minute},
@@ -1051,8 +1044,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		}
 		setReady(round.ready)
 		if !round.started.IsZero() {
-			ops.Status.State, ops.Status.StartedAt = new(druidv1alpha1.TaskStateInProgress), new(metav1.NewTime(round.started))
-			if err := k8s.Status().Update(t.Context(), ops); err != nil {
+			if err := druidtest.StartSnapshot(t.Context(), k8s, r.ns, ops.Name, round.started); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1119,12 +1111,7 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 		return nil
 	})
 	now.SetTime(rejected.Add(40 * time.Second))
-	setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) {
-		s.Conditions = append(s.Conditions, druidv1alpha1.Condition{
-			Type: druidv1alpha1.ConditionTypeReady, Status: druidv1alpha1.ConditionTrue, Reason: "Quorate", Message: "The majority of ETCD members is ready",
-			LastTransitionTime: metav1.NewTime(rejected.Add(30 * time.Second)), LastUpdateTime: metav1.NewTime(now.Now()),
-		})
-	})
+	setEtcdStatus(t, r.ns, restoredCP, druidtest.Condition(druidtest.Ready(true, rejected.Add(30*time.Second), now.Now())))
 	testenv.Eventually(t, func() error {
 		if err := pass(); err != nil {
 			return err
@@ -1449,7 +1436,7 @@ func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
 				t.Errorf("the Etcd created again asks for %d members with store %+v, want 1 with %+v", etcd.Spec.Replicas, etcd.Spec.Backup.Store, first.Spec.Backup.Store)
 			}
 			consistently(t, kept)
-			setEtcdStatus(t, r.ns, restoredCP, nil)
+			setEtcdStatus(t, r.ns, restoredCP)
 			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "ignored Lease b-etcd-full-snap, created before Etcd b-etcd")
 			if err := kept(); err != nil {
 				t.Fatal(err)

@@ -43,6 +43,7 @@ import (
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/etcddruid"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -171,28 +172,14 @@ func (s *source) actAsDruid(t *testing.T) {
 
 func finishFlush(t *testing.T, ns, name string, state druidv1alpha1.TaskState, at time.Time) {
 	t.Helper()
-	task := &druidv1alpha1.EtcdOpsTask{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, task); err != nil {
-		t.Fatal(err)
-	}
-	task.Status.State = new(state)
-	task.Status.LastTransitionTime = new(metav1.NewTime(at))
-	if err := k8s.Status().Update(t.Context(), task); err != nil {
+	if err := druidtest.FinishSnapshot(t.Context(), k8s, ns, name, state, at); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func finishCopy(t *testing.T, ns, name string, conditionType druidv1alpha1.ConditionType, message string) {
 	t.Helper()
-	task := &druidv1alpha1.EtcdCopyBackupsTask{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, task); err != nil {
-		t.Fatal(err)
-	}
-	task.Status.Conditions = []druidv1alpha1.Condition{{
-		Type: conditionType, Status: druidv1alpha1.ConditionTrue, Reason: "Job" + string(conditionType), Message: message,
-		LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-	}}
-	if err := k8s.Status().Update(t.Context(), task); err != nil {
+	if err := druidtest.FinishCopy(t.Context(), k8s, ns, name, conditionType, message, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1050,14 +1037,6 @@ func waitBackupReady(t *testing.T, ns, name string, status metav1.ConditionStatu
 	})
 }
 
-func druidBackupReady(status druidv1alpha1.ConditionStatus, reason, message string) func(*druidv1alpha1.EtcdStatus) {
-	return func(s *druidv1alpha1.EtcdStatus) {
-		s.Conditions = append(s.Conditions, druidv1alpha1.Condition{
-			Type: druidv1alpha1.ConditionTypeBackupReady, Status: status, Reason: reason, Message: message, LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-		})
-	}
-}
-
 func TestBackupReadyFollowsEtcdDruid(t *testing.T) {
 	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
@@ -1086,16 +1065,13 @@ func TestBackupReadyFollowsEtcdDruid(t *testing.T) {
 		{druidv1alpha1.ConditionFalse, metav1.ConditionFalse, lodiav1alpha1.ReasonBackupFailed, "etcd-druid reports of Etcd backed-etcd: "},
 	} {
 		message := "snapshots are " + string(row.druid)
-		setEtcdStatus(t, ns, "backed", druidBackupReady(row.druid, map[bool]string{true: "NotChecked", false: "Backup" + string(row.druid)}[row.druid == druidv1alpha1.ConditionUnknown], message))
+		setEtcdStatus(t, ns, "backed", druidtest.BackupReady(row.druid, map[bool]string{true: "NotChecked", false: "Backup" + string(row.druid)}[row.druid == druidv1alpha1.ConditionUnknown], message))
 		waitBackupReady(t, ns, "backed", row.status, row.reason, row.message+message)
 	}
 
-	setEtcdStatus(t, ns, "backed", druidBackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
+	setEtcdStatus(t, ns, "backed", druidtest.BackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
 	waitBackupReady(t, ns, "backed", metav1.ConditionTrue, lodiav1alpha1.ReasonBackupSucceeded, "Snapshot backup succeeded")
-	setEtcdStatus(t, ns, "backed", func(s *druidv1alpha1.EtcdStatus) {
-		druidBackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded")(s)
-		s.Ready, s.ReadyReplicas, s.Members[0].Status = new(false), 0, druidv1alpha1.EtcdMemberStatusNotReady
-	})
+	setEtcdStatus(t, ns, "backed", druidtest.BackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"), druidtest.Members(1, 0), druidtest.Member(0, druidv1alpha1.EtcdMemberStatusNotReady, "LeaseSucceeded"))
 	waitCondition(t, ns, "backed", metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "has 0 of 1 members ready")
 	waitBackupReady(t, ns, "backed", metav1.ConditionTrue, lodiav1alpha1.ReasonBackupSucceeded, "Snapshot backup succeeded")
 	var managers []string
@@ -1334,7 +1310,7 @@ func TestAStoreMovedAwayAndBackWhileTheMemberRestartsFailsTheBackup(t *testing.T
 	r := src.reconciler(k8s)
 	created := createBackup(t, src.ns, "restart", nil)
 	backup := passes(t, r, src.ns, created.Name, sealed)
-	setEtcdStatus(t, src.ns, sourceName, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	setEtcdStatus(t, src.ns, sourceName, druidtest.Members(1, 0))
 	waitCondition(t, src.ns, sourceName, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "has 0 of 1 members ready")
 	moveStore(t, src.ns, "other-bucket", "moved")
 	if _, err := reconcileBackup(r, src.ns, created.Name); err != nil {
@@ -1342,7 +1318,7 @@ func TestAStoreMovedAwayAndBackWhileTheMemberRestartsFailsTheBackup(t *testing.T
 	}
 	setLease(t, src.ns, fullLease, backup.Status.Seal.Revision)
 	moveStore(t, src.ns, "lodia-backups", "prod")
-	setEtcdStatus(t, src.ns, sourceName, nil)
+	setEtcdStatus(t, src.ns, sourceName)
 	waitCondition(t, src.ns, sourceName, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
 	ns := string(namespaceUID(t, src.ns))
 	passes(t, r, src.ns, created.Name, readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, fmt.Sprintf(
