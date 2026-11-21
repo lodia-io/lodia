@@ -221,12 +221,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
   A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
 
-## From the datastore tests' time (2026-11-11)
-
-- `TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns` (`internal/operator/operator_test.go`) starts its etcd on ports that `testserver.NewTestConfig` chose by listening on port 0 and closing ([test_server.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/storage/etcd3/testserver/test_server.go#L37-L50)); a socket that takes such a port first fails the test on `bind: address already in use`, and on macOS the probe, on the wildcard address, also hands out a port another process holds on `127.0.0.1`.
-  The datastore tests no longer have the window: their `etcdConfig` and `runEtcd` (`internal/controller/datastore/embeddedetcd_test.go`) give each etcd listeners that etcd itself binds.
-  Share them with this test.
-
 ## From the kubelet certificates' lifetime (2026-11-12)
 
 - A kubelet client certificate cannot be revoked, and a kubelet renews its own without asking for a lifetime: its certificate manager sets no `RequestedCertificateLifetime` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/certificate/kubelet.go#L229-L248)), so the controller manager's `--cluster-signing-duration` alone sets it ([signer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/certificates/signer/signer.go#L219-L237)).

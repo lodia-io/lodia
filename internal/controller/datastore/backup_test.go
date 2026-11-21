@@ -19,7 +19,6 @@ import (
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/kubernetes"
-	"go.etcd.io/etcd/server/v3/embed"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,6 +45,7 @@ import (
 	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/testetcd"
 )
 
 const sourceName = "src"
@@ -56,7 +56,7 @@ type source struct {
 	keys            []byte
 }
 
-func newSource(t *testing.T, etcd *embed.Config, before func(*source)) *source {
+func newSource(t *testing.T, etcd *testetcd.Config, before func(*source)) *source {
 	t.Helper()
 	s := &source{ns: namespace(t), credentials: namespace(t), etcd: runEtcd(t, etcd)}
 	create(t, credentials(s.credentials))
@@ -999,9 +999,7 @@ func TestABackupDeletedBeforeItIsSealedGoesAtOnce(t *testing.T) {
 
 func TestASealTheEtcdRefuses(t *testing.T) {
 	t.Parallel()
-	cfg := etcdConfig(t)
-	cfg.QuotaBackendBytes = 1 << 20
-	src := newSource(t, cfg, nil)
+	src := newSource(t, &testetcd.Config{QuotaBackendBytes: 1 << 20}, nil)
 	for i := 0; ; i++ {
 		_, err := src.etcd.Put(t.Context(), fmt.Sprintf("/filler/%d", i), strings.Repeat("x", 256<<10))
 		if err != nil {

@@ -28,7 +28,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/server/v3/embed"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,7 +37,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/features"
 	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/rest"
@@ -66,6 +64,7 @@ import (
 	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/testetcd"
 )
 
 func TestTheCacheHoldsTheGatewayAPIWholeOnlyWhereItIsServed(t *testing.T) {
@@ -205,17 +204,7 @@ func TestADiscoveryErrorIsAnError(t *testing.T) {
 
 func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 	cfg := start(t)
-	member := testserver.NewTestConfig(t)
-	etcdServer, err := embed.StartEtcd(member)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(etcdServer.Close)
-	select {
-	case <-etcdServer.Server.ReadyNotify():
-	case <-time.After(60 * time.Second):
-		t.Fatal("the etcd member took too long to start")
-	}
+	member := testetcd.Start(t, testetcd.Config{})
 	k8s, err := client.New(cfg, client.Options{Scheme: operator.Scheme()})
 	if err != nil {
 		t.Fatal(err)
@@ -246,7 +235,7 @@ func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 	}
 	sources.Etcd.Cache = fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(cp, etcd).Build()
 	sources.Etcd.EtcdClient = func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
-		return clientv3.New(clientv3.Config{Endpoints: []string{member.ListenClientUrls[0].String()}, DialTimeout: 5 * time.Second})
+		return clientv3.New(clientv3.Config{Endpoints: []string{member.ClientURL}, DialTimeout: 5 * time.Second})
 	}
 	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), testInputs, sources)
 	if err != nil {

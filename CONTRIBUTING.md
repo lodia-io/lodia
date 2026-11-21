@@ -17,6 +17,9 @@ Every other tool runs through `go tool`, except ko and hydrophone, which run thr
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md)) |
 | `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 
+The tests of Lodia's calls to etcd run etcd's release binary at `versions.EtcdVersion`, the etcd that etcd-wrapper runs in production, and no embedded etcd.
+`make test` and `make fleet` fetch it into `work/etcd` first (`make etcd`); a test run by hand needs `LODIA_ETCD_BINARY="$(go run ./test/etcdbinary work/etcd)"`.
+
 CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-upgrade` and `make e2e-maintenance` on every pull request, and every night `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway`, `make e2e-hold`, `make e2e-upgrade-ha`, and `make e2e-ha`, `make e2e-upgrade` and `make e2e-maintenance` with their nightly tests.
 
 `test/rules/lodia_test.yaml`, promtool's cases of the alert rules, is generated and never edited by hand.

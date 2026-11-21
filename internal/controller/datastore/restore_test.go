@@ -51,6 +51,7 @@ import (
 	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/testetcd"
 )
 
 type restoredEtcd struct {
@@ -242,13 +243,7 @@ func newRestore(t *testing.T, setup restoreSetup) *restore {
 		setup.class(class)
 	}
 	createClass(t, class)
-	if setup.quota == 0 {
-		r.etcd = &restoredEtcd{Client: runEtcd(t, nil).Client}
-	} else {
-		config := etcdConfig(t)
-		config.QuotaBackendBytes = setup.quota
-		r.etcd = &restoredEtcd{Client: runEtcd(t, config).Client}
-	}
+	r.etcd = &restoredEtcd{Client: runEtcd(t, &testetcd.Config{QuotaBackendBytes: setup.quota}).Client}
 	key := r.ns + "/" + restoredCP + "-etcd"
 	restoredEtcds.Store(key, r.etcd)
 	t.Cleanup(func() { restoredEtcds.Delete(key) })

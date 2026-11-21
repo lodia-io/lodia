@@ -842,7 +842,7 @@ One knob sets the size of the fleet, the other the share of its tenants that han
 make fleet FLEET_TENANTS=1000 FLEET_HANGING=0.1
 ```
 
-A run needs a checkout, the Go of `go.mod` and setup-envtest's assets of Kubernetes 1.35.0, which `go tool setup-envtest` fetches on the first run, 157 MB; it needs no Docker and no kube context, since envtest starts a kube-apiserver and an etcd of its own and nothing reads a kubeconfig.
+A run needs a checkout, the Go of `go.mod`, setup-envtest's assets of Kubernetes 1.35.0, which `go tool setup-envtest` fetches on the first run, 157 MB, and etcd's release binary at `versions.EtcdVersion`, which `make fleet` fetches into `work/etcd`, 25 MB, for the one member the samples read; it needs no Docker and no kube context, since envtest starts a kube-apiserver and an etcd of its own and nothing reads a kubeconfig.
 It writes the report, the operator's log and the stand-ins' log to `work/fleet/`.
 At 300 tenants its process tree held 4.4 GiB at the most, the kube-apiserver 2.6 GiB of it, and took up to 13 cores while it created the fleet and in the wave and about one at rest, on 16 cores of an Apple M4 Max with `GOMAXPROCS=8`.
 At 1,000 tenants on Linux the kube-apiserver held 6.0 GiB at the most, etcd 0.9 GiB and the operator 1.6 GiB, so a run of 1,000 wants 16 GiB of memory; it took 26 minutes on 16 vCPUs.

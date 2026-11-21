@@ -65,9 +65,11 @@ What Lodia assumes of etcd-druid v0.39.2 and of the etcd-backup-restore v0.45.3 
 | etcd-druid holds its finalizer on every Secret an `Etcd` references ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/secret/reconciler.go#L44-L101)) | a terminating Secret counts as mounted | nothing |
 | etcd-druid's `BackupReady` follows the renewals of the snapshot Leases ([check_backup_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/health/condition/check_backup_ready.go#L34-L125)) | `BackupReady` | gate G3 |
 | a member without a leader leaves the client Service by etcd-druid's readiness probe ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L603-L610)) | the sampler's leader | nothing |
+| `UpgradeEtcdVersion` is on by default ([feature-gates.md](https://github.com/gardener/etcd-druid/blob/v0.39.2/docs/deployment/feature-gates.md#L26)) and selects the image `etcd-wrapper-next` ([image.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/utils/image.go#L40-L41)), v0.8.4 ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/images/images.yaml#L8-L13)), which is built on etcd 3.5.27 ([go.mod](https://github.com/gardener/etcd-wrapper/blob/v0.8.4/go.mod#L10)) | `versions.EtcdVersion`, the etcd that the tests of the seal, the restore's cleanup and marker, the sampler and the dial of a tenant's etcd run on | `internal/testetcd`, which fails on another version of etcd; nothing checks etcd-druid's image |
 
 ## Code
 
 - `internal/etcddruid` — the `Engine`: the reads, the render, the copy and the apply of an `Etcd`, the reconcile handshake with its sightings, the etcd's NetworkPolicy, the claims' names, the dialer, the tasks and the full snapshot Lease; `export_test.go` gives its external tests the handshake's wait.
 - `internal/etcddruid/druidtest` — etcd-druid's CRDs for envtest, and its writes for the tests.
 - `internal/etcddruid/seam_test.go` — the rule above.
+- `internal/testetcd` and `test/etcdbinary` — the helper that starts etcd's release binary at `versions.EtcdVersion` for the tests of Lodia's calls to etcd, and the command `make etcd` runs to fetch it.
