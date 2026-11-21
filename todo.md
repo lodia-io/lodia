@@ -280,3 +280,10 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `TestOneMemberRestoredThroughDeltas` (`nightly-restore.yml`) logs a replay's duration and its number of deltas; its runs on kind replayed 2 and 3 deltas in 0.65 s and 1.05 s, on a database of a few hundred revisions, so the assumption at the quota is still not measured.
   When #1045 and #1046 are fixed and released: bump the etcd-backup-restore image that etcd-druid's image vector names, lower the 1h floor in `api/v1alpha1/controlplane_types.go` to refuse 0 and below, since with 0 Events never expire, and drop the cases between 0 and 1h from `test/api/validation_test.go` and the restore's clause from `docs/api/controlplane.md`.
   Nothing in Lodia works around #1043 and #1044; the bump is all they take.
+
+## From the CI of etcd-druid behind a seam (2026-11-21)
+
+- `TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable/a_held_pass_that_counts_a_report_outside_the_table` (`internal/controller/workloads/authentication_test.go:571`) failed in the `verify` job of run [44937552607](https://github.com/lodia-io/lodia/actions/runs/44937552607), job 136947402314, at 494960f of #99, a pull request that touches nothing in `internal/controller/workloads`:
+  `context deadline exceeded: the API server reports "v1.37.1"`, while it waited for `v1.33.2`, the image the test had set.
+  The rerun of the job passed.
+  The cause is not found.
