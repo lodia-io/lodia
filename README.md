@@ -1,7 +1,18 @@
 # Lodia
 
+**The hosted control plane for nodes you do not own, run by a team too small to watch a fleet.**
+
 Lodia runs Kubernetes control planes as pods on a management cluster, one per tenant cluster, and lets worker nodes anywhere join them with `kubeadm`.
 Each control plane is an ordinary set of Deployments with an etcd of its own, described by one `ControlPlane` object; six independent controllers keep it certified, stored, running, reachable and up to date, and keep the tenant's workloads alive when the path to its nodes breaks.
+
+Measured, each by its test:
+
+- A minor upgrade fails no request: two loops of 20 requests a second, one against the public endpoint and one from a pod in the tenant, record zero failures ([G1](test/e2e/README.md#gate-g1-a-minor-upgrade), every pull request).
+- Each minor step is rehearsed on a copy of the tenant first, and a tenant that sets a feature gate the next minor removed stops there with its API server untouched (the same gate).
+- With every node cut off from the control plane for 10 minutes, no node is tainted and every pod keeps its UID ([G4](test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway), every night).
+- An operator upgrade reaches a tenant only inside its maintenance window ([G5](test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows), every pull request).
+- One idle control plane with an etcd of its own takes about 60 millicores and 400 MiB ([Capacity](docs/operations.md#capacity), every night).
+- One operator brings a synthetic fleet of 1,000 tenants to `Ready` within 5 minutes of its creation ([Scale](docs/operations.md#scale)).
 
 **Status: phase 3 of the [roadmap](docs/roadmap.md); phase 2's gate is built.**
 The six controllers are built, high availability included, and the Helm chart in [`charts/lodia`](charts/lodia) installs them from a checkout: there is no release yet.
