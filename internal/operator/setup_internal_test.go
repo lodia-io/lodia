@@ -67,7 +67,7 @@ func TestHealthNodesRunOnTheFilesValues(t *testing.T) {
 }
 
 func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
-	if got := newLifecycle(nil, nil, DefaultConfig(), "v1.0.0+0"); got.Settling != 45*time.Second || got.MaxConcurrentRollouts != 5 {
+	if got := newLifecycle(nil, nil, DefaultConfig(), 15*time.Second, "v1.0.0+0"); got.Settling != 45*time.Second || got.MaxConcurrentRollouts != 5 {
 		t.Errorf("at the defaults Settling = %s and MaxConcurrentRollouts = %d, want 45s and 5", got.Settling, got.MaxConcurrentRollouts)
 	}
 	cfg := DefaultConfig()
@@ -75,15 +75,28 @@ func TestLifecycleRunsOnTheFilesValues(t *testing.T) {
 	cfg.Health.FailuresBeforeFalse = 4
 	cfg.Fleet.MaxConcurrentRollouts = 2
 	cfg.Fleet.MaxConcurrentRehearsals = 0
-	got := newLifecycle(nil, nil, cfg, "v1.0.0+0")
+	got := newLifecycle(nil, nil, cfg, 15*time.Second, "v1.0.0+0")
 	if want := 4*(7*time.Second+newHealth(nil, nil, nil, cfg.Health).Timeout) + 15*time.Second; got.Settling != want {
 		t.Errorf("Settling = %s, want %s", got.Settling, want)
 	}
 	if got.MaxConcurrentRollouts != 2 || got.MaxConcurrentRehearsals != 0 || got.Revision != "v1.0.0+0" {
 		t.Errorf("MaxConcurrentRollouts = %d, MaxConcurrentRehearsals = %d and Revision = %q, want 2, 0 and v1.0.0+0", got.MaxConcurrentRollouts, got.MaxConcurrentRehearsals, got.Revision)
 	}
-	if got := newLifecycle(nil, nil, DefaultConfig(), "v1.0.0+0"); got.MaxConcurrentRehearsals != 5 {
+	if got := newLifecycle(nil, nil, DefaultConfig(), 15*time.Second, "v1.0.0+0"); got.MaxConcurrentRehearsals != 5 {
 		t.Errorf("at the defaults MaxConcurrentRehearsals = %d, want 5", got.MaxConcurrentRehearsals)
+	}
+}
+
+func TestEtcdDruidsStatusSyncReachesTheDatastoreAndLifecycle(t *testing.T) {
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", EtcdDruidStatusSync: 7 * time.Second, OperatorNamespace: "lodia"}
+	c := newControllers(managerOf{cache: cacheOf{secrets: secretsOf{}}, reader: &liveSecrets{secrets: secretsOf{}}}, in, "v1.0.0+0")
+	for name, druid := range map[string]*etcddruid.Engine{"the datastore controller": c.datastore.Druid, "the backup reconciler": c.backup.Druid, "the etcd sampler": c.sampler.Druid} {
+		if druid.StatusSync != 7*time.Second {
+			t.Errorf("%s polls etcd-druid's status every %s, want the flag's 7s", name, druid.StatusSync)
+		}
+	}
+	if want := newLifecycle(nil, nil, in.Config, 7*time.Second, "v1.0.0+0").Settling; c.lifecycle.Settling != want || want != 37*time.Second {
+		t.Errorf("Lifecycle settles for %s, want %s, 37s at the defaults and a sync of 7s", c.lifecycle.Settling, want)
 	}
 }
 
@@ -101,7 +114,7 @@ func TestTheRehearsalRunsOnTheFilesLimit(t *testing.T) {
 }
 
 func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T) {
-	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", EtcdDruidStatusSync: 15 * time.Second, OperatorNamespace: "lodia"}
 	in.Config.Fleet.MaxConcurrentRollouts = 2
 	revision, err := in.Revision()
 	if err != nil {
@@ -114,7 +127,7 @@ func TestTheMetricsRunOnTheFilesLimitAndTheRevisionLifecycleGrants(t *testing.T)
 	if got.EtcdSample == nil {
 		t.Error("the metrics serve no sample of the etcd sampler")
 	}
-	if want := newLifecycle(nil, nil, in.Config, revision); got.Revision != want.Revision || got.MaxConcurrentRollouts != want.MaxConcurrentRollouts {
+	if want := newLifecycle(nil, nil, in.Config, 15*time.Second, revision); got.Revision != want.Revision || got.MaxConcurrentRollouts != want.MaxConcurrentRollouts {
 		t.Errorf("the metrics run on revision %q and limit %d, want Lifecycle's %q and %d", got.Revision, got.MaxConcurrentRollouts, want.Revision, want.MaxConcurrentRollouts)
 	}
 	if got.MaxConcurrentRollouts != 2 {
@@ -236,7 +249,7 @@ func TestEveryReconcilerThatReadsTheAccessSecretsReadsThemThroughTheOneReader(t 
 		secrets[key] = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: name, UID: types.UID("uid-" + name), ResourceVersion: "1"}, Data: data}
 	}
 	live := &liveSecrets{secrets: secrets}
-	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", OperatorNamespace: "lodia"}
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", EtcdDruidStatusSync: 15 * time.Second, OperatorNamespace: "lodia"}
 	c := newControllers(managerOf{cache: cacheOf{secrets: secrets}, reader: live}, in, "v1.0.0+0")
 
 	if _, ok := c.health.Secrets.(*secretcache.Reader); !ok {

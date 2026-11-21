@@ -27,10 +27,12 @@ etcdDruid:
     controllers:
       etcd:
         enableEtcdSpecAutoReconcile: false
+        etcdStatusSyncPeriod: 15s
 
 etcdDruidNamespace: ""
 etcdDruidVersion: ""
 etcdDruidDeployment: ""
+etcdDruidStatusSyncPeriod: ""
 
 health:
   period: 5s

@@ -459,7 +459,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	return k8s, stopped
 }
 
-var testInputs = operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "etcd-druid", EtcdDruidDeployment: "etcd-druid", OperatorNamespace: "lodia-system"}
+var testInputs = operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "etcd-druid", EtcdDruidDeployment: "etcd-druid", EtcdDruidStatusSync: 15 * time.Second, OperatorNamespace: "lodia-system"}
 
 func createControlPlane(t *testing.T, k8s client.Client) *lodiav1alpha1.ControlPlane {
 	t.Helper()

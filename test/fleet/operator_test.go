@@ -113,7 +113,7 @@ func operate(s operatorSettings) error {
 	config.Fleet.MaxConcurrentRollouts = s.MaxConcurrentRollouts
 	in := operator.Inputs{
 		Config: config, Version: s.Version, SignerImage: "registry.example/lodia-signer:fleet", TunnelImage: "registry.example/lodia-tunnel:fleet",
-		EtcdDruidVersion: druidVersion, EtcdDruidNamespace: druidNamespace, EtcdDruidDeployment: druidDeployment, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI,
+		EtcdDruidVersion: druidVersion, EtcdDruidNamespace: druidNamespace, EtcdDruidDeployment: druidDeployment, EtcdDruidStatusSync: 15 * time.Second, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI,
 		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", s.Tenants)
 		},

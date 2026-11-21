@@ -113,7 +113,7 @@ const (
 )
 
 func newDruid() *etcddruid.Engine {
-	return &etcddruid.Engine{Namespace: druidNamespace, Deployment: druidDeployment, Version: druidVersion}
+	return &etcddruid.Engine{Namespace: druidNamespace, Deployment: druidDeployment, Version: druidVersion, StatusSync: 15 * time.Second}
 }
 
 func TestMain(m *testing.M) {

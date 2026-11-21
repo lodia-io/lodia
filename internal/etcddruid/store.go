@@ -448,8 +448,8 @@ func (s *Store) DeltaSnapshotPeriod() (time.Duration, bool) {
 	return period.Duration, true
 }
 
-// etcd-druid refreshes every Etcd's status every 15 seconds
-// (etcd-druid@v0.39.2 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63)
+// etcd-druid refreshes every Etcd's status every StatusSync, 15 seconds by
+// default (etcd-druid@v0.39.2 api/config/v1alpha1/defaults.go#L104, charts/values.yaml#L63),
 // with new timestamps alone; only a change readiness, status.datastore,
 // membersHeld or a request to etcd-druid reads gets a pass.
 func etcdChanged() predicate.Funcs {

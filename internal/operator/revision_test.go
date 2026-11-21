@@ -49,6 +49,7 @@ func TestTheRevisionIsTheVersionAndADigestOfTheRunTimeInputs(t *testing.T) {
 	other := revisionInputs()
 	other.Config.Health.Period.Duration++
 	other.GatewayAPI = !other.GatewayAPI
+	other.EtcdDruidStatusSync++
 	if got := revisionOf(t, other); got != revision {
 		t.Errorf("an input outside the digest changed the revision from %q to %q", revision, got)
 	}

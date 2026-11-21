@@ -45,11 +45,6 @@ import (
 
 const healthTimeout = 5 * time.Second
 
-// etcdDruidStatusSync is how often etcd-druid syncs an Etcd's status, its
-// chart's etcdStatusSyncPeriod
-// (https://github.com/gardener/etcd-druid/blob/v0.39.2/charts/values.yaml#L63).
-const etcdDruidStatusSync = 15 * time.Second
-
 // Scheme holds the kinds the controllers read and write.
 func Scheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
@@ -122,7 +117,8 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 // LoadConfig returned, Version the operator's build version, SignerImage
 // lodia-signer's, which runs beside each API server, TunnelImage
 // lodia-tunnel's, which runs on each node of a gateway tenant,
-// EtcdDruidVersion, EtcdDruidNamespace and EtcdDruidDeployment etcd-druid's,
+// EtcdDruidVersion, EtcdDruidNamespace, EtcdDruidDeployment and
+// EtcdDruidStatusSync etcd-druid's,
 // OperatorNamespace the operator's, which each etcd's NetworkPolicy admits,
 // and GatewayAPI what GatewayAPI found. Dial, when set, opens every
 // connection PKI, Tenant, Health and the rehearsal make to a tenant, whose
@@ -135,6 +131,7 @@ type Inputs struct {
 	EtcdDruidVersion    string
 	EtcdDruidNamespace  string
 	EtcdDruidDeployment string
+	EtcdDruidStatusSync time.Duration
 	OperatorNamespace   string
 	GatewayAPI          bool
 	Dial                func(ctx context.Context, network, address string) (net.Conn, error)
@@ -168,7 +165,7 @@ type controllers struct {
 
 func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 	secrets := secretcache.New(mgr.GetCache(), mgr.GetAPIReader())
-	druid := &etcddruid.Engine{Namespace: in.EtcdDruidNamespace, Deployment: in.EtcdDruidDeployment, Version: in.EtcdDruidVersion}
+	druid := &etcddruid.Engine{Namespace: in.EtcdDruidNamespace, Deployment: in.EtcdDruidDeployment, Version: in.EtcdDruidVersion, StatusSync: in.EtcdDruidStatusSync}
 	dialEtcd := func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
 		return druid.Dial(ctx, secrets, etcd)
 	}
@@ -196,7 +193,7 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 		},
 		backup:    &datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
 		sampler:   &datastore.SampleReconciler{Cache: mgr.GetCache(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
-		lifecycle: newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision),
+		lifecycle: newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, in.EtcdDruidStatusSync, revision),
 		tenant:    &tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: secrets, ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial},
 		health:    newHealth(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
 		nodes:     newNodes(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
@@ -274,12 +271,12 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 // newLifecycle settles a change Lodia started for as long as Health takes to
 // turn Reachable False and etcd-druid to sync a member's loss into
 // DatastoreReady (docs/decisions/upgrades-and-maintenance-windows.md).
-func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision string) *lifecycle.Reconciler {
+func newLifecycle(c client.Client, reader client.Reader, cfg Config, statusSync time.Duration, revision string) *lifecycle.Reconciler {
 	return &lifecycle.Reconciler{
 		Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: revision,
 		MaxConcurrentRollouts:   cfg.Fleet.MaxConcurrentRollouts,
 		MaxConcurrentRehearsals: cfg.Fleet.MaxConcurrentRehearsals,
-		Settling:                time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
+		Settling:                time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + statusSync,
 	}
 }
 

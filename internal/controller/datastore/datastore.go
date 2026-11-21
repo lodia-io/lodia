@@ -569,7 +569,7 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 	}
 	requeueAfter := p.heldFor
 	if updated := etcd.UpdatedMembers(p.rollout); updated == nil || *updated < etcd.Members() || !etcd.Served() {
-		requeueAfter = 15 * time.Second
+		requeueAfter = r.Druid.StatusSync
 	}
 	return &outcome{etcd: etcd, rollout: p.rollout, applied: true, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
 }

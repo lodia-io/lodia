@@ -8,6 +8,8 @@
 package etcddruid
 
 import (
+	"time"
+
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -25,6 +27,9 @@ type Engine struct {
 	// operator revision.
 	Deployment string
 	Version    string
+	// StatusSync is etcd-druid's etcdStatusSyncPeriod, how often it syncs an
+	// Etcd's status.
+	StatusSync time.Duration
 	// sightings is, per Etcd, when this operator first saw its run Processing.
 	sightings map[client.ObjectKey]sighting
 }
