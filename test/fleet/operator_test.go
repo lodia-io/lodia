@@ -40,6 +40,7 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -121,7 +122,7 @@ func operate(s operatorSettings) error {
 	if err != nil {
 		return err
 	}
-	sources.Etcd.EtcdClient = sampleEtcd(sources.Health.Secrets, s.Etcd)
+	sources.Etcd.EtcdClient = sampleEtcd(mgr.GetCache(), sources.Health.Secrets, s.Etcd)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -134,10 +135,14 @@ func operate(s operatorSettings) error {
 	return mgr.Start(ctrl.SetupSignalHandler())
 }
 
-// sampleEtcd reads the two Secrets datastore.DialEtcd reads, and connects to
+// sampleEtcd reads the two Secrets etcddruid.Engine.Dial reads, and connects to
 // the one member that stands in for every tenant's etcd, without TLS.
-func sampleEtcd(reader client.Reader, endpoint string) func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-	return func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+func sampleEtcd(cache, reader client.Reader, endpoint string) func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
+	return func(ctx context.Context, store *etcddruid.Store) (*clientv3.Client, error) {
+		etcd := &druidv1alpha1.Etcd{}
+		if err := cache.Get(ctx, client.ObjectKey{Namespace: store.Namespace(), Name: store.Name()}, etcd); err != nil {
+			return nil, err
+		}
 		refs := etcd.Spec.Etcd.ClientUrlTLS
 		if refs == nil {
 			return nil, fmt.Errorf("no client TLS in Etcd %s", etcd.Name)

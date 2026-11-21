@@ -21,9 +21,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/secretcache"
 )
 
@@ -245,15 +247,19 @@ func TestEveryReconcilerThatReadsTheAccessSecretsReadsThemThroughTheOneReader(t 
 			t.Errorf("%s reads Secrets through %T, want health's", name, got)
 		}
 	}
-	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}}
+	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "dev-etcd", Namespace: "team-a"}}
 	etcd.Spec.Etcd.ClientUrlTLS = &druidv1alpha1.TLSConfig{
 		TLSCASecretRef:     druidv1alpha1.SecretReference{SecretReference: corev1.SecretReference{Name: "dev-etcd-ca"}},
 		ClientTLSSecretRef: corev1.SecretReference{Name: "dev-etcd-client"},
 	}
-	for name, dial := range map[string]func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error){
+	store, err := c.datastore.Druid.Get(t.Context(), fake.NewClientBuilder().WithScheme(Scheme()).WithObjects(etcd).Build(), &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, dial := range map[string]func(context.Context, *etcddruid.Store) (*clientv3.Client, error){
 		"the datastore controller": c.datastore.EtcdClient, "the backup reconciler": c.backup.EtcdClient, "the etcd sampler": c.sampler.EtcdClient,
 	} {
-		dialled, err := dial(t.Context(), etcd)
+		dialled, err := dial(t.Context(), store)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}

@@ -11,7 +11,6 @@ import (
 	"slices"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -27,6 +26,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -113,7 +113,7 @@ type restoreMarker struct {
 }
 
 func restoring(message string) *metav1.Condition {
-	condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, message)
+	condition := notReady(lodiav1alpha1.ReasonRestoring, message)
 	return &condition
 }
 
@@ -132,22 +132,22 @@ func restoreTaskMeta(cp *lodiav1alpha1.ControlPlane) metav1.ObjectMeta {
 // succeeded; an Etcd started on an empty prefix would start empty. Nil means
 // it may. A sealed Backup being deleted restores too: its finalizer keeps it
 // for the restores that name it.
-func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, rendered *druidv1alpha1.Etcd) (*metav1.Condition, time.Duration, error) {
+func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, rendered *etcddruid.Store) (*metav1.Condition, time.Duration, error) {
 	name := cp.Spec.RestoreFrom.BackupRef.Name
 	backup := &lodiav1alpha1.Backup{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, backup); err != nil {
 		if apierrors.IsNotFound(err) {
-			condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonBackupNotFound, "no Backup "+name)
+			condition := notReady(lodiav1alpha1.ReasonBackupNotFound, "no Backup "+name)
 			return &condition, 0, nil
 		}
 		return nil, 0, fmt.Errorf("read Backup %s: %w", name, err)
 	}
 	if reason, message := unsealed(backup); reason != "" {
-		condition := newCondition(metav1.ConditionFalse, reason, message)
+		condition := notReady(reason, message)
 		return &condition, 0, nil
 	}
 	if message := incompatible(cp, backup, rendered); message != "" {
-		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonBackupIncompatible, message)
+		condition := notReady(lodiav1alpha1.ReasonBackupIncompatible, message)
 		return &condition, 0, nil
 	}
 	recorded := ptr.Deref(backup.Status.Snapshots, lodiav1alpha1.BackupSnapshotLocation{})
@@ -155,31 +155,17 @@ func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.Control
 		if err != nil {
 			return nil, 0, err
 		}
-		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoreFailed, message)
+		condition := notReady(lodiav1alpha1.ReasonRestoreFailed, message)
 		return &condition, 0, nil
 	}
 
-	task := &druidv1alpha1.EtcdCopyBackupsTask{}
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: restoreTaskPrefix + string(cp.UID)}
-	err := r.Get(ctx, key, task)
+	task, err := r.Druid.CopyOf(ctx, r.Client, key)
 	copying := fmt.Sprintf("copying Backup %s into this ControlPlane's prefix: EtcdCopyBackupsTask %s", name, key.Name)
 	switch {
 	case apierrors.IsNotFound(err):
-		source := druidv1alpha1.StoreSpec{
-			Provider:  new(druidv1alpha1.StorageProvider(recorded.Provider)),
-			Container: new(recorded.Bucket),
-			Prefix:    recorded.Prefix,
-			SecretRef: &corev1.SecretReference{Name: lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)},
-		}
-		if recorded.Endpoint != "" {
-			source.EndpointOverride = new(recorded.Endpoint)
-		}
-		task = &druidv1alpha1.EtcdCopyBackupsTask{
-			ObjectMeta: restoreTaskMeta(cp),
-			Spec:       druidv1alpha1.EtcdCopyBackupsTaskSpec{SourceStore: source, TargetStore: *rendered.Spec.Backup.Store.DeepCopy(), MaxBackups: new(uint32(1))},
-		}
-		if err := r.Create(ctx, task, client.FieldOwner(FieldManager)); err != nil && !apierrors.IsAlreadyExists(err) {
-			return nil, 0, fmt.Errorf("create EtcdCopyBackupsTask %s: %w", key.Name, err)
+		if err := r.Druid.CopyFrom(ctx, r.Client, FieldManager, restoreTaskMeta(cp), recorded.SnapshotLocation, lodiav1alpha1.EtcdBackupSecret.Name(cp.Name), rendered); err != nil {
+			return nil, 0, err
 		}
 		return restoring(copying), 0, nil
 	case err != nil:
@@ -189,21 +175,17 @@ func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.Control
 	// (etcd-backup-restore@v0.45.3 pkg/snapshot/copier/copier.go#L127-L151),
 	// so another task completes what a failed one left. The failed one stays a
 	// minute, so that its Job and status.lastError can be read.
-	if failed := copyCondition(task, druidv1alpha1.EtcdCopyBackupsTaskFailed); failed != nil {
-		why := failed.Message
-		if why == "" {
-			why = ptr.Deref(task.Status.LastError, failed.Reason)
-		}
+	if why, at, failed := task.Failed(); failed {
 		condition := restoring(fmt.Sprintf("the copy of Backup %s failed: %s; copying again", name, why))
-		if wait := failed.LastTransitionTime.Add(time.Minute).Sub(r.Clock.Now()); wait > 0 {
+		if wait := at.Add(time.Minute).Sub(r.Clock.Now()); wait > 0 {
 			return condition, wait, nil
 		}
-		if err := client.IgnoreNotFound(r.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
+		if err := client.IgnoreNotFound(r.Druid.DeleteCopy(ctx, r.Client, task)); err != nil {
 			return nil, 0, fmt.Errorf("delete EtcdCopyBackupsTask %s: %w", key.Name, err)
 		}
 		return condition, 0, nil
 	}
-	if copyCondition(task, druidv1alpha1.EtcdCopyBackupsTaskSucceeded) == nil {
+	if !task.Succeeded() {
 		return restoring(copying), 0, nil
 	}
 	return nil, 0, nil
@@ -231,7 +213,7 @@ func unsealed(backup *lodiav1alpha1.Backup) (string, string) {
 // incompatible names the first of the Backup's records that this
 // ControlPlane does not match: its minor, its network, and the quota the
 // source's etcd had, which the first Etcd's must reach.
-func incompatible(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup, rendered *druidv1alpha1.Etcd) string {
+func incompatible(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup, rendered *etcddruid.Store) string {
 	recorded, _ := versions.Minor(backup.Status.KubernetesVersion)
 	minor, _ := versions.Minor(cp.Spec.Version)
 	network := ptr.Deref(backup.Status.Network, lodiav1alpha1.Network{})
@@ -248,9 +230,9 @@ func incompatible(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup, 
 		return differs("podCIDRs", cp.Spec.Network.PodCIDRs, network.PodCIDRs)
 	case cp.Spec.Network.ClusterDomain != network.ClusterDomain:
 		return differs("clusterDomain", cp.Spec.Network.ClusterDomain, network.ClusterDomain)
-	case seal.QuotaBackendBytes != nil && rendered.Spec.Etcd.Quota.Cmp(*seal.QuotaBackendBytes) < 0:
+	case seal.QuotaBackendBytes != nil && rendered.Quota().Cmp(*seal.QuotaBackendBytes) < 0:
 		return fmt.Sprintf("Backup %s comes from an etcd with quota %s; this ControlPlane's class gives %s: use a class with at least %s",
-			backup.Name, seal.QuotaBackendBytes.String(), rendered.Spec.Etcd.Quota.String(), seal.QuotaBackendBytes.String())
+			backup.Name, seal.QuotaBackendBytes.String(), rendered.Quota().String(), seal.QuotaBackendBytes.String())
 	}
 	return ""
 }
@@ -258,17 +240,17 @@ func incompatible(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup, 
 // storeDiffers names how the store the first Etcd would use differs from the
 // one the Backup was sealed in, the keys of the credentials copy that name a
 // store included, as the backup reconciler compares them.
-func (r *Reconciler) storeDiffers(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, backup *lodiav1alpha1.Backup, recorded lodiav1alpha1.BackupSnapshotLocation, rendered *druidv1alpha1.Etcd) (string, error) {
-	store := rendered.Spec.Backup.Store
+func (r *Reconciler) storeDiffers(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, backup *lodiav1alpha1.Backup, recorded lodiav1alpha1.BackupSnapshotLocation, rendered *etcddruid.Store) (string, error) {
+	store := rendered.Snapshots()
 	if store == nil {
 		return fmt.Sprintf("DatastoreClass %s has no backup store, while Backup %s was sealed in %s: point the class back at that store, or restore another Backup", class.Name, backup.Name, storeOf(recorded.SnapshotLocation)), nil
 	}
 	credentials := lodiav1alpha1.EtcdBackupSecret.Name(cp.Name)
-	fromSecret, err := storeSecretFields(ctx, r.Reader, rendered, credentials)
+	fromSecret, err := storeSecretFields(ctx, r.Reader, rendered.Namespace(), store.Provider, credentials)
 	if err != nil {
 		return "", fmt.Errorf("read Secret %s: %w", credentials, err)
 	}
-	key, was, is := storeMoved(recorded, snapshotLocation(store, fromSecret, backup.UID))
+	key, was, is := storeMoved(recorded, snapshotLocation(*store, fromSecret, backup.UID))
 	switch {
 	case was == "":
 		return "", nil
@@ -317,9 +299,9 @@ func (r *Reconciler) restoreMembers(ctx context.Context, p *pass) error {
 	switch {
 	case cp.Spec.RestoreFrom == nil || p.check.restored != nil || p.members == 1:
 	case p.current == nil:
-		p.members = claimedMembers(cp.Name, p.claims, p.members)
+		p.members = r.claimedMembers(cp.Name, p.claims, p.members)
 	default:
-		raised, err := r.raised(ctx, p.current)
+		raised, err := r.Druid.Raised(ctx, r.Reader, p.current)
 		if err != nil {
 			return err
 		}
@@ -358,13 +340,13 @@ func (r *Reconciler) gateFirstEtcd(ctx context.Context, p *pass) (*outcome, erro
 // the store, never a status. It takes the steps left: the seal check, the
 // cleanup and the full snapshot. A check that cannot run, on an etcd with no
 // ready member or one that does not answer, changes nothing.
-func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (restoreCheck, error) {
-	if min(etcd.Status.ReadyReplicas, etcd.Spec.Replicas) == 0 {
+func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store) (restoreCheck, error) {
+	if etcd.ReadyMembers() == 0 {
 		return restoreCheck{}, nil
 	}
 	c, err := r.EtcdClient(ctx, etcd)
 	if err != nil {
-		return unanswered(ctx, cp, etcd, fmt.Errorf("connect to the etcd of Etcd %s: %w", etcd.Name, err)), nil
+		return unanswered(ctx, cp, etcd, fmt.Errorf("connect to the etcd of Etcd %s: %w", etcd.Name(), err)), nil
 	}
 	defer func() { _ = c.Close() }()
 	var marker *clientv3.GetResponse
@@ -378,7 +360,7 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 	var revision int64
 	if len(marker.Kvs) > 0 {
 		if err := json.Unmarshal(marker.Kvs[0].GetValue(), &value); err != nil {
-			return restoreCheck{}, fmt.Errorf("read the marker %s in the etcd of Etcd %s: %w", RestoreMarkerKey(cp.UID), etcd.Name, err)
+			return restoreCheck{}, fmt.Errorf("read the marker %s in the etcd of Etcd %s: %w", RestoreMarkerKey(cp.UID), etcd.Name(), err)
 		}
 		revision = marker.Kvs[0].GetCreateRevision()
 	} else {
@@ -388,21 +370,21 @@ func (r *Reconciler) checkRestore(ctx context.Context, cp *lodiav1alpha1.Control
 		}
 	}
 
-	held, ignored, err := fullSnapshotRevision(ctx, r.Reader, etcd)
+	held, ignored, err := r.Druid.FullSnapshotRevision(ctx, r.Reader, etcd)
 	if err != nil {
 		return restoreCheck{}, err
 	}
 	if held >= revision {
 		return restoreCheck{restored: restored(cp, value)}, r.tidyRestore(ctx, cp)
 	}
-	state, wait, err := r.snapshotRestore(ctx, cp, etcd)
+	state, wait, err := r.Druid.RestoredSnapshot(ctx, r.Client, r.Clock, FieldManager, restoreTaskMeta(cp), etcd)
 	if err != nil {
 		return restoreCheck{}, err
 	}
 	message := fmt.Sprintf("cleaned up; waiting for a full snapshot of revision %d: the store holds %d; EtcdOpsTask %s is %s",
 		revision, held, restoreTaskPrefix+string(cp.UID), state)
 	if ignored {
-		message += fmt.Sprintf("; ignored Lease %s, created before Etcd %s", druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta), etcd.Name)
+		message += fmt.Sprintf("; ignored Lease %s, created before Etcd %s", etcd.FullSnapshotLease(), etcd.Name())
 	}
 	return restoreCheck{condition: restoring(message), requeueAfter: sooner(10*time.Second, wait)}, nil
 }
@@ -415,8 +397,8 @@ func request(ctx context.Context, call func(context.Context) error) error {
 
 // unanswered changes nothing of a recorded restore: its Etcd's readiness
 // stands.
-func unanswered(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, err error) restoreCheck {
-	logf.FromContext(ctx).Error(err, "check the restore in the etcd", "etcd", etcd.Name)
+func unanswered(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, err error) restoreCheck {
+	logf.FromContext(ctx).Error(err, "check the restore in the etcd", "etcd", etcd.Name())
 	check := restoreCheck{requeueAfter: 10 * time.Second}
 	if cp.Status.Restore == nil {
 		check.condition = restoring("waiting for etcd of " + cp.Name + " to answer")
@@ -428,7 +410,7 @@ func unanswered(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druid
 // cleans it up, and returns the marker's value and revision, or the check
 // that stops the restore here. Once the restore is recorded, the status names
 // the Backup, which may be gone.
-func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, c *clientv3.Client) (restoreMarker, int64, *restoreCheck, error) {
+func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, c *clientv3.Client) (restoreMarker, int64, *restoreCheck, error) {
 	var value restoreMarker
 	if recorded := cp.Status.Restore; recorded != nil {
 		value = restoreMarker{Backup: recorded.Backup, Source: recorded.Source}
@@ -437,7 +419,7 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		backup := &lodiav1alpha1.Backup{}
 		if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: name}, backup); err != nil {
 			if apierrors.IsNotFound(err) {
-				condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonBackupNotFound, "no Backup "+name)
+				condition := notReady(lodiav1alpha1.ReasonBackupNotFound, "no Backup "+name)
 				return restoreMarker{}, 0, &restoreCheck{condition: &condition}, nil
 			}
 			return restoreMarker{}, 0, nil, fmt.Errorf("read Backup %s: %w", name, err)
@@ -452,7 +434,7 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		return restoreMarker{}, 0, new(unanswered(ctx, cp, etcd, err)), nil
 	}
 	if len(seal.Kvs) == 0 || string(seal.Kvs[0].GetValue()) != string(value.Backup.UID) {
-		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
+		condition := notReady(lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
 			"the restored etcd lacks %s, the seal of Backup %s: the copy is not that Backup's; nothing was cleaned up and no API server starts; delete this ControlPlane and restore another Backup",
 			contract.BackupSealKey(value.Backup.UID), value.Backup.Name))
 		return restoreMarker{}, 0, &restoreCheck{condition: &condition}, nil
@@ -472,54 +454,11 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	case err != nil:
 		return restoreMarker{}, 0, new(unanswered(ctx, cp, etcd, err)), nil
 	case revision == 0:
-		condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
+		condition := notReady(lodiav1alpha1.ReasonRestoreFailed, fmt.Sprintf(
 			"the cleanup would delete %d keys; etcd-backup-restore replays a revision as one transaction of at most %d operations (pkg/types/restorer.go:27)", keys, cleanupBound))
 		return restoreMarker{}, 0, &restoreCheck{condition: &condition}, nil
 	}
 	return value, revision, nil, nil
-}
-
-// snapshotRestore asks etcd-druid for a full snapshot of the restored etcd
-// until the full snapshot Lease shows the marker, as the backup reconciler
-// does for a seal, and says the task's state and how long it waits. resend
-// is timed from when the Etcd's Ready condition turned True, without which
-// etcd-druid takes no on-demand snapshot
-// (etcd-druid@v0.39.2 internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188),
-// and from the Etcd's creation while it is not True or, for a task etcd-druid
-// ran rather than rejected at admission
-// (etcd-druid@v0.39.2 internal/controller/etcdopstask/reconcile_task.go#L83-L121),
-// when it turned True after etcd-druid admitted the task (its startedAt,
-// etcd-druid@v0.39.2 internal/controller/etcdopstask/utils.go#L91-L94), so
-// that a member back from an outage does not shorten the wait after a full
-// snapshot.
-func (r *Reconciler) snapshotRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (string, time.Duration, error) {
-	task := &druidv1alpha1.EtcdOpsTask{}
-	key := client.ObjectKey{Namespace: cp.Namespace, Name: restoreTaskPrefix + string(cp.UID)}
-	err := r.Get(ctx, key, task)
-	switch {
-	case apierrors.IsNotFound(err):
-		task = &druidv1alpha1.EtcdOpsTask{
-			ObjectMeta: restoreTaskMeta(cp),
-			Spec: druidv1alpha1.EtcdOpsTaskSpec{
-				Config:   druidv1alpha1.EtcdOpsTaskConfig{OnDemandSnapshot: &druidv1alpha1.OnDemandSnapshotConfig{Type: druidv1alpha1.OnDemandSnapshotTypeFull}},
-				EtcdName: new(etcd.Name),
-			},
-		}
-		if err := r.Create(ctx, task, client.FieldOwner(FieldManager)); err != nil && !apierrors.IsAlreadyExists(err) {
-			return "", 0, fmt.Errorf("create EtcdOpsTask %s: %w", key.Name, err)
-		}
-		return "created", 0, nil
-	case err != nil:
-		return "", 0, err
-	case task.IsCompleted():
-		start := etcd.CreationTimestamp.Time
-		if ready := druidv1alpha1.GetCondition(etcd, druidv1alpha1.ConditionTypeReady); ready != nil && ready.Status == druidv1alpha1.ConditionTrue &&
-			(*task.Status.State == druidv1alpha1.TaskStateRejected || !ready.LastTransitionTime.After(ptr.Deref(task.Status.StartedAt, task.CreationTimestamp).Time)) {
-			start = ready.LastTransitionTime.Time
-		}
-		return resend(ctx, r.Client, r.Clock.Now(), task, start)
-	}
-	return string(ptr.Deref(task.Status.State, "not admitted yet")), 0, nil
 }
 
 // restored is the status of a complete restore, from the marker's value; it
@@ -535,7 +474,7 @@ func restored(cp *lodiav1alpha1.ControlPlane, value restoreMarker) *lodiav1alpha
 func (r *Reconciler) tidyRestore(ctx context.Context, cp *lodiav1alpha1.ControlPlane) error {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: restoreTaskPrefix + string(cp.UID)}
 	var errs []error
-	for _, task := range []client.Object{&druidv1alpha1.EtcdCopyBackupsTask{}, &druidv1alpha1.EtcdOpsTask{}} {
+	for _, task := range []client.Object{r.Druid.CopyTaskObject(), r.Druid.SnapshotTaskObject()} {
 		if err := r.Get(ctx, key, task); err != nil {
 			errs = append(errs, client.IgnoreNotFound(err))
 			continue
@@ -569,7 +508,7 @@ func (r *Reconciler) caPredates(ctx context.Context, cp *lodiav1alpha1.ControlPl
 	}
 	for _, ca := range cas {
 		if issued := ca.NotBefore.Add(certs.Backdate); issued.Before(cp.CreationTimestamp.Time) {
-			condition := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonCAPredatesControlPlane, fmt.Sprintf(
+			condition := notReady(lodiav1alpha1.ReasonCAPredatesControlPlane, fmt.Sprintf(
 				"the cluster CA %s in %s was issued at %s, before this ControlPlane was created at %s: its Secrets came back and its data did not, and nodes that trust it would join an empty cluster. Restore the management cluster from a backup that keeps UIDs, or delete %s and %s for a new identity",
 				ca.Subject.String(), name, issued.UTC().Format(time.RFC3339), cp.CreationTimestamp.UTC().Format(time.RFC3339), name, cp.Name+"-cakey-cluster"))
 			return &condition, nil

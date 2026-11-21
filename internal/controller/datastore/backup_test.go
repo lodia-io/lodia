@@ -42,6 +42,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -108,10 +109,10 @@ func setLease(t *testing.T, ns, name string, holder int64) {
 }
 
 func (s *source) reconciler(c client.Client) *datastore.BackupReconciler {
-	return &datastore.BackupReconciler{Client: c, Reader: apiReader, EtcdClient: s.dial, Clock: clock.RealClock{}}
+	return &datastore.BackupReconciler{Druid: newDruid(), Client: c, Reader: apiReader, EtcdClient: s.dial, Clock: clock.RealClock{}}
 }
 
-func (s *source) dial(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+func (s *source) dial(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
 	return clientv3.New(clientv3.Config{Endpoints: s.etcd.Endpoints(), DialTimeout: 5 * time.Second})
 }
 
@@ -1157,7 +1158,7 @@ func runBackupReconciler(t *testing.T, s *source) client.Reader {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (&datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: s.dial, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
+	if err := (&datastore.BackupReconciler{Druid: newDruid(), Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: s.dial, Clock: clock.RealClock{}}).SetupWithManager(mgr, 1); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1515,7 +1516,7 @@ func TestABackupWaitsForTheCredentialsCopy(t *testing.T) {
 	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
-	hidden := &datastore.BackupReconciler{Client: cached, Reader: hiding{apiReader, "src-etcd-backup"}, EtcdClient: src.dial, Clock: clock.RealClock{}}
+	hidden := &datastore.BackupReconciler{Druid: newDruid(), Client: cached, Reader: hiding{apiReader, "src-etcd-backup"}, EtcdClient: src.dial, Clock: clock.RealClock{}}
 	created := createBackup(t, src.ns, "early", nil)
 	waiting := readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "no Secret src-etcd-backup, whose keys name part of the store")
 	for _, sealedYet := range []bool{false, true} {
@@ -1636,7 +1637,7 @@ func (c conflictOnce) Patch(ctx context.Context, obj client.Object, patch client
 func TestTheRestoreSourceFinalizer(t *testing.T) {
 	t.Parallel()
 	ns := namespace(t)
-	r := &datastore.BackupReconciler{Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
+	r := &datastore.BackupReconciler{Druid: newDruid(), Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
 	pass := func(t *testing.T, r *datastore.BackupReconciler, name string) {
 		t.Helper()
 		if _, err := reconcileBackup(r, ns, name); err != nil {
@@ -1763,7 +1764,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		b, _ := backup(t, "fresh", nil)
 		restoring(t, "fresh", b.Name)
 		deleteBackup(t, b.Name)
-		blind := &datastore.BackupReconciler{Client: missingControlPlanes{Client: cached}, Reader: apiReader, Clock: clock.RealClock{}}
+		blind := &datastore.BackupReconciler{Druid: newDruid(), Client: missingControlPlanes{Client: cached}, Reader: apiReader, Clock: clock.RealClock{}}
 		pass(t, blind, b.Name)
 		held(t, b.Name)
 	})
@@ -1771,7 +1772,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		b, keys := backup(t, "uncached", nil)
 		cp := restoring(t, "uncached", b.Name)
 		deleteBackup(t, b.Name)
-		blind := &datastore.BackupReconciler{Client: uncachedSecret{Client: cached, name: keys.Name}, Reader: apiReader, Clock: clock.RealClock{}}
+		blind := &datastore.BackupReconciler{Druid: newDruid(), Client: uncachedSecret{Client: cached, name: keys.Name}, Reader: apiReader, Clock: clock.RealClock{}}
 		pass(t, blind, b.Name)
 		held(t, b.Name)
 		ownKeys(t, cp)
@@ -1785,7 +1786,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	t.Run("held while the ControlPlanes cannot be listed", func(t *testing.T) {
 		b, _ := backup(t, "unlisted", nil)
 		deleteBackup(t, b.Name)
-		down := &datastore.BackupReconciler{Client: cached, Reader: unlistedControlPlanes{apiReader}, Clock: clock.RealClock{}}
+		down := &datastore.BackupReconciler{Druid: newDruid(), Client: cached, Reader: unlistedControlPlanes{apiReader}, Clock: clock.RealClock{}}
 		if _, err := reconcileBackup(down, ns, b.Name); !errors.Is(err, errUnlisted) {
 			t.Fatalf("a pass that cannot list the ControlPlanes returned %v, want the List's error", err)
 		}
@@ -1796,7 +1797,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	t.Run("held while its keys cannot be read", func(t *testing.T) {
 		b, keys := backup(t, "unreadable", nil)
 		deleteBackup(t, b.Name)
-		down := &datastore.BackupReconciler{Client: cached, Reader: unreadableSecret{Reader: apiReader, name: keys.Name}, Clock: clock.RealClock{}}
+		down := &datastore.BackupReconciler{Druid: newDruid(), Client: cached, Reader: unreadableSecret{Reader: apiReader, name: keys.Name}, Clock: clock.RealClock{}}
 		if _, err := reconcileBackup(down, ns, b.Name); !errors.Is(err, errUnreadable) {
 			t.Fatalf("a pass that cannot read %s returned %v, want the Get's error", keys.Name, err)
 		}
@@ -1811,7 +1812,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		b, keys := backup(t, "conflicting", nil)
 		deleteBackup(t, b.Name)
 		done := false
-		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: keys.Name, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
+		racing := &datastore.BackupReconciler{Druid: newDruid(), Client: conflictOnce{Client: cached, name: keys.Name, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
 		if result, err := reconcileBackup(racing, ns, b.Name); err != nil || result.RequeueAfter != time.Second {
 			t.Fatalf("a pass whose release of %s conflicts returned %+v, %v; want a requeue after a second", keys.Name, result, err)
 		}
@@ -1861,7 +1862,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		cp := restoring(t, "unmarked", b.Name)
 		deleteBackup(t, b.Name)
 		writes := 0
-		refusing := &datastore.BackupReconciler{Client: refusingNth{Client: cached, writes: &writes, nth: 1}, Reader: apiReader, Clock: clock.RealClock{}}
+		refusing := &datastore.BackupReconciler{Druid: newDruid(), Client: refusingNth{Client: cached, writes: &writes, nth: 1}, Reader: apiReader, Clock: clock.RealClock{}}
 		if _, err := reconcileBackup(refusing, ns, b.Name); !errors.Is(err, errRefused) {
 			t.Fatalf("a pass whose mark is refused returned %v", err)
 		}
@@ -1901,7 +1902,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			what string
 		}{{1, "the keys"}, {2, "the Backup"}} {
 			writes := 0
-			refusing := &datastore.BackupReconciler{Client: refusingNth{Client: cached, writes: &writes, nth: refused.nth}, Reader: apiReader, Clock: clock.RealClock{}}
+			refusing := &datastore.BackupReconciler{Druid: newDruid(), Client: refusingNth{Client: cached, writes: &writes, nth: refused.nth}, Reader: apiReader, Clock: clock.RealClock{}}
 			if _, err := reconcileBackup(refusing, ns, b.Name); !errors.Is(err, errRefused) {
 				t.Fatalf("a pass whose release of %s is refused returned %v", refused.what, err)
 			}
@@ -1920,7 +1921,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 			t.Fatal(err)
 		}
 		done := false
-		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: b.Name, before: func() { restoring(t, "late-foreground", b.Name) }, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
+		racing := &datastore.BackupReconciler{Druid: newDruid(), Client: conflictOnce{Client: cached, name: b.Name, before: func() { restoring(t, "late-foreground", b.Name) }, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
 		pass(t, racing, b.Name)
 		testenv.Eventually(t, func() error { return gone(k8s.Get(t.Context(), client.ObjectKeyFromObject(keys), &corev1.Secret{})) })
 		completeRestore(t, getControlPlane(t, ns, "late-foreground"), b)
@@ -1933,7 +1934,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		b, keys := backup(t, "late-background", nil)
 		deleteBackup(t, b.Name)
 		done := false
-		racing := &datastore.BackupReconciler{Client: conflictOnce{Client: cached, name: b.Name, before: func() { restoring(t, "late-background", b.Name) }, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
+		racing := &datastore.BackupReconciler{Druid: newDruid(), Client: conflictOnce{Client: cached, name: b.Name, before: func() { restoring(t, "late-background", b.Name) }, done: &done}, Reader: apiReader, Clock: clock.RealClock{}}
 		pass(t, racing, b.Name)
 		if keysHeld(t, keys) {
 			t.Fatalf("%s is still held after the release let it go", keys.Name)
@@ -1979,7 +1980,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		ownKeys(t, own)
 		deleteBackup(t, b.Name)
 		name := lodiav1alpha1.EncryptionConfigSecret.Name(own.Name)
-		down := &datastore.BackupReconciler{Client: cached, Reader: unreadableSecret{Reader: apiReader, name: name}, Clock: clock.RealClock{}}
+		down := &datastore.BackupReconciler{Druid: newDruid(), Client: cached, Reader: unreadableSecret{Reader: apiReader, name: name}, Clock: clock.RealClock{}}
 		if _, err := reconcileBackup(down, ns, b.Name); !errors.Is(err, errUnreadable) {
 			t.Fatalf("a pass that cannot read %s returned %v, want the Get's error", name, err)
 		}

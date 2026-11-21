@@ -38,6 +38,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/metrics"
 	"go.lodia.io/lodia/internal/secretcache"
@@ -166,8 +167,9 @@ type controllers struct {
 
 func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 	secrets := secretcache.New(mgr.GetCache(), mgr.GetAPIReader())
-	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-		return datastore.DialEtcd(ctx, secrets, etcd)
+	druid := &etcddruid.Engine{Namespace: in.EtcdDruidNamespace, Deployment: in.EtcdDruidDeployment, Version: in.EtcdDruidVersion}
+	dialEtcd := func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
+		return druid.Dial(ctx, secrets, etcd)
 	}
 	c := &controllers{
 		pki: &pki.Reconciler{
@@ -183,18 +185,16 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 		},
 		requests: &pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, PolicyGrace: 10 * time.Second},
 		datastore: &datastore.Reconciler{
-			Client:              mgr.GetClient(),
-			Reader:              mgr.GetAPIReader(),
-			EtcdDruidNamespace:  in.EtcdDruidNamespace,
-			EtcdDruidDeployment: in.EtcdDruidDeployment,
-			EtcdDruidVersion:    in.EtcdDruidVersion,
-			Revision:            revision,
-			OperatorNamespace:   in.OperatorNamespace,
-			EtcdClient:          dialEtcd,
-			Clock:               clock.RealClock{},
+			Client:            mgr.GetClient(),
+			Reader:            mgr.GetAPIReader(),
+			Druid:             druid,
+			Revision:          revision,
+			OperatorNamespace: in.OperatorNamespace,
+			EtcdClient:        dialEtcd,
+			Clock:             clock.RealClock{},
 		},
-		backup:    &datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}},
-		sampler:   &datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dialEtcd, Clock: clock.RealClock{}},
+		backup:    &datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
+		sampler:   &datastore.SampleReconciler{Cache: mgr.GetCache(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
 		lifecycle: newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision),
 		tenant:    &tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: secrets, ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial},
 		health:    newHealth(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),

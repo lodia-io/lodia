@@ -57,7 +57,7 @@ func unpaused(c client.WithWatch) client.WithWatch {
 }
 
 func operatorAt(c client.WithWatch, operatorRevision string) *datastore.Reconciler {
-	return &datastore.Reconciler{Client: c, Reader: k8s, EtcdDruidNamespace: druidNamespace, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}}
+	return &datastore.Reconciler{Client: c, Reader: k8s, Druid: newDruid(), Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}}
 }
 
 func ahead(r *datastore.Reconciler, by time.Duration) *datastore.Reconciler {
@@ -272,7 +272,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 	stale := getEtcd(t, ns, cp)
 	writeGeneration(t, ns, cp, 2)
 	missing := operatorAt(unpaused(k8s), revision)
-	missing.EtcdDruidDeployment = "absent"
+	missing.Druid.Deployment = "absent"
 	mustPass(t, missing, ns, cp)
 	rolled := getEtcd(t, ns, cp)
 	if err := namesGeneration(2)(rolled); err != nil {
@@ -519,7 +519,7 @@ func TestAHeldPassWritesTheNetworkPolicyOnlyWhenItIsMissing(t *testing.T) {
 	createClass(t, newClass("held-policy", "Retain"))
 	heldTenant(t, ns, cp, "held-policy", nil)
 	held := operatorAt(unpaused(k8s), revision)
-	held.EtcdDruidNamespace = "another-druid-system"
+	held.Druid.Namespace = "another-druid-system"
 
 	if err := k8s.Delete(t.Context(), getPolicy(t, ns, cp)); err != nil {
 		t.Fatal(err)
@@ -838,7 +838,7 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	} {
 		t.Run(c.deployment, func(t *testing.T) {
 			r := operatorAt(unpaused(k8s), revision)
-			r.EtcdDruidDeployment = c.deployment
+			r.Druid.Deployment = c.deployment
 			if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
 				t.Errorf("a request that waits for etcd-druid requeues after %s, want 15s", result.RequeueAfter)
 			}
@@ -868,7 +868,7 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	answer(t, ns, cp)
 	writeGeneration(t, ns, cp, 2)
 	absent := operatorAt(unpaused(k8s), revision)
-	absent.EtcdDruidDeployment = "druid-absent"
+	absent.Druid.Deployment = "druid-absent"
 	mustPass(t, absent, ns, cp)
 	etcd = getEtcd(t, ns, cp)
 	if err := requestedAs(fmt.Sprintf("%d/%s", etcd.Generation, revision), true)(etcd); err != nil {
@@ -888,7 +888,7 @@ func TestAnEtcdWithoutAStampOrARecordWaitsForEtcdDruid(t *testing.T) {
 		t.Fatal(err)
 	}
 	held := operatorAt(unpaused(k8s), revision)
-	held.EtcdDruidDeployment = "druid-absent"
+	held.Druid.Deployment = "druid-absent"
 	mustPass(t, held, ns, cp)
 	if err := requestedAs("", false)(getEtcd(t, ns, cp)); err != nil {
 		t.Errorf("a held pass over an Etcd without a stamp or a record, while etcd-druid's Deployment is absent: %v", err)
@@ -925,7 +925,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 
 	t.Run("the record differs", func(t *testing.T) {
 		waiting := operatorAt(unpaused(k8s), revision)
-		waiting.EtcdDruidDeployment = "absent"
+		waiting.Druid.Deployment = "absent"
 		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != 15*time.Second {
 			t.Errorf("a pass whose record differs from a settled Etcd requeues after %s, want 15s", result.RequeueAfter)
 		}
@@ -946,7 +946,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 			},
 		})
 		waiting := operatorAt(older, revision)
-		waiting.EtcdDruidDeployment = "absent"
+		waiting.Druid.Deployment = "absent"
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.AvailableReplicas = 0 })
 		mustPass(t, waiting, ns, cp)
 		if got := reportedRevision(t, ns, cp); got != previousRevision {

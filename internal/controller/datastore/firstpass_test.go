@@ -38,7 +38,7 @@ func TestACacheWithoutDatastoreReadyLeavesTheServersConditions(t *testing.T) {
 		meta.RemoveStatusCondition(&cached.Status.Conditions, conditionType)
 	}
 	copies := serverCopies(t, before, func() {
-		if _, err := (&datastore.Reconciler{Client: caching(cached), Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); err != nil {
+		if _, err := (&datastore.Reconciler{Client: caching(cached), Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); err != nil {
 			t.Fatal(err)
 		}
 	})

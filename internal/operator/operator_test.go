@@ -63,6 +63,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/lifecycle"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -244,7 +245,7 @@ func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 		t.Fatal(err)
 	}
 	sources.Etcd.Cache = fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(cp, etcd).Build()
-	sources.Etcd.EtcdClient = func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+	sources.Etcd.EtcdClient = func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
 		return clientv3.New(clientv3.Config{Endpoints: []string{member.ListenClientUrls[0].String()}, DialTimeout: 5 * time.Second})
 	}
 	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), testInputs, sources)
@@ -772,9 +773,13 @@ func TestTheSecretsOfTheAccessAreReadThroughOneReaderHealthAndTheEtcdSamplerShar
 		TLSCASecretRef:     druidv1alpha1.SecretReference{SecretReference: corev1.SecretReference{Name: "dev-etcd-ca"}},
 		ClientTLSSecretRef: corev1.SecretReference{Name: "dev-etcd-client"},
 	}
+	store, err := sources.Etcd.Druid.Get(t.Context(), fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(etcd).Build(), cp)
+	if err != nil {
+		t.Fatal(err)
+	}
 	named.Store(0)
 	for range 3 {
-		c, err := sources.Etcd.EtcdClient(t.Context(), etcd)
+		c, err := sources.Etcd.EtcdClient(t.Context(), store)
 		if err != nil {
 			t.Fatal(err)
 		}

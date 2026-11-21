@@ -12,11 +12,9 @@ import (
 	"sync"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/clock"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -28,7 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
-	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/etcddruid"
 )
 
 const (
@@ -67,8 +65,10 @@ type EtcdSample struct {
 type SampleReconciler struct {
 	// Cache reads the ControlPlanes and their Etcds.
 	Cache client.Reader
-	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
-	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
+	// Druid runs the etcd of each ControlPlane.
+	Druid *etcddruid.Engine
+	// EtcdClient connects to the etcd of a ControlPlane; the caller closes it.
+	EtcdClient func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error)
 	// Clock times the passes and serves their samples.
 	Clock clock.PassiveClock
 
@@ -138,15 +138,15 @@ func (r *SampleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // neither paused nor being deleted; nil otherwise. An etcd that never had a
 // ready member is on its way, a new one or a restore's, and has no leader to
 // page about.
-func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
+func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*etcddruid.Store, error) {
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return nil, nil
 	}
-	etcd := &druidv1alpha1.Etcd{}
-	if err := r.Cache.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}, etcd); err != nil {
-		return nil, client.IgnoreNotFound(err)
+	etcd, err := r.Druid.Get(ctx, r.Cache, cp)
+	if err != nil || etcd == nil {
+		return nil, err
 	}
-	if !metav1.IsControlledBy(etcd, cp) || !formed(etcd) {
+	if !etcd.ControlledBy(cp) || !etcd.Formed() {
 		return nil, nil
 	}
 	return etcd, nil
@@ -158,14 +158,13 @@ func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.Contro
 //
 // The list is serializable, which a member answers from its own state
 // (etcd@v3.5.27 server/etcdserver/api/v3rpc/member.go#L90-L98), so an etcd
-// without a leader still gives its size and alarms until etcd-druid's
-// readiness probe takes its members out of the client Service, about 30 s
-// (etcd-druid@v0.39.2 internal/component/statefulset/builder.go#L603-L610);
-// MemberList then fails or waits out the pass. The alarms come from each
+// without a leader still gives its size and alarms until its members leave
+// the client Service, as etcddruid.Store.Endpoint says; MemberList then fails
+// or waits out the pass. The alarms come from each
 // member's Status, not from AlarmList, which goes through raft
 // (etcd@v3.5.27 server/etcdserver/v3_server.go#L491-L497).
-func (r *SampleReconciler) sample(ctx context.Context, etcd *druidv1alpha1.Etcd) (EtcdSample, bool) {
-	log := logf.FromContext(ctx).WithValues("etcd", etcd.Name)
+func (r *SampleReconciler) sample(ctx context.Context, etcd *etcddruid.Store) (EtcdSample, bool) {
+	log := logf.FromContext(ctx).WithValues("etcd", etcd.Name())
 	c, err := r.EtcdClient(ctx, etcd)
 	if err != nil {
 		log.Error(err, "connect to the etcd")

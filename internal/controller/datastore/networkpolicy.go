@@ -7,81 +7,23 @@ import (
 	"context"
 	"fmt"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
-	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
-	networkingv1ac "k8s.io/client-go/applyconfigurations/networking/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/ownership"
 )
-
-// etcd-druid's defaults for the ports Lodia leaves unset in the Etcd
-// (etcd-druid@v0.39.2 internal/common/constants.go#L55-L60). The policy names
-// them by number: the peer port and the sidecar's share the container port
-// name "server" (internal/component/statefulset/constants.go#L12-L15).
-const (
-	etcdPeerPort          int32 = 2380
-	etcdBackupRestorePort int32 = 8080
-)
-
-// networkPolicy admits to the members of the Etcd what dials them, at any
-// member count (docs/README.md, A tenant namespace). The operator's namespace
-// gets a rule of its own only when etcd-druid's rule does not cover it.
-func networkPolicy(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, druidNamespace, operatorNamespace string) *networkingv1ac.NetworkPolicyApplyConfiguration {
-	members := metav1ac.LabelSelector().WithMatchLabels(memberLabels(etcd))
-	component := func(name string) *metav1ac.LabelSelectorApplyConfiguration {
-		return metav1ac.LabelSelector().WithMatchLabels(map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.ComponentLabel: name})
-	}
-	tcp := func(port int32) *networkingv1ac.NetworkPolicyPortApplyConfiguration {
-		return networkingv1ac.NetworkPolicyPort().WithProtocol(corev1.ProtocolTCP).WithPort(intstr.FromInt32(port))
-	}
-	clientPort := druidv1alpha1.GetClientPort(etcd)
-	memberPorts := []*networkingv1ac.NetworkPolicyPortApplyConfiguration{tcp(clientPort), tcp(etcdPeerPort)}
-	druidPorts := []*networkingv1ac.NetworkPolicyPortApplyConfiguration{tcp(clientPort)}
-	if etcd.IsBackupStoreEnabled() {
-		memberPorts = append(memberPorts, tcp(etcdBackupRestorePort))
-		druidPorts = append(druidPorts, tcp(etcdBackupRestorePort))
-	}
-	namespace := func(name string) *metav1ac.LabelSelectorApplyConfiguration {
-		return metav1ac.LabelSelector().WithMatchLabels(map[string]string{corev1.LabelMetadataName: name})
-	}
-	rules := []*networkingv1ac.NetworkPolicyIngressRuleApplyConfiguration{
-		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(component(lodiav1alpha1.APIServerComponent))).WithPorts(tcp(clientPort)),
-		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(component(lodiav1alpha1.RehearsalComponent))).WithPorts(tcp(clientPort)),
-		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithPodSelector(members)).WithPorts(memberPorts...),
-		networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(namespace(druidNamespace))).WithPorts(druidPorts...),
-	}
-	if operatorNamespace != druidNamespace {
-		rules = append(rules, networkingv1ac.NetworkPolicyIngressRule().WithFrom(networkingv1ac.NetworkPolicyPeer().WithNamespaceSelector(namespace(operatorNamespace))).WithPorts(tcp(clientPort)))
-	}
-	return networkingv1ac.NetworkPolicy(contract.EtcdName(cp.Name), cp.Namespace).
-		WithLabels(map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name}).
-		WithOwnerReferences(metav1ac.OwnerReference().
-			WithAPIVersion(lodiav1alpha1.GroupVersion.String()).
-			WithKind("ControlPlane").
-			WithName(cp.Name).
-			WithUID(cp.UID).
-			WithController(true).
-			WithBlockOwnerDeletion(true)).
-		WithSpec(networkingv1ac.NetworkPolicySpec().
-			WithPodSelector(members).
-			WithPolicyTypes(networkingv1.PolicyTypeIngress).
-			WithIngress(rules...))
-}
 
 // applyNetworkPolicy finds the policy by name, labelled or not, as the Etcd is
 // found, never writes over one another owner keeps, and while the pass is
 // held writes it only when it is missing. The first result says why the
 // policy is not written, the second carries a refusal for the log.
-func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) (*metav1.Condition, error) {
+func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store) (*metav1.Condition, error) {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}
 	current := &networkingv1.NetworkPolicy{}
 	err := r.Get(ctx, key, current)
@@ -94,7 +36,7 @@ func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.C
 		return nil, err
 	default:
 		if ref := ownership.ControlledElsewhere(current, cp); ref != nil {
-			held := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere,
+			held := notReady(lodiav1alpha1.ReasonObjectsControlledElsewhere,
 				fmt.Sprintf("another owner keeps NetworkPolicy %s by %s %s (UID %s); the Datastore controller writes it once it is gone: the garbage collector deletes a previous ControlPlane's, any other owner's needs a person",
 					key.Name, ref.Kind, ref.Name, ref.UID))
 			return &held, nil
@@ -103,10 +45,10 @@ func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.C
 			return nil, nil
 		}
 	}
-	if err := r.Apply(ctx, networkPolicy(cp, etcd, r.EtcdDruidNamespace, r.OperatorNamespace), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+	if err := r.Apply(ctx, r.Druid.NetworkPolicy(cp, etcd, r.OperatorNamespace), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		err = fmt.Errorf("apply NetworkPolicy %s: %w", key.Name, err)
 		if apistatus.Refused(err) {
-			refused := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses NetworkPolicy "+key.Name+"; the reason is in Lodia's log")
+			refused := notReady(lodiav1alpha1.ReasonRefused, "the API server refuses NetworkPolicy "+key.Name+"; the reason is in Lodia's log")
 			return &refused, err
 		}
 		return nil, err

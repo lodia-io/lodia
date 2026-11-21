@@ -15,10 +15,8 @@ import (
 	"strings"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,6 +39,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/restore"
 	"go.lodia.io/lodia/internal/statusapply"
 )
@@ -50,9 +49,8 @@ const (
 	BackupFieldManager = "lodia/" + BackupName
 
 	// backupTaskPrefix names a Backup's EtcdOpsTask and EtcdCopyBackupsTask,
-	// "backup-<Backup UID>": a UID is 36 characters, and the copy Job's pods
-	// carry the task's name and "-worker" as a label value of at most 63
-	// (etcd-druid@v0.39.2 internal/controller/etcdcopybackupstask/reconciler.go#L389-L396).
+	// "backup-<Backup UID>": a UID is 36 characters, within the length of a
+	// task's name that etcddruid.Engine.FullSnapshot gives.
 	backupTaskPrefix = "backup-"
 )
 
@@ -67,8 +65,10 @@ type BackupReconciler struct {
 	// Events records the transitions of the conditions it writes;
 	// SetupWithManager sets it.
 	Events events.EventRecorder
-	// EtcdClient connects to the etcd of an Etcd; the caller closes it.
-	EtcdClient func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error)
+	// Druid runs the etcd of each ControlPlane.
+	Druid *etcddruid.Engine
+	// EtcdClient connects to the etcd of a ControlPlane; the caller closes it.
+	EtcdClient func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error)
 	// Clock spaces the full snapshots a Backup asks for again.
 	Clock clock.PassiveClock
 }
@@ -79,8 +79,8 @@ func (r *BackupReconciler) SetupWithManager(mgr ctrl.Manager, workers int) error
 		Named(BackupName).
 		WithOptions(controller.Options{MaxConcurrentReconciles: workers, ReconciliationTimeout: time.Minute}).
 		For(&lodiav1alpha1.Backup{}).
-		Owns(&druidv1alpha1.EtcdOpsTask{}).
-		Owns(&druidv1alpha1.EtcdCopyBackupsTask{}).
+		Owns(r.Druid.SnapshotTaskObject()).
+		Owns(r.Druid.CopyTaskObject()).
 		Watches(&lodiav1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(r.backupsOf)).
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.restoredKeys), builder.WithPredicates(predicate.NewPredicateFuncs(func(secret client.Object) bool {
 			cp, ok := secret.GetLabels()[lodiav1alpha1.ControlPlaneLabel]
@@ -192,21 +192,23 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if etcd != nil && etcd.Spec.Backup.Store == nil {
-		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, fmt.Sprintf("the ControlPlane's class %s has no backup store", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation]), 0)
+	if etcd != nil && etcd.Snapshots() == nil {
+		class, _ := etcd.Class()
+		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore, fmt.Sprintf("the ControlPlane's class %s has no backup store", class), 0)
 	}
 	credentials := lodiav1alpha1.EtcdBackupSecret.Name(source.Name)
 	var location lodiav1alpha1.BackupSnapshotLocation
 	var noCredentials bool
 	if etcd != nil {
-		fromSecret, err := storeSecretFields(ctx, r.Reader, etcd, credentials)
+		store := *etcd.Snapshots()
+		fromSecret, err := storeSecretFields(ctx, r.Reader, etcd.Namespace(), store.Provider, credentials)
 		switch {
 		case apierrors.IsNotFound(err):
 			noCredentials = true
 		case err != nil:
 			return ctrl.Result{}, err
 		}
-		location = snapshotLocation(etcd.Spec.Backup.Store, fromSecret, backup.UID)
+		location = snapshotLocation(store, fromSecret, backup.UID)
 		// The full snapshot Lease describes the store the sidecar uploaded to,
 		// and its holder never falls, so a store that moved, even one moved
 		// back, may lack the seal. A copy task that exists is no exception:
@@ -228,7 +230,6 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if noCredentials {
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("no Secret %s, whose keys name part of the store", credentials), 10*time.Second)
 	}
-	store := etcd.Spec.Backup.Store
 
 	if status.StartedAt == nil {
 		status.Source = &lodiav1alpha1.UIDReference{Name: source.Name, UID: source.UID}
@@ -251,7 +252,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return ctrl.Result{}, err
 		}
 		status.Seal = &lodiav1alpha1.BackupSeal{Revision: revision}
-		if quota := etcd.Spec.Etcd.Quota; quota != nil {
+		if quota := etcd.Quota(); quota != nil {
 			status.Seal.QuotaBackendBytes = new(quota.DeepCopy())
 		}
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, fmt.Sprintf("the seal is at revision %d in %s's etcd", revision, name), 0)
@@ -265,42 +266,25 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, message, requeueAfter)
 	}
 
-	copyTask := &druidv1alpha1.EtcdCopyBackupsTask{}
-	err = r.Get(ctx, client.ObjectKey{Namespace: backup.Namespace, Name: task}, copyTask)
+	copyTask, err := r.Druid.CopyOf(ctx, r.Client, client.ObjectKey{Namespace: backup.Namespace, Name: task})
 	destination := status.Snapshots.Bucket + "/" + status.Snapshots.Prefix
 	copying := fmt.Sprintf("EtcdCopyBackupsTask %s copies the newest snapshots of %s to %s", task, name, destination)
 	switch {
 	case apierrors.IsNotFound(err):
 		// The copy goes where the status says it is, which a restore reads,
 		// even if the source's store moved since the Backup started.
-		target := store.DeepCopy()
-		target.Provider = new(druidv1alpha1.StorageProvider(status.Snapshots.Provider))
-		target.Container = new(status.Snapshots.Bucket)
-		target.EndpointOverride = nil
-		if status.Snapshots.Endpoint != "" {
-			target.EndpointOverride = new(status.Snapshots.Endpoint)
-		}
-		target.Prefix = status.Snapshots.Prefix
 		// @todo: until etcd-backup-restore orders snapshot sets by revision, the copy may take a compaction Job's set without the seal (todo.md).
-		copyTask = &druidv1alpha1.EtcdCopyBackupsTask{
-			ObjectMeta: taskMeta(backup, source, task),
-			Spec:       druidv1alpha1.EtcdCopyBackupsTaskSpec{SourceStore: *store.DeepCopy(), TargetStore: *target, MaxBackups: new(uint32(1))},
-		}
-		if err := r.Create(ctx, copyTask, client.FieldOwner(BackupFieldManager)); err != nil && !apierrors.IsAlreadyExists(err) {
-			return ctrl.Result{}, fmt.Errorf("create EtcdCopyBackupsTask %s: %w", task, err)
+		if err := r.Druid.CopyTo(ctx, r.Client, BackupFieldManager, taskMeta(backup, source, task), etcd, status.Snapshots.SnapshotLocation); err != nil {
+			return ctrl.Result{}, err
 		}
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, copying, 0)
 	case err != nil:
 		return ctrl.Result{}, err
 	}
-	if failed := copyCondition(copyTask, druidv1alpha1.EtcdCopyBackupsTaskFailed); failed != nil {
-		why := failed.Message
-		if why == "" {
-			why = ptr.Deref(copyTask.Status.LastError, failed.Reason)
-		}
+	if why, _, failed := copyTask.Failed(); failed {
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, "the copy failed: "+why+"; create another Backup", 0)
 	}
-	if copyCondition(copyTask, druidv1alpha1.EtcdCopyBackupsTaskSucceeded) == nil {
+	if !copyTask.Succeeded() {
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying, copying, 0)
 	}
 
@@ -318,18 +302,18 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return report(metav1.ConditionTrue, lodiav1alpha1.ReasonCompleted, fmt.Sprintf("sealed at revision %d and copied to %s", status.Seal.Revision, destination), 0)
 }
 
-func (r *BackupReconciler) sourceEtcd(ctx context.Context, source *lodiav1alpha1.ControlPlane) (*druidv1alpha1.Etcd, error) {
-	etcd := &druidv1alpha1.Etcd{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: source.Namespace, Name: contract.EtcdName(source.Name)}, etcd); err != nil {
-		return nil, client.IgnoreNotFound(err)
+func (r *BackupReconciler) sourceEtcd(ctx context.Context, source *lodiav1alpha1.ControlPlane) (*etcddruid.Store, error) {
+	etcd, err := r.Druid.Get(ctx, r.Client, source)
+	if err != nil || etcd == nil {
+		return nil, err
 	}
-	if !metav1.IsControlledBy(etcd, source) {
+	if !etcd.ControlledBy(source) {
 		return nil, nil
 	}
 	return etcd, nil
 }
 
-func sealable(source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) string {
+func sealable(source *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store) string {
 	ready := meta.FindStatusCondition(source.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 	switch {
 	case !source.DeletionTimestamp.IsZero():
@@ -346,20 +330,10 @@ func sealable(source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) stri
 
 // snapshotLocation is where a Backup's copy of the snapshots in the store
 // goes.
-func snapshotLocation(store *druidv1alpha1.StoreSpec, fromSecret *lodiav1alpha1.StoreSecretFields, backup types.UID) lodiav1alpha1.BackupSnapshotLocation {
-	location := storeLocation(store)
+func snapshotLocation(store lodiav1alpha1.SnapshotLocation, fromSecret *lodiav1alpha1.StoreSecretFields, backup types.UID) lodiav1alpha1.BackupSnapshotLocation {
+	location := store
 	location.Prefix = backupPrefix(store.Prefix, backup)
 	return lodiav1alpha1.BackupSnapshotLocation{SnapshotLocation: location, FromSecret: fromSecret}
-}
-
-// storeLocation is where an Etcd's store puts its snapshots.
-func storeLocation(store *druidv1alpha1.StoreSpec) lodiav1alpha1.SnapshotLocation {
-	return lodiav1alpha1.SnapshotLocation{
-		Provider: lodiav1alpha1.StoreProvider(ptr.Deref(store.Provider, "")),
-		Endpoint: ptr.Deref(store.EndpointOverride, ""),
-		Bucket:   ptr.Deref(store.Container, ""),
-		Prefix:   store.Prefix,
-	}
 }
 
 // storeMoved names the store recorded and the one now where they differ,
@@ -411,12 +385,11 @@ func secretFields(provider lodiav1alpha1.StoreProvider, fields *lodiav1alpha1.St
 // way the sidecar does: for every provider but GCS from the first key ending
 // in .json when one exists, else each from the key of its name
 // (etcd-backup-restore@v0.45.3 pkg/snapstore/s3_snapstore.go#L106-L139).
-func storeSecretFields(ctx context.Context, reader client.Reader, etcd *druidv1alpha1.Etcd, name string) (*lodiav1alpha1.StoreSecretFields, error) {
+func storeSecretFields(ctx context.Context, reader client.Reader, namespace string, provider lodiav1alpha1.StoreProvider, name string) (*lodiav1alpha1.StoreSecretFields, error) {
 	secret := &corev1.Secret{}
-	if err := reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, secret); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, secret); err != nil {
 		return nil, err
 	}
-	provider := lodiav1alpha1.StoreProvider(ptr.Deref(etcd.Spec.Backup.Store.Provider, ""))
 	fields := &lodiav1alpha1.StoreSecretFields{}
 	wanted := secretFields(provider, fields)
 	file := ""
@@ -475,10 +448,10 @@ func backupPrefix(source string, backup types.UID) string {
 // seal puts the Backup's key into the source's etcd once and returns the
 // revision that created it: a retry finds the key and reads that revision
 // instead of moving it on.
-func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, uid types.UID) (int64, error) {
+func (r *BackupReconciler) seal(ctx context.Context, etcd *etcddruid.Store, uid types.UID) (int64, error) {
 	c, err := r.EtcdClient(ctx, etcd)
 	if err != nil {
-		return 0, fmt.Errorf("connect to the etcd of Etcd %s: %w", etcd.Name, err)
+		return 0, fmt.Errorf("connect to the etcd of Etcd %s: %w", etcd.Name(), err)
 	}
 	defer func() { _ = c.Close() }()
 	ctx, cancel := context.WithTimeout(ctx, etcdRequestTimeout)
@@ -497,7 +470,7 @@ func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, u
 	}
 	kvs := response.Responses[0].GetResponseRange().GetKvs()
 	if len(kvs) == 0 {
-		return 0, fmt.Errorf("the seal %s is neither absent nor present in the etcd of Etcd %s", key, etcd.Name)
+		return 0, fmt.Errorf("the seal %s is neither absent nor present in the etcd of Etcd %s", key, etcd.Name())
 	}
 	return kvs[0].GetCreateRevision(), nil
 }
@@ -509,95 +482,27 @@ func (r *BackupReconciler) seal(ctx context.Context, etcd *druidv1alpha1.Etcd, u
 // which a store moved through the credentials holds until its next scheduled
 // full snapshot. A task that finishes short of the seal is sent again as
 // resend says, from the Backup's start.
-func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd, revision int64) (string, time.Duration, error) {
-	lease := druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta)
-	held, ignored, err := fullSnapshotRevision(ctx, r.Reader, etcd)
+func (r *BackupReconciler) flush(ctx context.Context, backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, revision int64) (string, time.Duration, error) {
+	lease := etcd.FullSnapshotLease()
+	held, ignored, err := r.Druid.FullSnapshotRevision(ctx, r.Reader, etcd)
 	if err != nil || held >= revision {
 		return "", 0, err
 	}
-	requeueAfter := 10 * time.Second
 	name := backupTaskPrefix + string(backup.UID)
-	task := &druidv1alpha1.EtcdOpsTask{}
-	var state string
-	err = r.Get(ctx, client.ObjectKey{Namespace: backup.Namespace, Name: name}, task)
-	switch {
-	case apierrors.IsNotFound(err):
-		task = &druidv1alpha1.EtcdOpsTask{
-			ObjectMeta: taskMeta(backup, source, name),
-			Spec: druidv1alpha1.EtcdOpsTaskSpec{
-				Config:   druidv1alpha1.EtcdOpsTaskConfig{OnDemandSnapshot: &druidv1alpha1.OnDemandSnapshotConfig{Type: druidv1alpha1.OnDemandSnapshotTypeFull}},
-				EtcdName: new(etcd.Name),
-			},
-		}
-		if err := r.Create(ctx, task, client.FieldOwner(BackupFieldManager)); err != nil && !apierrors.IsAlreadyExists(err) {
-			return "", 0, fmt.Errorf("create EtcdOpsTask %s: %w", name, err)
-		}
-		state = "created"
-	case err != nil:
+	state, wait, err := r.Druid.FullSnapshot(ctx, r.Client, r.Clock, BackupFieldManager, taskMeta(backup, source, name), etcd, backup.Status.StartedAt.Time)
+	if err != nil {
 		return "", 0, err
-	case task.IsCompleted():
-		var wait time.Duration
-		if state, wait, err = resend(ctx, r.Client, r.Clock.Now(), task, backup.Status.StartedAt.Time); err != nil {
-			return "", 0, err
-		}
-		requeueAfter = sooner(requeueAfter, wait)
-	default:
-		state = string(ptr.Deref(task.Status.State, "not admitted yet"))
 	}
+	requeueAfter := sooner(10*time.Second, wait)
 	message := []string{fmt.Sprintf("the seal is at revision %d in %s's etcd; the store holds a full snapshot up to %d (Lease %s); EtcdOpsTask %s is %s",
 		revision, source.Name, held, lease, name, state)}
 	if ignored {
-		message = append(message, fmt.Sprintf("ignored Lease %s, created before Etcd %s", lease, etcd.Name))
+		message = append(message, fmt.Sprintf("ignored Lease %s, created before Etcd %s", lease, etcd.Name()))
 	}
 	if backupReady := meta.FindStatusCondition(source.Status.Conditions, lodiav1alpha1.ConditionBackupReady); backupReady != nil && backupReady.Status == metav1.ConditionFalse {
 		message = append(message, fmt.Sprintf("BackupReady of %s is False: %s", source.Name, backupReady.Message))
 	}
 	return strings.Join(message, "; "), requeueAfter, nil
-}
-
-// resend deletes a finished EtcdOpsTask for the next once the time since
-// start, at most an hour, has passed since it finished (its
-// lastTransitionTime, etcd-druid@v0.39.2
-// internal/controller/etcdopstask/utils.go#L95-L96), and says the task's state
-// and how long it waits, 0 once it deleted it. A finished task names no
-// revision (etcd-druid@v0.39.2 api/core/v1alpha1/etcdopstask.go#L137-L161),
-// so one short of the revision it was sent for is sent again, and a Lease
-// that never reaches that revision costs a full snapshot each time.
-func resend(ctx context.Context, c client.Client, now time.Time, task *druidv1alpha1.EtcdOpsTask, start time.Time) (string, time.Duration, error) {
-	finished := ptr.Deref(task.Status.LastTransitionTime, metav1.Time{}).Time
-	next := finished.Add(min(time.Hour, finished.Sub(start)))
-	if wait := next.Sub(now); wait > 0 {
-		return fmt.Sprintf("%s at %s; the next goes at %s", *task.Status.State, finished.UTC().Format(time.RFC3339), next.UTC().Format(time.RFC3339)), wait, nil
-	}
-	if err := client.IgnoreNotFound(c.Delete(ctx, task, client.Preconditions{UID: &task.UID})); err != nil {
-		return "", 0, fmt.Errorf("delete EtcdOpsTask %s: %w", task.Name, err)
-	}
-	return string(*task.Status.State) + ", deleted for another", 0, nil
-}
-
-// fullSnapshotRevision is the last revision of the newest full snapshot the
-// Etcd's full snapshot Lease shows in its store: the sidecar sets its holder
-// after each full snapshot it uploaded and never lowers it
-// (etcd-backup-restore@v0.45.3 pkg/health/heartbeat/heartbeat.go#L200-L222).
-// etcd-druid adopts a Lease of a predecessor of the same name with its holder,
-// so a Lease created before the Etcd counts for nothing, which the second
-// result says.
-func fullSnapshotRevision(ctx context.Context, reader client.Reader, etcd *druidv1alpha1.Etcd) (int64, bool, error) {
-	name := druidv1alpha1.GetFullSnapshotLeaseName(etcd.ObjectMeta)
-	lease := &coordinationv1.Lease{}
-	if err := reader.Get(ctx, client.ObjectKey{Namespace: etcd.Namespace, Name: name}, lease); err != nil {
-		if apierrors.IsNotFound(err) {
-			return 0, false, nil
-		}
-		return 0, false, fmt.Errorf("read Lease %s: %w", name, err)
-	}
-	if lease.CreationTimestamp.Before(&etcd.CreationTimestamp) {
-		return 0, true, nil
-	}
-	if revision, err := strconv.ParseInt(ptr.Deref(lease.Spec.HolderIdentity, ""), 10, 64); err == nil {
-		return revision, false, nil
-	}
-	return 0, false, nil
 }
 
 func taskMeta(backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, name string) metav1.ObjectMeta {
@@ -607,15 +512,6 @@ func taskMeta(backup *lodiav1alpha1.Backup, source *lodiav1alpha1.ControlPlane, 
 		Labels:          map[string]string{lodiav1alpha1.ControlPlaneLabel: source.Name},
 		OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(backup, lodiav1alpha1.GroupVersion.WithKind("Backup"))},
 	}
-}
-
-func copyCondition(task *druidv1alpha1.EtcdCopyBackupsTask, conditionType druidv1alpha1.ConditionType) *druidv1alpha1.Condition {
-	for i := range task.Status.Conditions {
-		if c := &task.Status.Conditions[i]; c.Type == conditionType && c.Status == druidv1alpha1.ConditionTrue {
-			return c
-		}
-	}
-	return nil
 }
 
 // writeKeys writes <backup>.encryption-config from the source's encryption
@@ -684,7 +580,7 @@ func (r *BackupReconciler) tidy(ctx context.Context, backup *lodiav1alpha1.Backu
 		}
 	}
 	key := client.ObjectKey{Namespace: backup.Namespace, Name: backupTaskPrefix + string(backup.UID)}
-	for _, task := range []client.Object{&druidv1alpha1.EtcdOpsTask{}, &druidv1alpha1.EtcdCopyBackupsTask{}} {
+	for _, task := range []client.Object{r.Druid.SnapshotTaskObject(), r.Druid.CopyTaskObject()} {
 		if err := r.Get(ctx, key, task); err != nil {
 			if apierrors.IsNotFound(err) {
 				continue

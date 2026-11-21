@@ -40,6 +40,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
 )
@@ -62,8 +63,8 @@ func fakeCache(objs ...client.Object) client.WithWatch {
 	return fake.NewClientBuilder().WithScheme(k8s.Scheme()).WithObjects(objs...).Build()
 }
 
-func dialURL(endpoint string) func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-	return func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+func dialURL(endpoint string) func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
+	return func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
 		return clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	}
 }
@@ -169,7 +170,7 @@ func dbSize(t *testing.T, c *clientv3.Client, endpoint string) int64 {
 
 func sampler(objs ...client.Object) (*datastore.SampleReconciler, *clocktesting.FakeClock) {
 	clk := clocktesting.NewFakeClock(sampledAt)
-	return &datastore.SampleReconciler{Cache: fakeCache(objs...), Clock: clk}, clk
+	return &datastore.SampleReconciler{Druid: newDruid(), Cache: fakeCache(objs...), Clock: clk}, clk
 }
 
 func TestOneMemberGivesItsLeaderAndItsSize(t *testing.T) {
@@ -375,7 +376,7 @@ func TestAClientThatLeavesThePassTooLittleOfItsDeadlineKeepsNoSample(t *testing.
 		t.Run(c.left.String()+" left", func(t *testing.T) {
 			cp, etcd := sampledControlPlane("slow", "uid-slow")
 			r, clk := sampler(cp, etcd)
-			r.EtcdClient = func(ctx context.Context, e *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+			r.EtcdClient = func(ctx context.Context, e *etcddruid.Store) (*clientv3.Client, error) {
 				deadline, _ := ctx.Deadline()
 				time.Sleep(time.Until(deadline) - c.left)
 				return dialURL(clientURL(cfgs[0]))(ctx, e)
@@ -405,7 +406,7 @@ func TestEveryPassClosesItsClient(t *testing.T) {
 			cp, etcd := sampledControlPlane("closing", "uid-closing")
 			r, clk := sampler(cp, etcd)
 			var dialled []*clientv3.Client
-			r.EtcdClient = func(ctx context.Context, e *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+			r.EtcdClient = func(ctx context.Context, e *etcddruid.Store) (*clientv3.Client, error) {
 				c, err := dialURL(clientURL(cfgs[0]))(ctx, e)
 				dialled = append(dialled, c)
 				return c, err
@@ -563,7 +564,7 @@ func TestADialThatFailsForgetsTheSample(t *testing.T) {
 	samplePass(t, r, client.ObjectKeyFromObject(cp))
 	clk.Step(5 * time.Second)
 	servedSample(t, r, cp)
-	r.EtcdClient = func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+	r.EtcdClient = func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
 		return nil, errors.New("injected: the client certificate cannot be read")
 	}
 	if got := samplePass(t, r, client.ObjectKeyFromObject(cp)); got.RequeueAfter != time.Minute {
@@ -609,7 +610,7 @@ func TestEachSampleStandsAMinuteWhateverItsPassTook(t *testing.T) {
 	r, clk := sampler(cp, etcd)
 	took := 100 * time.Millisecond
 	endpoint := clientURL(cfgs[0])
-	r.EtcdClient = func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+	r.EtcdClient = func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
 		clk.Step(took)
 		return dialURL(endpoint)(ctx, etcd)
 	}
@@ -694,7 +695,7 @@ func formedControlPlane(t *testing.T, ns, name string) *lodiav1alpha1.ControlPla
 	return getControlPlane(t, ns, name)
 }
 
-func runSampler(t *testing.T, ns string, dial func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error)) *datastore.SampleReconciler {
+func runSampler(t *testing.T, ns string, dial func(context.Context, *etcddruid.Store) (*clientv3.Client, error)) *datastore.SampleReconciler {
 	t.Helper()
 	options, err := operator.Cache(false)
 	if err != nil {
@@ -710,7 +711,7 @@ func runSampler(t *testing.T, ns string, dial func(context.Context, *druidv1alph
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dial, Clock: clock.RealClock{}}
+	r := &datastore.SampleReconciler{Druid: newDruid(), Cache: mgr.GetCache(), EtcdClient: dial, Clock: clock.RealClock{}}
 	if err := r.SetupWithManager(mgr, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -778,8 +779,8 @@ func TestASecretReadThatHangsEndsThePassWithinItsDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := runSampler(t, ns, func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-		return datastore.DialEtcd(ctx, hanging, etcd)
+	r := runSampler(t, ns, func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
+		return newDruid().Dial(ctx, hanging, etcd)
 	})
 	select {
 	case got := <-reads:
@@ -807,7 +808,7 @@ func TestOnlyACreationOrADeletionBringsAPassBeforeItsMinute(t *testing.T) {
 	ns := namespace(t)
 	cp := formedControlPlane(t, ns, "steady")
 	var dials atomic.Int32
-	r := runSampler(t, ns, func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+	r := runSampler(t, ns, func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
 		dials.Add(1)
 		return dialURL(clientURL(cfgs[0]))(ctx, etcd)
 	})
