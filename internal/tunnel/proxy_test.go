@@ -793,8 +793,7 @@ func TestTheProxyFixtureStartsOnAnotherAddressWhenOneIsTaken(t *testing.T) {
 func TestTheProxyFixtureKeepsAnAddressTheTestSet(t *testing.T) {
 	ca := newCA(t, "cluster")
 	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
-	taken := freeAddr(t)
-	occupy(t, taken)
+	taken := occupy(t, "127.0.0.1:0")
 	f := newProxyFixture(t, upstream.addr, func(p *Proxy) { p.Listen = taken })
 	writeVolume(t, f.certDir, pairFiles(t, client(t, ca)))
 	writeVolume(t, f.caDir, caFiles(t, ca))

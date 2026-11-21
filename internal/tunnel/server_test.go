@@ -783,8 +783,7 @@ func TestTheServerFixtureKeepsAnAddressTheTestSet(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cluster, tunnelCA := newCA(t, "cluster"), newCA(t, "tunnel")
-			taken := freeAddr(t)
-			occupy(t, taken)
+			taken := occupy(t, "127.0.0.1:0")
 			f := newServerFixture(t, func(s *Server) { *address(s) = taken }, cluster, tunnelCA)
 			writeVolume(t, f.certDir, pairFiles(t, serving(t, cluster)))
 			writeVolume(t, f.caDir, caFiles(t, tunnelCA))

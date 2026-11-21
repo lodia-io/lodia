@@ -195,7 +195,7 @@ func freeAddr(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-func occupy(t *testing.T, addr string) {
+func occupy(t *testing.T, addr string) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -211,6 +211,7 @@ func occupy(t *testing.T, addr string) {
 			_ = c.Close()
 		}
 	}()
+	return ln.Addr().String()
 }
 
 func addrInUse(err error) string {
