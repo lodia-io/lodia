@@ -138,6 +138,35 @@ A later grant finds none waiting only for a tenant seen waiting before, whose `R
 A `FleetLimit` status without a `target.scheduledFor` at or before its time fails the test, since every wait for a slot carries one.
 The four become eligible within one second, so the order by `target.scheduledFor` across seconds is held by the envtest `TestTheQueueGoesByScheduledForNamespaceAndName` in `internal/controller/lifecycle`.
 
+## Nightly: etcd-druid upgraded across a patch
+
+`TestEtcdDruidPatchUpgradeUnderAHeldTenant` (`make e2e-maintenance E2E_MAINTENANCE_TEST=TestEtcdDruidPatchUpgradeUnderAHeldTenant`), in the build tag of G5, runs every night in [`nightly-etcd-druid.yml`](../../.github/workflows/nightly-etcd-druid.yml), on demand, and on a pull request that changes the workflow or the test.
+It runs the handshake of the Datastore controller with etcd-druid, `requestReconcile` in [`datastore.go`](../../internal/controller/datastore/datastore.go), against two releases of etcd-druid, which no other test does.
+
+The chart pins etcd-druid v0.39.2.
+The test names that release and the one before it, v0.39.1 by its image index digest, each with the sidecars it renders: etcd-wrapper v0.8.3 and etcdbrctl v0.45.2 at v0.39.1 ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.1/internal/images/images.yaml#L8-L25)), v0.8.4 and v0.45.3 at v0.39.2 ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/images/images.yaml#L8-L25)).
+They are the `-next` images that the feature gate `UpgradeEtcdVersion`, which the chart turns on, selects ([values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/charts/values.yaml#L22-L24), [image.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/utils/image.go#L39-L44)).
+The chart's templates are the same at both tags ([compare](https://github.com/gardener/etcd-druid/compare/v0.39.1...v0.39.2) lists no file under `charts/`), so the image tag alone moves etcd-druid.
+The test fails when the chart pins another release than the one it names.
+
+1. Before any tenant exists, a Helm upgrade with `--reuse-values` sets `etcdDruid.image.tag` to v0.39.1, and the operator, whose revision covers etcd-druid's version, restarts under it.
+   A one-member `ControlPlane` with a window four hours away turns `Ready` and `Idle` at one operator revision, A, and its member runs the v0.39.1 sidecars.
+   Watches then record the `Etcd`, its StatefulSet and member pod, etcd-druid's Deployment and the `ControlPlane`, to the end of the test.
+2. etcd-druid's Deployment is paused, and a Helm upgrade sets the tag to v0.39.2.
+   The Deployment then asks for v0.39.2 and still runs v0.39.1, the state a rollout passes through, held so that the wait for the rollout, and not the order of the steps, keeps the request back.
+   The operator restarts with the new `--etcd-druid-version`, and the tenant is `WaitingForWindow` at revision A in every part for 2 minutes: the `Etcd` carries no `druid.gardener.cloud/operation`, its request annotation and the member pod are those of step 1, and no status of the tenant was seen with `Ready` other than True.
+3. The tenant's window is edited to hold now.
+   An edit of `spec` grants the pending revision, B, at once ([upgrades-and-maintenance-windows](../../docs/decisions/upgrades-and-maintenance-windows.md)), and this one changes nothing the Datastore controller renders.
+   For a minute, with the Deployment still paused, etcd-druid is asked for nothing and `status.datastore.operatorRevision` stays A.
+4. The Deployment is resumed.
+   The tenant reports every part at B, `Ready` and `Idle`, within 10 minutes, and stays so for 30 seconds.
+   Over the whole record, the `Etcd`'s request annotation took one new value, for revision B, after the Deployment ran v0.39.2 in every replica.
+   `druid.gardener.cloud/operation` was set once and removed once, and one spec reconcile started under it, which ends `Reconcile` `Succeeded`.
+   `status.datastore.operatorRevision` moved once, from A to B, the StatefulSet's `updateRevision` moved once, and the member pod was replaced once and runs the v0.39.2 sidecars.
+   etcd-druid may run one more spec reconcile from its cache once the annotation is gone, which changes nothing; the test logs how many ran.
+
+The test logs the record, one line for each change of what it watches, with the seconds from its start.
+
 ## Gate G2: a highly available control plane
 
 `TestHighAvailabilityGate` checks the second item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production).
