@@ -80,7 +80,7 @@ lint:
 	cd test/monitoring && golangci-lint run ./...
 
 .PHONY: etcd
-etcd: ## fetch etcd's release binary at the version etcd-wrapper runs into ETCD_DIR, after checking it against the release's SHA256SUMS, unless it is there, and print its path
+etcd: ## fetch etcd's release binary at the version etcd-wrapper runs into ETCD_DIR, after checking it against the SHA-256 versions.EtcdArchives pins, unless it is there, and print its path
 	go run ./test/etcdbinary $(ETCD_DIR)
 
 .PHONY: test

@@ -5,7 +5,7 @@
 // versions.EtcdVersion for this machine, for make test, which hands it to the
 // tests in LODIA_ETCD_BINARY. It fetches the release into the directory it is
 // given when the binary is not there, and checks the archive against the
-// release's SHA256SUMS first.
+// SHA-256 versions.EtcdArchives pins first.
 package main
 
 import (
@@ -57,7 +57,7 @@ func run(cache string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return ensure(ctx, releases, dir, versions.EtcdVersion, runtime.GOOS, runtime.GOARCH)
+	return ensure(ctx, releases, dir, versions.EtcdVersion, runtime.GOOS, runtime.GOARCH, versions.EtcdArchives)
 }
 
 func archiveName(version, goos, goarch string) (string, error) {
@@ -76,30 +76,26 @@ func archiveName(version, goos, goarch string) (string, error) {
 	return fmt.Sprintf("etcd-%s-%s-%s.%s", version, goos, goarch, extension), nil
 }
 
-func ensure(ctx context.Context, base, dir, version, goos, goarch string) (string, error) {
+func ensure(ctx context.Context, base, dir, version, goos, goarch string, pinned map[string]string) (string, error) {
 	name, err := archiveName(version, goos, goarch)
 	if err != nil {
 		return "", err
+	}
+	want, ok := pinned[name]
+	if !ok {
+		return "", fmt.Errorf("no SHA-256 is pinned for %s", name)
 	}
 	target := filepath.Join(dir, version+"-"+goos+"-"+goarch, "etcd")
 	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o100 != 0 {
 		return target, nil
 	}
 	fmt.Fprintf(os.Stderr, "etcdbinary: fetching %s/%s/%s\n", base, version, name)
-	sums, err := get(ctx, base+"/"+version+"/SHA256SUMS", 1<<20)
-	if err != nil {
-		return "", err
-	}
-	want, err := checksum(sums, name)
-	if err != nil {
-		return "", err
-	}
 	archive, err := get(ctx, base+"/"+version+"/"+name, maxArchive)
 	if err != nil {
 		return "", err
 	}
 	if got := sha256.Sum256(archive); hex.EncodeToString(got[:]) != want {
-		return "", fmt.Errorf("%s has the SHA-256 %x, its release's SHA256SUMS says %s", name, got, want)
+		return "", fmt.Errorf("%s has the SHA-256 %x, not the pinned %s", name, got, want)
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 		return "", err
@@ -152,15 +148,6 @@ func get(ctx context.Context, url string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("GET %s: more than %d bytes", url, limit)
 	}
 	return body, nil
-}
-
-func checksum(sums []byte, name string) (string, error) {
-	for line := range strings.Lines(string(sums)) {
-		if fields := strings.Fields(line); len(fields) == 2 && fields[1] == name {
-			return strings.ToLower(fields[0]), nil
-		}
-	}
-	return "", fmt.Errorf("SHA256SUMS lists no %s", name)
 }
 
 func fromZip(dst io.Writer, archive []byte) error {

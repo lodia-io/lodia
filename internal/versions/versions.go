@@ -44,6 +44,15 @@ var minors = map[string]struct{ coreDNS, konnectivity, latest, endOfSupport stri
 // of Lodia's calls to etcd run its release binary, and EtcdImage is its image.
 const EtcdVersion = "v3.5.27"
 
+// EtcdArchives is the SHA-256 of each archive of etcd's release at
+// EtcdVersion that test/etcdbinary fetches, from the release's SHA256SUMS.
+var EtcdArchives = map[string]string{
+	"etcd-v3.5.27-darwin-amd64.zip":   "7e1655623b7c14cb5f3a20be7ff7bed1a61109aed4398b8be677fd9fc016c2e0",
+	"etcd-v3.5.27-darwin-arm64.zip":   "1b00a9739b8874e310d799a5cad1fae41a3af9387752fb4211946ee08b267ab4",
+	"etcd-v3.5.27-linux-amd64.tar.gz": "0aad9a9e4e0817a021e933f9806a2b2960a62f949ad5a3d6436d8886945cb1bc",
+	"etcd-v3.5.27-linux-arm64.tar.gz": "1277309f540c5a0329c428f95455c9f76d24f768c8d28fd2753e891c379053fa",
+}
+
 // EtcdImage runs the etcd of a minor step's rehearsal: etcd's own image at
 // EtcdVersion, with etcdctl and etcdutl
 // (https://github.com/etcd-io/etcd/releases/tag/v3.5.27).
