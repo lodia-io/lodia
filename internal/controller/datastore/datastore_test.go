@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	druidapicommon "github.com/gardener/etcd-druid/api/common"
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -50,6 +49,8 @@ import (
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/controller/datastore/datastoretest"
+	"go.lodia.io/lodia/internal/etcddruid"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -105,15 +106,19 @@ func (r *reads) pausedAt(key client.ObjectKey) int64 {
 const (
 	druidNamespace    = "druid-system"
 	druidDeployment   = "etcd-druid"
-	druidVersion      = "v0.39.0"
+	druidVersion      = "v0.39.2"
 	operatorNamespace = "lodia-system"
 	revision          = "v0.0.0-test+running"
 	previousRevision  = "v0.0.0-test+previous"
 )
 
+func newDruid() *etcddruid.Engine {
+	return &etcddruid.Engine{Namespace: druidNamespace, Deployment: druidDeployment, Version: druidVersion, StatusSync: 12 * time.Second}
+}
+
 func TestMain(m *testing.M) {
 	testenv.SkipUnlessAvailable("the datastore controller tests")
-	druid, err := testenv.DruidCRDs()
+	druid, err := druidtest.CRDs()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "etcd-druid CRDs:", err)
 		os.Exit(1)
@@ -130,7 +135,7 @@ func TestMain(m *testing.M) {
 	}
 	mgr := env.Manager(asDatastore, false)
 	managerReads = &reads{Client: mgr.GetClient(), etcdReady: map[client.ObjectKey]druidv1alpha1.Condition{}, paused: map[client.ObjectKey]int64{}}
-	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 10); err != nil {
+	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 10); err != nil {
 		env.Fatal("controller", err)
 	}
 	ctx := env.StartManager(mgr)
@@ -641,7 +646,7 @@ func TestConditionsFromState(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	}))
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "dev"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Etcd read fails returned %v, want the read's error", err)
 	}
@@ -708,7 +713,7 @@ func TestACredentialsCopyTheAPIServerRefusesIsThePasssError(t *testing.T) {
 	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}}, func() client.Object {
 		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
 	})
-	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apistatus.Refused(err) {
 		t.Fatalf("a pass whose credentials copy is refused returned %v, want the refusal, which the log then holds", err)
 	}
@@ -1074,7 +1079,7 @@ func TestBackupCredentialsCopied(t *testing.T) {
 	}
 }
 
-const snapshotParser = "https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L34-L59"
+const snapshotParser = "https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/snapshot.go#L34-L59"
 
 func snapshotPrefix(key string) string {
 	for _, version := range []string{"v1/", "v2/"} {
@@ -1105,7 +1110,7 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 		{"prod/team-v1/v1/" + string(cp.UID) + "/v2/Full-00000000-00000052-1761500000.gz", "prod/team-v1/v1/"},
 	} {
 		if got := snapshotPrefix(c.key); got != c.prefix {
-			t.Errorf("etcd-backup-restore v0.45.1 reads %s under %q, want %q (%s)", c.key, got, c.prefix, snapshotParser)
+			t.Errorf("etcd-backup-restore v0.45.3 reads %s under %q, want %q (%s)", c.key, got, c.prefix, snapshotParser)
 		}
 	}
 
@@ -1118,7 +1123,7 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	}))
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns.Name, Name: "v1"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Namespace read fails returned %v, want the read's error", err)
 	}
@@ -1127,7 +1132,7 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 func readyOn(t *testing.T, ns, cp string, generation int) {
 	t.Helper()
 	runStatefulSet(t, ns, cp, generation)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
 }
 
@@ -1160,7 +1165,7 @@ func TestHeldClass(t *testing.T) {
 		t.Errorf("quota %s from class generation %s: the held class's edit reached the Etcd", quota, recorded)
 	}
 	runStatefulSet(t, ns, cp, 2)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonSecretNotFound,
 		"has quorum, 1 of 1 members ready; DatastoreClass holding is held: its credentials Secret "+credentialsNamespace+"/s3 is missing")
 	reconciled(t, ns, cp)
@@ -1176,7 +1181,7 @@ func TestHeldClass(t *testing.T) {
 		}
 		return nil
 	})
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
 	if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); strings.Contains(c.Message, "is held") {
 		t.Errorf("the class is still reported held: %s", c.Message)
@@ -1367,7 +1372,7 @@ func TestPredecessorsCopy(t *testing.T) {
 		t.Errorf("the predecessor's copy moved from resourceVersion %s to %s", predecessors.ResourceVersion, again.ResourceVersion)
 	}
 	runStatefulSet(t, ns, cp, 2)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, "has quorum, 1 of 1 members ready; DatastoreClass succeeding is held: "+controlledBy)
 	if err := k8s.Delete(t.Context(), predecessors); err != nil {
 		t.Fatal(err)
@@ -1456,31 +1461,9 @@ func setStatefulSetStatus(t *testing.T, ns, cp string, mutate func(*appsv1.State
 	}
 }
 
-func setEtcdStatus(t *testing.T, ns, cp string, mutate func(*druidv1alpha1.EtcdStatus)) {
+func setEtcdStatus(t *testing.T, ns, cp string, options ...druidtest.Option) {
 	t.Helper()
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		etcd := getEtcd(t, ns, cp)
-		etcd.Status = druidv1alpha1.EtcdStatus{
-			LastOperation:      etcd.Status.LastOperation,
-			ObservedGeneration: new(etcd.Generation),
-			Ready:              new(true),
-			Replicas:           1,
-			ReadyReplicas:      1,
-			CurrentReplicas:    1,
-			Conditions: []druidv1alpha1.Condition{{
-				Type: druidv1alpha1.ConditionTypeAllMembersUpdated, Status: druidv1alpha1.ConditionTrue, Reason: "AllMembersUpdated",
-				Message: "All members reflect latest desired spec", LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-			}},
-			Members: []druidv1alpha1.EtcdMemberStatus{{
-				Name: cp + "-etcd-0", ID: new("8e9e05c52164694d"), Role: new(druidv1alpha1.EtcdRoleLeader),
-				Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
-			}},
-		}
-		if mutate != nil {
-			mutate(&etcd.Status)
-		}
-		return k8s.Status().Update(t.Context(), etcd)
-	}); err != nil {
+	if err := druidtest.SetStatus(t.Context(), k8s, ns, cp, options...); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1495,14 +1478,14 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd reported-etcd, observedGeneration 0")
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	setEtcdStatus(t, ns, cp, druidtest.Members(1, 0))
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd reported-etcd has 0 of 1 members ready")
 	if etcd := getEtcd(t, ns, cp); metav1.HasAnnotation(etcd.ObjectMeta, lodiav1alpha1.EtcdFormedAnnotation) {
 		t.Errorf("an etcd that never had a ready member is annotated %v", etcd.Annotations)
 	}
 
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
 	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
 		if etcd.Annotations[lodiav1alpha1.EtcdFormedAnnotation] != string(etcd.UID) {
@@ -1520,23 +1503,19 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 
 	rows := []struct {
 		name    string
-		etcd    func(*druidv1alpha1.EtcdStatus)
+		etcd    []druidtest.Option
 		sts     func(*appsv1.StatefulSetStatus)
 		updated string
 	}{
-		{"a generation not observed", func(s *druidv1alpha1.EtcdStatus) { s.ObservedGeneration = new(*s.ObservedGeneration - 1) }, nil, "absent"},
-		{"AllMembersUpdated False", func(s *druidv1alpha1.EtcdStatus) {
-			s.Conditions[0].Status, s.Conditions[0].Reason, s.Conditions[0].Message = druidv1alpha1.ConditionFalse, "NotAllMembersUpdated", "At least one member is not yet updated"
-		}, nil, "1"},
-		{"last errors", func(s *druidv1alpha1.EtcdStatus) {
-			s.LastErrors = []druidapicommon.LastError{{Code: "ERR_SYNC_CLIENT_SERVICE", Description: "the server could not answer", ObservedAt: metav1.Now()}}
-		}, nil, "1"},
+		{"a generation not observed", []druidtest.Option{druidtest.Unobserved()}, nil, "absent"},
+		{"AllMembersUpdated False", []druidtest.Option{druidtest.NotAllUpdated()}, nil, "1"},
+		{"last errors", []druidtest.Option{druidtest.LastError("ERR_SYNC_CLIENT_SERVICE", "the server could not answer")}, nil, "1"},
 		{"a StatefulSet generation not observed", nil, func(s *appsv1.StatefulSetStatus) { s.ObservedGeneration-- }, "absent"},
 		{"the member rolled, not ready yet", nil, func(s *appsv1.StatefulSetStatus) { s.AvailableReplicas = 0 }, "0"},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			setEtcdStatus(t, ns, cp, row.etcd)
+			setEtcdStatus(t, ns, cp, row.etcd...)
 			setStatefulSetStatus(t, ns, cp, row.sts)
 			settle(t, ns, cp)
 			waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
@@ -1550,14 +1529,14 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 				}
 				return nil
 			})
-			setEtcdStatus(t, ns, cp, nil)
+			setEtcdStatus(t, ns, cp)
 			setStatefulSetStatus(t, ns, cp, nil)
 		})
 	}
 
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	setEtcdStatus(t, ns, cp, druidtest.Members(1, 0))
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd reported-etcd has 0 of 1 members ready")
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd reported-etcd has quorum, 1 of 1 members ready")
 
 	etcd := getEtcd(t, ns, cp)
@@ -1591,7 +1570,7 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 	if err := k8s.Patch(t.Context(), recreated, copied); err != nil {
 		t.Fatal(err)
 	}
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	setEtcdStatus(t, ns, cp, druidtest.Members(1, 0))
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "Etcd reported-etcd has 0 of 1 members ready")
 }
 
@@ -1614,7 +1593,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 		},
 	})
 	pass := func(c client.WithWatch) error {
-		_, err := (&datastore.Reconciler{Client: c, Reader: c, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+		_, err := (&datastore.Reconciler{Client: c, Reader: c, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
 		return err
 	}
 
@@ -1689,14 +1668,14 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}
 
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose reads still return the deleted Etcd returned %v, want a conflict", err)
 	}
 	stands("a finalizing pass whose reads still return the deleted Etcd")
 
 	name := cp + "-etcd-" + cp + "-etcd-0"
 	create(t, claim(ns, name, nil))
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), request); err != nil {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), request); err != nil {
 		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd returned %v", err)
 	}
 	stands("a finalizing pass from a cache that still holds the deleted Etcd")
@@ -1753,7 +1732,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 			return nil
 		},
 	})
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose list still returns the reclaimed claim returned %v, want a conflict", err)
 	}
 	if pvc := getClaim(t, ns, name); pvc.UID != successor.UID || !pvc.DeletionTimestamp.IsZero() {
@@ -1789,11 +1768,7 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	runStatefulSet(t, ns, cp, 1)
 	quorate := func(ready int32) {
 		t.Helper()
-		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = 3, 3, ready, new(ready == 3)
-			s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{Name: cp + "-etcd-1", Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now()},
-				druidv1alpha1.EtcdMemberStatus{Name: cp + "-etcd-2", Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now()})
-		})
+		setEtcdStatus(t, ns, cp, druidtest.Members(3, ready), druidtest.Member(1, druidv1alpha1.EtcdMemberStatusReady, "LeaseSucceeded"), druidtest.Member(2, druidv1alpha1.EtcdMemberStatusReady, "LeaseSucceeded"))
 	}
 	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 		s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, 3, 3, 3, 3
@@ -1824,20 +1799,14 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 			return k8s.Update(t.Context(), fresh)
 		})
 	}
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-		s.Replicas, s.CurrentReplicas, s.ReadyReplicas = 3, 3, 1
-		s.Conditions = append(s.Conditions, druidv1alpha1.Condition{
-			Type: druidv1alpha1.ConditionTypeScaleOperationComplete, Status: druidv1alpha1.ConditionFalse, Reason: druidv1alpha1.ScaleOperationReasonScalingOut,
-			LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-		})
-	})
+	setEtcdStatus(t, ns, cp, druidtest.Members(3, 1), druidtest.Scale(druidv1alpha1.ScaleOperationReasonScalingOut))
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 1 of 3 members ready, while etcd-druid scales it")
 	update(func(fresh *lodiav1alpha1.ControlPlane) { fresh.Spec.HighAvailability = nil })
 	settle(t, ns, cp)
 	if etcd := getEtcd(t, ns, cp); etcd.Spec.Replicas != 3 {
 		t.Errorf("the Etcd asks for %d members while etcd-druid scales it, want the 3 it scales to", etcd.Spec.Replicas)
 	}
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Replicas, s.CurrentReplicas, s.ReadyReplicas = 3, 3, 3 })
+	setEtcdStatus(t, ns, cp, druidtest.Members(3, 3))
 	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
 		if _, ok := etcd.Annotations["resources.druid.gardener.cloud/allow-unhealthy-pod-eviction"]; etcd.Spec.Replicas != 1 || ok || len(etcd.Spec.SchedulingConstraints.TopologySpreadConstraints) != 0 {
 			return fmt.Errorf("the Etcd asks for %d members, annotated %v, spread by %+v", etcd.Spec.Replicas, etcd.Annotations, etcd.Spec.SchedulingConstraints.TopologySpreadConstraints)
@@ -1860,22 +1829,11 @@ func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = pods, ready, ready, pods, pods
 		})
-		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = pods, pods, ready, new(ready == pods)
-			for i := int32(1); i < members; i++ {
-				s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{
-					Name: fmt.Sprintf("%s-etcd-%d", cp, i), Role: new(druidv1alpha1.EtcdRoleMember), Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
-				})
-			}
-			complete := druidv1alpha1.Condition{
-				Type: druidv1alpha1.ConditionTypeScaleOperationComplete, Status: druidv1alpha1.ConditionTrue, Reason: druidv1alpha1.ScaleOperationReasonNoScaleOperation,
-				LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-			}
-			if scaling != "" {
-				complete.Status, complete.Reason = druidv1alpha1.ConditionFalse, scaling
-			}
-			s.Conditions = append(s.Conditions, complete)
-		})
+		options := []druidtest.Option{druidtest.Members(pods, ready)}
+		for i := 1; i < int(members); i++ {
+			options = append(options, druidtest.Member(i, druidv1alpha1.EtcdMemberStatusReady, "LeaseSucceeded"))
+		}
+		setEtcdStatus(t, ns, cp, append(options, druidtest.Scale(scaling))...)
 	}
 	druid(1, 1, 1, "")
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd growing-etcd has quorum, 1 of 1 members ready")
@@ -1960,22 +1918,11 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = pods, ready, ready, pods, pods
 		})
-		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = pods, pods, ready, new(ready == pods)
-			for i := int32(1); i < members; i++ {
-				s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{
-					Name: fmt.Sprintf("%s-etcd-%d", cp, i), Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
-				})
-			}
-			complete := druidv1alpha1.Condition{
-				Type: druidv1alpha1.ConditionTypeScaleOperationComplete, Status: druidv1alpha1.ConditionTrue, Reason: druidv1alpha1.ScaleOperationReasonNoScaleOperation,
-				LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-			}
-			if scaling != "" {
-				complete.Status, complete.Reason = druidv1alpha1.ConditionFalse, scaling
-			}
-			s.Conditions = append(s.Conditions, complete)
-		})
+		options := []druidtest.Option{druidtest.Members(pods, ready)}
+		for i := 1; i < int(members); i++ {
+			options = append(options, druidtest.Member(i, druidv1alpha1.EtcdMemberStatusReady, "LeaseSucceeded"))
+		}
+		setEtcdStatus(t, ns, cp, append(options, druidtest.Scale(scaling))...)
 	}
 	druid(3, 3, 3, "")
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
@@ -2025,7 +1972,7 @@ func TestAddingHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
 
 	t.Run("the lone member restarting on the current spec holds it", func(t *testing.T) {
@@ -2046,7 +1993,7 @@ func TestAddingHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 	})
 	t.Run("a StatefulSet its controller has not observed holds it", func(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.ObservedGeneration-- })
-		setEtcdStatus(t, ns, cp, nil)
+		setEtcdStatus(t, ns, cp)
 		expectMembers(t, ns, cp, 1, false)
 	})
 	t.Run("a settled etcd takes it", func(t *testing.T) {
@@ -2071,17 +2018,7 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 	})
 	druid := func(scaling string) {
 		t.Helper()
-		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = 3, 3, 2, new(false)
-			complete := druidv1alpha1.Condition{
-				Type: druidv1alpha1.ConditionTypeScaleOperationComplete, Status: druidv1alpha1.ConditionTrue, Reason: druidv1alpha1.ScaleOperationReasonNoScaleOperation,
-				LastTransitionTime: metav1.Now(), LastUpdateTime: metav1.Now(),
-			}
-			if scaling != "" {
-				complete.Status, complete.Reason = druidv1alpha1.ConditionFalse, scaling
-			}
-			s.Conditions = append(s.Conditions, complete)
-		})
+		setEtcdStatus(t, ns, cp, druidtest.Members(3, 2), druidtest.Scale(scaling))
 	}
 	druid(druidv1alpha1.ScaleOperationReasonScalingOut)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 2 of 3 members ready, while etcd-druid scales it")
@@ -2116,18 +2053,14 @@ func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 			s.Replicas, s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.UpdatedReplicas = 3, ready, ready, 3, 3
 		})
-		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-			s.Replicas, s.CurrentReplicas, s.ReadyReplicas, s.Ready = 3, 3, ready, new(ready == 3)
-			s.Members[0].Status, s.Members[0].Reason = first, reason
-			for i := 1; i < 3; i++ {
-				s.Members = append(s.Members, druidv1alpha1.EtcdMemberStatus{
-					Name: fmt.Sprintf("%s-etcd-%d", cp, i), Status: druidv1alpha1.EtcdMemberStatusReady, Reason: "LeaseSucceeded", LastTransitionTime: metav1.Now(),
-				})
-			}
-			if first == "" {
-				s.Members = s.Members[1:]
-			}
-		})
+		options := []druidtest.Option{druidtest.Members(3, ready), druidtest.Member(0, first, reason)}
+		for i := 1; i < 3; i++ {
+			options = append(options, druidtest.Member(i, druidv1alpha1.EtcdMemberStatusReady, "LeaseSucceeded"))
+		}
+		if first == "" {
+			options = append(options, druidtest.Unlisted(0))
+		}
+		setEtcdStatus(t, ns, cp, options...)
 	}
 	druid(2, druidv1alpha1.EtcdMemberStatusNotReady, "ContainersNotReady")
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd kept-etcd has quorum, 2 of 3 members ready")
@@ -2170,7 +2103,7 @@ func TestAHeldScaleOutResumesOnceTheStatefulSetSettles(t *testing.T) {
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
 	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 		s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.CurrentRevision = 0, 0, 0, "old"
@@ -2448,7 +2381,7 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 		t.Errorf("quota %s, storageCapacity %s, defragmentation %q: want the quota capped at half the 20Gi volume of an Etcd that has not formed and the rest of the edit applied", quota, capacity, schedule)
 	}
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 		"has quorum, 1 of 1 members ready; DatastoreClass quota's quota 12Gi is capped at 10Gi: it needs 24Gi of volume and Etcd quota-etcd's is 20Gi")
 
@@ -2464,7 +2397,7 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 	if quota := quantity(waitEtcd(t, ns, cp, recorded("4")).Spec.Etcd.Quota); quota != "10Gi" {
 		t.Errorf("quota %s: half the volume is not applied", quota)
 	}
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	testenv.Eventually(t, func() error {
 		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Message != "Etcd quota-etcd has quorum, 1 of 1 members ready" {
 			return fmt.Errorf("DatastoreReady %+v, want the quota no longer capped", c)
@@ -2692,7 +2625,7 @@ func TestRecordedClass(t *testing.T) {
 
 func reconcileNow(t *testing.T, ns, name string) time.Duration {
 	t.Helper()
-	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2779,7 +2712,7 @@ func TestClassGone(t *testing.T) {
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, namesGeneration(1))
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
 	create(t, claim(ns, "kept-etcd-kept-etcd-0", nil))
 	settle(t, ns, cp)
@@ -2802,7 +2735,7 @@ func TestClassGone(t *testing.T) {
 		}
 	}
 	runStatefulSet(t, ns, cp, 2)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd kept-etcd has quorum, 1 of 1 members ready")
 
 	if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
@@ -3069,7 +3002,7 @@ func TestNetworkPolicyOfAnotherOwner(t *testing.T) {
 			waitEtcd(t, ns, row.cp, namesGeneration(1))
 			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1")
 			runStatefulSet(t, ns, row.cp, 1)
-			setEtcdStatus(t, ns, row.cp, nil)
+			setEtcdStatus(t, ns, row.cp)
 			reconciled(t, ns, row.cp)
 			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, row.message)
 			if after := reconcileNow(t, ns, row.cp); after != time.Minute {
@@ -3131,7 +3064,7 @@ func TestNetworkPolicyRefused(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(1))
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1")
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses NetworkPolicy walled-etcd; the reason is in Lodia's log")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no NetworkPolicy while the API server refuses it, got %v", err)
@@ -3184,7 +3117,7 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, row.funcs))
-			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion}
+			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
 			if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !errors.Is(err, row.err) {
 				t.Fatalf("the pass returned %v, want %v", err, row.err)
 			}

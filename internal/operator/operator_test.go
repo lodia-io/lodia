@@ -28,7 +28,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/server/v3/embed"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,7 +37,6 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/wait"
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
-	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/features"
 	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/rest"
@@ -63,8 +61,10 @@ import (
 	"go.lodia.io/lodia/internal/controller/lifecycle"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/testetcd"
 )
 
 func TestTheCacheHoldsTheGatewayAPIWholeOnlyWhereItIsServed(t *testing.T) {
@@ -204,17 +204,7 @@ func TestADiscoveryErrorIsAnError(t *testing.T) {
 
 func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 	cfg := start(t)
-	member := testserver.NewTestConfig(t)
-	etcdServer, err := embed.StartEtcd(member)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(etcdServer.Close)
-	select {
-	case <-etcdServer.Server.ReadyNotify():
-	case <-time.After(60 * time.Second):
-		t.Fatal("the etcd member took too long to start")
-	}
+	member := testetcd.Start(t, testetcd.Config{})
 	k8s, err := client.New(cfg, client.Options{Scheme: operator.Scheme()})
 	if err != nil {
 		t.Fatal(err)
@@ -244,8 +234,8 @@ func TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns(t *testing.T) {
 		t.Fatal(err)
 	}
 	sources.Etcd.Cache = fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(cp, etcd).Build()
-	sources.Etcd.EtcdClient = func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-		return clientv3.New(clientv3.Config{Endpoints: []string{member.ListenClientUrls[0].String()}, DialTimeout: 5 * time.Second})
+	sources.Etcd.EtcdClient = func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
+		return clientv3.New(clientv3.Config{Endpoints: []string{member.ClientURL}, DialTimeout: 5 * time.Second})
 	}
 	collector, err := operator.Metrics(mgr.GetCache(), mgr.Elected(), testInputs, sources)
 	if err != nil {
@@ -458,7 +448,7 @@ func run(t *testing.T, cfg *rest.Config, gatewayAPI bool) (client.Client, <-chan
 	return k8s, stopped
 }
 
-var testInputs = operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "etcd-druid", EtcdDruidDeployment: "etcd-druid", OperatorNamespace: "lodia-system"}
+var testInputs = operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "etcd-druid", EtcdDruidDeployment: "etcd-druid", EtcdDruidStatusSync: 15 * time.Second, OperatorNamespace: "lodia-system"}
 
 func createControlPlane(t *testing.T, k8s client.Client) *lodiav1alpha1.ControlPlane {
 	t.Helper()
@@ -772,9 +762,13 @@ func TestTheSecretsOfTheAccessAreReadThroughOneReaderHealthAndTheEtcdSamplerShar
 		TLSCASecretRef:     druidv1alpha1.SecretReference{SecretReference: corev1.SecretReference{Name: "dev-etcd-ca"}},
 		ClientTLSSecretRef: corev1.SecretReference{Name: "dev-etcd-client"},
 	}
+	store, err := sources.Etcd.Druid.Get(t.Context(), fake.NewClientBuilder().WithScheme(operator.Scheme()).WithObjects(etcd).Build(), cp)
+	if err != nil {
+		t.Fatal(err)
+	}
 	named.Store(0)
 	for range 3 {
-		c, err := sources.Etcd.EtcdClient(t.Context(), etcd)
+		c, err := sources.Etcd.EtcdClient(t.Context(), store)
 		if err != nil {
 			t.Fatal(err)
 		}

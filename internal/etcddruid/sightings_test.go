@@ -1,11 +1,10 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-package datastore
+package etcddruid_test
 
 import (
 	"context"
-	"maps"
 	"slices"
 	"sync"
 	"testing"
@@ -24,6 +23,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid"
 )
 
 func withoutControlPlanes(t *testing.T) client.WithWatch {
@@ -42,25 +43,20 @@ func running(name string, state druidapicommon.LastOperationState) *druidv1alpha
 	}
 }
 
-func sighted(r *Reconciler) []string {
-	var names []string
-	for key := range maps.Keys(r.sightings) {
-		names = append(names, key.Name)
-	}
-	slices.Sort(names)
-	return names
+func sighted(r *datastore.Reconciler) []string {
+	return r.Druid.Sighted()
 }
 
-func passOver(t *testing.T, r *Reconciler, name string) error {
+func passOver(t *testing.T, r *datastore.Reconciler, name string) error {
 	t.Helper()
 	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "team-a", Name: name}})
 	return err
 }
 
 func TestASightingIsDroppedWithItsRunOrItsControlPlane(t *testing.T) {
-	r := &Reconciler{Client: withoutControlPlanes(t), Clock: clocktesting.NewFakePassiveClock(time.Now())}
+	r := &datastore.Reconciler{Client: withoutControlPlanes(t), Druid: &etcddruid.Engine{}, Clock: clocktesting.NewFakePassiveClock(time.Now())}
 	for _, name := range []string{"dev-etcd", "prod-etcd", "test-etcd"} {
-		if !r.inFlight(running(name, druidv1alpha1.LastOperationStateProcessing)) {
+		if !r.Druid.InFlight(r.Clock, running(name, druidv1alpha1.LastOperationStateProcessing)) {
 			t.Fatalf("Etcd %s Processing under a run ID the record does not name is not in flight", name)
 		}
 	}
@@ -69,8 +65,8 @@ func TestASightingIsDroppedWithItsRunOrItsControlPlane(t *testing.T) {
 		running("dev-etcd", druidv1alpha1.LastOperationStateError),
 		{ObjectMeta: metav1.ObjectMeta{Name: "dev-etcd", Namespace: "team-a"}},
 	} {
-		r.inFlight(running("dev-etcd", druidv1alpha1.LastOperationStateProcessing))
-		if r.inFlight(ended) {
+		r.Druid.InFlight(r.Clock, running("dev-etcd", druidv1alpha1.LastOperationStateProcessing))
+		if r.Druid.InFlight(r.Clock, ended) {
 			t.Errorf("an Etcd whose last operation is %+v is in flight", ended.Status.LastOperation)
 		}
 		if got := sighted(r); !slices.Equal(got, []string{"prod-etcd", "test-etcd"}) {
@@ -101,25 +97,27 @@ func TestASightingIsDroppedWithItsRunOrItsControlPlane(t *testing.T) {
 func TestTheWaitEndsAtTheBoundFromTheFirstSighting(t *testing.T) {
 	first := time.Now()
 	now := clocktesting.NewFakePassiveClock(first)
-	r := &Reconciler{Clock: now}
-	for _, at := range []time.Duration{0, specReconcileBound - time.Nanosecond} {
+	e := &etcddruid.Engine{}
+	for _, at := range []time.Duration{0, etcddruid.SpecReconcileBound - time.Nanosecond} {
 		now.SetTime(first.Add(at))
-		if !r.inFlight(running("dev-etcd", druidv1alpha1.LastOperationStateProcessing)) {
+		if !e.InFlight(now, running("dev-etcd", druidv1alpha1.LastOperationStateProcessing)) {
 			t.Errorf("a run first seen %s ago is not in flight", at)
 		}
 	}
-	now.SetTime(first.Add(specReconcileBound))
-	if r.inFlight(running("dev-etcd", druidv1alpha1.LastOperationStateProcessing)) {
-		t.Errorf("a run first seen %s ago is in flight", specReconcileBound)
+	now.SetTime(first.Add(etcddruid.SpecReconcileBound))
+	if e.InFlight(now, running("dev-etcd", druidv1alpha1.LastOperationStateProcessing)) {
+		t.Errorf("a run first seen %s ago is in flight", etcddruid.SpecReconcileBound)
 	}
 }
 
 func TestTwoWorkersOnTheSameEtcdShareItsSighting(t *testing.T) {
-	r := &Reconciler{Client: withoutControlPlanes(t), Clock: clocktesting.NewFakePassiveClock(time.Now())}
+	r := &datastore.Reconciler{Client: withoutControlPlanes(t), Druid: &etcddruid.Engine{}, Clock: clocktesting.NewFakePassiveClock(time.Now())}
 	held := make([]bool, 2)
 	var workers sync.WaitGroup
 	for i := range held {
-		workers.Go(func() { held[i] = r.inFlight(running("dev-etcd", druidv1alpha1.LastOperationStateProcessing)) })
+		workers.Go(func() {
+			held[i] = r.Druid.InFlight(r.Clock, running("dev-etcd", druidv1alpha1.LastOperationStateProcessing))
+		})
 	}
 	workers.Go(func() {
 		if err := passOver(t, r, "dev"); err != nil {

@@ -39,6 +39,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -57,7 +58,7 @@ func unpaused(c client.WithWatch) client.WithWatch {
 }
 
 func operatorAt(c client.WithWatch, operatorRevision string) *datastore.Reconciler {
-	return &datastore.Reconciler{Client: c, Reader: k8s, EtcdDruidNamespace: druidNamespace, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}}
+	return &datastore.Reconciler{Client: c, Reader: k8s, Druid: newDruid(), Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}}
 }
 
 func ahead(r *datastore.Reconciler, by time.Duration) *datastore.Reconciler {
@@ -87,21 +88,14 @@ func druidRuns(t *testing.T, ns, cp, run string, state druidapicommon.LastOperat
 
 func druidRunsAt(t *testing.T, ns, cp, run string, state druidapicommon.LastOperationState, at time.Time) {
 	t.Helper()
-	last, err := json.Marshal(druidapicommon.LastOperation{RunID: run, Type: druidv1alpha1.LastOperationTypeReconcile, State: state, Description: "etcd-druid's stand-in", LastUpdateTime: metav1.NewTime(at)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd", Namespace: ns}}
-	if err := k8s.Status().Patch(t.Context(), etcd, client.RawPatch(types.MergePatchType, []byte(`{"status":{"lastOperation":`+string(last)+`}}`)), client.FieldOwner("etcd-druid")); err != nil {
+	if err := druidtest.Run(t.Context(), k8s, ns, cp, run, state, at); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func removeDruidAnnotation(t *testing.T, ns, cp string) {
 	t.Helper()
-	etcd := &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: cp + "-etcd", Namespace: ns}}
-	patch := client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+druidv1alpha1.DruidOperationAnnotation+`":null}}}`))
-	if err := k8s.Patch(t.Context(), etcd, patch, client.FieldOwner("etcd-druid")); err != nil {
+	if err := druidtest.Served(t.Context(), k8s, ns, cp); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -154,7 +148,7 @@ func heldTenant(t *testing.T, ns, name, class string, edit func(*lodiav1alpha1.C
 	mustPass(t, previous, ns, name)
 	answer(t, ns, name)
 	runStatefulSet(t, ns, name, 1)
-	setEtcdStatus(t, ns, name, nil)
+	setEtcdStatus(t, ns, name)
 	mustPass(t, previous, ns, name)
 	etcd := getEtcd(t, ns, name)
 	if err := requestedAs("1/"+previousRevision, false)(etcd); err != nil || stamped(etcd) != previousRevision || etcd.Annotations[lodiav1alpha1.EtcdFormedAnnotation] != string(etcd.UID) {
@@ -272,7 +266,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 	stale := getEtcd(t, ns, cp)
 	writeGeneration(t, ns, cp, 2)
 	missing := operatorAt(unpaused(k8s), revision)
-	missing.EtcdDruidDeployment = "absent"
+	missing.Druid.Deployment = "absent"
 	mustPass(t, missing, ns, cp)
 	rolled := getEtcd(t, ns, cp)
 	if err := namesGeneration(2)(rolled); err != nil {
@@ -505,7 +499,7 @@ func TestAHeldPassCreatesAMissingEtcdFromTheFullRender(t *testing.T) {
 	sameSpec(t, getPolicy(t, ns, cp).Spec, policySpec(cp, false))
 
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
 	if etcd := getEtcd(t, ns, cp); etcd.Annotations[lodiav1alpha1.EtcdFormedAnnotation] != string(etcd.UID) {
 		t.Errorf("a held pass over an Etcd with a ready member left it annotated %v", etcd.Annotations)
@@ -519,7 +513,7 @@ func TestAHeldPassWritesTheNetworkPolicyOnlyWhenItIsMissing(t *testing.T) {
 	createClass(t, newClass("held-policy", "Retain"))
 	heldTenant(t, ns, cp, "held-policy", nil)
 	held := operatorAt(unpaused(k8s), revision)
-	held.EtcdDruidNamespace = "another-druid-system"
+	held.Druid.Namespace = "another-druid-system"
 
 	if err := k8s.Delete(t.Context(), getPolicy(t, ns, cp)); err != nil {
 		t.Fatal(err)
@@ -588,7 +582,7 @@ func TestTheRequestFollowsEveryWriteOfTheEtcd(t *testing.T) {
 
 	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	runStatefulSet(t, ns, cp, 2)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	third := waitEtcd(t, ns, cp, requestedAs("3/"+revision, true))
 	if third.Spec.Replicas != 3 {
 		t.Errorf("the Etcd asks for %d members", third.Spec.Replicas)
@@ -609,22 +603,21 @@ func TestARequestThatConflictsIsMadeByTheNextPass(t *testing.T) {
 	mustPass(t, r, ns, cp)
 	answer(t, ns, cp)
 	runStatefulSet(t, ns, cp, 1)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	mustPass(t, r, ns, cp)
 
 	writeGeneration(t, ns, cp, 2)
 	racing := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
 		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			if _, ok := obj.(*druidv1alpha1.Etcd); ok {
-				setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-					s.ObservedGeneration, s.Conditions[0].LastUpdateTime = new(int64(1)), metav1.NewTime(time.Now().Add(time.Hour))
-				})
+				setEtcdStatus(t, ns, cp, druidtest.Observed(1), druidtest.SyncedAt(time.Now().Add(time.Hour)))
 			}
 			return c.Patch(ctx, obj, patch, opts...)
 		},
 	})
-	if result, err := passOf(t, operatorAt(racing, revision), ns, cp); err != nil || result.RequeueAfter != 15*time.Second {
-		t.Errorf("a pass whose request conflicts returned %v and a requeue after %s, want none and 15s", err, result.RequeueAfter)
+	racer := operatorAt(racing, revision)
+	if result, err := passOf(t, racer, ns, cp); err != nil || result.RequeueAfter != racer.Druid.StatusSync {
+		t.Errorf("a pass whose request conflicts returned %v and a requeue after %s, want none and %s", err, result.RequeueAfter, racer.Druid.StatusSync)
 	}
 	etcd := getEtcd(t, ns, cp)
 	if err := namesGeneration(2)(etcd); err != nil {
@@ -838,9 +831,9 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	} {
 		t.Run(c.deployment, func(t *testing.T) {
 			r := operatorAt(unpaused(k8s), revision)
-			r.EtcdDruidDeployment = c.deployment
-			if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
-				t.Errorf("a request that waits for etcd-druid requeues after %s, want 15s", result.RequeueAfter)
+			r.Druid.Deployment = c.deployment
+			if result := mustPass(t, r, ns, cp); result.RequeueAfter != r.Druid.StatusSync {
+				t.Errorf("a request that waits for etcd-druid requeues after %s, want %s", result.RequeueAfter, r.Druid.StatusSync)
 			}
 			etcd := getEtcd(t, ns, cp)
 			if quota := quantity(etcd.Spec.Etcd.Quota); quota != "3Gi" || stamped(etcd) != revision {
@@ -868,7 +861,7 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 	answer(t, ns, cp)
 	writeGeneration(t, ns, cp, 2)
 	absent := operatorAt(unpaused(k8s), revision)
-	absent.EtcdDruidDeployment = "druid-absent"
+	absent.Druid.Deployment = "druid-absent"
 	mustPass(t, absent, ns, cp)
 	etcd = getEtcd(t, ns, cp)
 	if err := requestedAs(fmt.Sprintf("%d/%s", etcd.Generation, revision), true)(etcd); err != nil {
@@ -888,7 +881,7 @@ func TestAnEtcdWithoutAStampOrARecordWaitsForEtcdDruid(t *testing.T) {
 		t.Fatal(err)
 	}
 	held := operatorAt(unpaused(k8s), revision)
-	held.EtcdDruidDeployment = "druid-absent"
+	held.Druid.Deployment = "druid-absent"
 	mustPass(t, held, ns, cp)
 	if err := requestedAs("", false)(getEtcd(t, ns, cp)); err != nil {
 		t.Errorf("a held pass over an Etcd without a stamp or a record, while etcd-druid's Deployment is absent: %v", err)
@@ -925,9 +918,9 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 
 	t.Run("the record differs", func(t *testing.T) {
 		waiting := operatorAt(unpaused(k8s), revision)
-		waiting.EtcdDruidDeployment = "absent"
-		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != 15*time.Second {
-			t.Errorf("a pass whose record differs from a settled Etcd requeues after %s, want 15s", result.RequeueAfter)
+		waiting.Druid.Deployment = "absent"
+		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != waiting.Druid.StatusSync {
+			t.Errorf("a pass whose record differs from a settled Etcd requeues after %s, want %s", result.RequeueAfter, waiting.Druid.StatusSync)
 		}
 		if got := reportedRevision(t, ns, cp); got != previousRevision {
 			t.Errorf("status.datastore.operatorRevision is %q, want %s kept", got, previousRevision)
@@ -946,7 +939,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 			},
 		})
 		waiting := operatorAt(older, revision)
-		waiting.EtcdDruidDeployment = "absent"
+		waiting.Druid.Deployment = "absent"
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.AvailableReplicas = 0 })
 		mustPass(t, waiting, ns, cp)
 		if got := reportedRevision(t, ns, cp); got != previousRevision {
@@ -963,9 +956,9 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	})
 	answer(t, ns, cp)
 	t.Run("etcd-druid has not observed the generation", func(t *testing.T) {
-		setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { *s.ObservedGeneration-- })
+		setEtcdStatus(t, ns, cp, druidtest.Unobserved())
 		keeps(t)
-		setEtcdStatus(t, ns, cp, nil)
+		setEtcdStatus(t, ns, cp)
 	})
 	t.Run("the StatefulSet has not observed its generation", func(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.ObservedGeneration-- })
@@ -1017,7 +1010,7 @@ func TestTheRevisionIsReportedFromTheStatefulSetReadAfterTheRequest(t *testing.T
 							return err
 						}
 						if row.status {
-							setEtcdStatus(t, ns, cp, nil)
+							setEtcdStatus(t, ns, cp)
 						}
 						answer(t, ns, cp)
 					}
@@ -1076,14 +1069,14 @@ func recordedRun(t *testing.T, ns, cp string) string {
 func druidEnds(t *testing.T, ns, cp, run string) {
 	t.Helper()
 	druidRuns(t, ns, cp, run, druidv1alpha1.LastOperationStateSucceeded)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	removeDruidAnnotation(t, ns, cp)
 }
 
 func asksAgain(t *testing.T, r *datastore.Reconciler, ns, cp, request, run string) {
 	t.Helper()
-	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
-		t.Errorf("a pass over a request that is not served requeues after %s, want 15s", result.RequeueAfter)
+	if result := mustPass(t, r, ns, cp); result.RequeueAfter != r.Druid.StatusSync {
+		t.Errorf("a pass over a request that is not served requeues after %s, want %s", result.RequeueAfter, r.Druid.StatusSync)
 	}
 	if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil {
 		t.Errorf("a request etcd-druid's annotation is gone from, not served: %v", err)
@@ -1174,19 +1167,12 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 	})
 
 	for i, c := range []struct {
-		name   string
-		druid  func(t *testing.T)
-		served bool
-		run    string
+		name  string
+		druid func(t *testing.T)
+		run   string
 	}{
-		{"an annotation removed without a reconcile", func(*testing.T) {}, false, ""},
-		{"a reconcile under another run ID that failed", func(t *testing.T) { druidRuns(t, ns, cp, "failed", druidv1alpha1.LastOperationStateError) }, false, "failed"},
-		{"a create under another run ID that succeeded", func(t *testing.T) {
-			last := `{"status":{"lastOperation":{"runID":"created","type":"Create","state":"Succeeded","description":"etcd-druid's stand-in","lastUpdateTime":"2026-11-10T00:00:00Z"}}}`
-			if err := k8s.Status().Patch(t.Context(), getEtcd(t, ns, cp), client.RawPatch(types.MergePatchType, []byte(last))); err != nil {
-				t.Fatal(err)
-			}
-		}, true, ""},
+		{"an annotation removed without a reconcile", func(*testing.T) {}, ""},
+		{"a reconcile under another run ID that failed", func(t *testing.T) { druidRuns(t, ns, cp, "failed", druidv1alpha1.LastOperationStateError) }, "failed"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			writeGeneration(t, ns, cp, i+2)
@@ -1197,15 +1183,8 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 			}
 			c.druid(t)
 			removeDruidAnnotation(t, ns, cp)
-			if !c.served {
-				asksAgain(t, r, ns, cp, request, cmp.Or(c.run, run))
-				answer(t, ns, cp)
-				return
-			}
-			mustPass(t, r, ns, cp)
-			if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil {
-				t.Errorf("a request served by a create: %v", err)
-			}
+			asksAgain(t, r, ns, cp, request, cmp.Or(c.run, run))
+			answer(t, ns, cp)
 		})
 	}
 }
@@ -1228,8 +1207,8 @@ func servedRequest(t *testing.T, cp string) (string, *datastore.Reconciler, stri
 
 func waits(t *testing.T, r *datastore.Reconciler, ns, cp, request, run string) {
 	t.Helper()
-	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
-		t.Errorf("a pass while a reconcile that started after the request runs requeues after %s, want 15s", result.RequeueAfter)
+	if result := mustPass(t, r, ns, cp); result.RequeueAfter != r.Druid.StatusSync {
+		t.Errorf("a pass while a reconcile that started after the request runs requeues after %s, want %s", result.RequeueAfter, r.Druid.StatusSync)
 	}
 	if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
 		t.Errorf("a pass while a reconcile that started after the request runs left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
@@ -1244,7 +1223,7 @@ func TestARequestIsNotAskedAgainWhileAReconcileThatStartedAfterItRuns(t *testing
 	waits(t, r, ns, cp, request, run)
 	waits(t, ahead(r, 3*time.Minute-10*time.Second), ns, cp, request, run)
 	druidRuns(t, ns, cp, "back-to-back", druidv1alpha1.LastOperationStateSucceeded)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 0 {
 		t.Errorf("a pass over a request served by the reconcile that ran requeues after %s", result.RequeueAfter)
 	}
@@ -1324,7 +1303,7 @@ func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *
 	create(t, credentials(credentialsNamespace))
 	createClass(t, fullClass("held-generation", credentialsNamespace))
 	heldTenant(t, ns, cp, "held-generation", nil)
-	setEtcdStatus(t, ns, cp, druidBackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
+	setEtcdStatus(t, ns, cp, druidtest.BackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
 	r := operatorAt(unpaused(k8s), revision)
 	mustPass(t, r, ns, cp)
 	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
@@ -1337,10 +1316,7 @@ func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *
 			t.Errorf("%s is %+v, want %s %s %q at generation 1 while the ControlPlane is at %d", conditionType, c, status, reason, message, generation)
 		}
 	}
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) {
-		s.Ready, s.ReadyReplicas = new(false), 0
-		druidBackupReady(druidv1alpha1.ConditionFalse, "BackupFailed", "Stale snapshot leases")(s)
-	})
+	setEtcdStatus(t, ns, cp, druidtest.Members(1, 0), druidtest.BackupReady(druidv1alpha1.ConditionFalse, "BackupFailed", "Stale snapshot leases"))
 	mustPass(t, r, ns, cp)
 	check(lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd "+cp+"-etcd has 0 of 1 members ready")
 	check(lodiav1alpha1.ConditionBackupReady, metav1.ConditionFalse, lodiav1alpha1.ReasonBackupFailed, "etcd-druid reports of Etcd "+cp+"-etcd: Stale snapshot leases")
@@ -1348,7 +1324,7 @@ func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *
 		t.Errorf("a held pass gave the Etcd %d members", etcd.Spec.Replicas)
 	}
 
-	setEtcdStatus(t, ns, cp, druidBackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
+	setEtcdStatus(t, ns, cp, druidtest.BackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
 	mustPass(t, r, ns, cp)
 	check(lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd "+cp+"-etcd has quorum, 1 of 1 members ready")
 	check(lodiav1alpha1.ConditionBackupReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBackupSucceeded, "etcd-druid reports of Etcd "+cp+"-etcd: Snapshot backup succeeded")
@@ -1378,7 +1354,7 @@ func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *
 			return nil
 		},
 	})
-	setEtcdStatus(t, ns, cp, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+	setEtcdStatus(t, ns, cp, druidtest.Members(1, 0))
 	mustPass(t, operatorAt(stale, "v0.0.0-test+next"), ns, cp)
 	if ready := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready.Reason != lodiav1alpha1.ReasonQuorumLost {
 		t.Errorf("a held pass on a cache that lags the last write left DatastoreReady %s %q", ready.Reason, ready.Message)

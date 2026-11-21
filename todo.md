@@ -28,8 +28,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - Upstream for etcd-druid: the etcd container's readiness probe takes its scheme from `backup.tls` while the wrapper serves HTTPS whenever client TLS is on; and a failing pre-scale snapshot shows only on its `EtcdOpsTask`, not on the `Etcd` (findings 1 and 4).
   Those `presync-snapshot-*` tasks also make etcd-druid reject a `Backup`'s snapshot task while they run, which the backup reconciler sends again.
-  In turn, a `Backup`'s task that has not completed makes etcd-druid reject its pre-sync task ([reconcile_task.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcdopstask/reconcile_task.go#L110-L115)), and after three rejected or failed attempts etcd-druid goes ahead without that snapshot, with only a warning event ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L216-L226)); a slow `Backup` flush, or one sent again while the full snapshot Lease stays short of the seal, can use them up.
-  etcd-druid takes that snapshot before every hibernation, every change of the replicas, Lodia's switch between 1 and 3 members included, and every change of the etcd-wrapper, backup-restore or init container's image ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/statefulset.go#L130-L183)).
+  In turn, a `Backup`'s task that has not completed makes etcd-druid reject its pre-sync task ([reconcile_task.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcdopstask/reconcile_task.go#L110-L115)), and after three rejected or failed attempts etcd-druid goes ahead without that snapshot, with only a warning event ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/statefulset.go#L216-L226)); a slow `Backup` flush, or one sent again while the full snapshot Lease stays short of the seal, can use them up.
+  etcd-druid takes that snapshot before every hibernation, every change of the replicas, Lodia's switch between 1 and 3 members included, and every change of the etcd-wrapper, backup-restore or init container's image ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/statefulset.go#L130-L183)).
 - Upstream for etcd-backup-restore: the sidecar keeps serving its first serving certificate after the Secret changes (finding 3).
 
 ## From deciding the design (2026-10-25)
@@ -41,9 +41,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the Datastore controller (2026-10-25)
 
-- The backup-restore sidecar's `spec.backup.resources` have no field in the `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.0); the operator configuration's `defaults.resources` should cover them once phase 1 measures.
+- The backup-restore sidecar's `spec.backup.resources` have no field in the `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.2); the operator configuration's `defaults.resources` should cover them once phase 1 measures.
 - The shared `Placement` and `resources` types carry only size limits (`api/v1alpha1/controlplane_types.go`), not the rules of pod validation: the class's `placement` and `etcd.resources` have none yet.
-  Until then a class value the apps API refuses in etcd-druid's StatefulSet shows as `status.datastore.members.updated` absent, since etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/controller/etcd/reconciler.go#L127-L144)).
+  Until then a class value the apps API refuses in etcd-druid's StatefulSet shows as `status.datastore.members.updated` absent, since etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconciler.go#L127-L144)).
   The running members stay, later certificate generations stop reaching them until the class is fixed, and the reason is in the `Etcd`'s `status.lastErrors`.
 - No schema can check what pod admission refuses in a pod the StatefulSet API accepted: a `priorityClassName` that names no PriorityClass, or one deleted later, and a LimitRange or ResourceQuota in the tenant namespace.
   The rolling update deletes the old pod first and then cannot create the new one ([stateful_set_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_set_control.go#L748-L760)), so a single member goes down at its next roll, and every certificate generation is a roll.
@@ -102,7 +102,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the backup prefix (2026-10-26)
 
-- The `v1/` prefix rule: the schema refuses a `DatastoreClass` backup prefix that contains `v1/` or ends in `v1` (the `@todo` in `api/v1alpha1/datastore_types.go`), since etcd-backup-restore v0.45.1 takes the last `v1/` anywhere in a key for its layout ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/snapshot.go#L39-L59)).
+- The `v1/` prefix rule: the schema refuses a `DatastoreClass` backup prefix that contains `v1/` or ends in `v1` (the `@todo` in `api/v1alpha1/datastore_types.go`), since etcd-backup-restore v0.45.3 takes the last `v1/` anywhere in a key for its layout ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/snapshot.go#L39-L59)).
   Remove the rule, its cases in `test/api/validation_test.go` and its mentions in the docs once the sidecar of the etcd-druid release Lodia pins reads a key relative to its store prefix.
 
 ## From the lossless rollouts (2026-10-27)
@@ -130,14 +130,14 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - The e2e suites reach a tenant through `status.endpoint`, a kind node's address on the docker network `kind`, which Docker Desktop does not route to a macOS host, so `make e2e` and `make e2e-ha` run on Linux alone, as on GitHub's runners.
   Running `go test` in a container attached to that network would bring them back to macOS.
-- Lodia sets etcd-druid's annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` on a highly available `Etcd`, which etcd-druid marks as one that may be removed at any time and is not meant for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/poddistruptionbudget/poddisruptionbudget.go#L35-L38)).
+- Lodia sets etcd-druid's annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` on a highly available `Etcd`, which etcd-druid marks as one that may be removed at any time and is not meant for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/poddistruptionbudget/poddisruptionbudget.go#L35-L38)).
   Check it with every etcd-druid upgrade, and ask upstream for a field of the `Etcd` in its place.
 - Ask etcd-druid whether a scale-in can leave the remaining member running: the members' pod template carries a checksum of the ConfigMap whose `initial-cluster` names every member, so removing `highAvailability` restarts the last member: about 20 seconds without `Ready`, in which the controller manager and the scheduler lose their leases.
 - kube-apiserver closes its connection to the external signer on SIGTERM ([kubernetes#142980](https://github.com/kubernetes/kubernetes/issues/142980)), so the API server's shutdown delay is a `preStop` sleep of 15 seconds with `--shutdown-delay-duration=0` (the `@todo` in `internal/controller/workloads/render.go`, api-exposure).
   Go back to `--shutdown-delay-duration=15s` without the sleep once a fix, such as kubernetes#143346, is in every Kubernetes patch Lodia supports.
-- Removing `highAvailability` waits for etcd-druid to list `<cp>-etcd-0` as ready, but etcd-druid lists a member as ready until its lease is a minute old ([check_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/health/etcdmember/check_ready.go#L88-L106), [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L66)).
+- Removing `highAvailability` waits for etcd-druid to list `<cp>-etcd-0` as ready, but etcd-druid lists a member as ready until its lease is a minute old ([check_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/health/etcdmember/check_ready.go#L88-L106), [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/charts/values.yaml#L66)).
   A removal within that minute of member 0 failing reaches etcd-druid, which holds the scale-in until member 0 returns, so `DatastoreReady` reads `1 of 1 members ready`, and Lodia holds adding `highAvailability` back until that scale-in completes.
-  Reading the pod's readiness would narrow the window, not close it, at the cost of RBAC on pods: etcd's readiness probe takes up to 25 seconds to fail ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/statefulset/builder.go#L603-L610)).
+  Reading the pod's readiness would narrow the window, not close it, at the cost of RBAC on pods: etcd's readiness probe takes up to 25 seconds to fail ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L603-L610)).
 
 ## From availability surviving a spec change (2026-10-28)
 
@@ -146,7 +146,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - G2's step that deletes the etcd leader's pod tolerates one failed request in each loop, answered 500 with the etcd client's error for a call etcd ended without a gRPC status, `Internal` or `Unknown` ([gate G2](test/e2e/README.md#gate-g2-a-highly-available-control-plane)); the target is zero.
   The required `e2e-ha` failed three times in that step while it wanted zero, each time on requests answered 500: run 40764385375 on #43, one on a reused connection in each loop, sent 21 ms (inside the tenant) and 32 ms (outside) after the deletion the test logged; run 42450529023 on #56, one of 480 inside the tenant on new connections, sent 2.4 ms after the deletion; and run [43430828031](https://github.com/lodia-io/lodia/actions/runs/43430828031) on #89, one of 580 outside the tenant on new connections in the step's first second, `Unknown`, the first whose body the loops logged.
   Locally it was `Internal`, 1 of 193,299 reads over 30 deletions at 50 requests a second, sent 5 ms after its deletion, and 0 of 39,740 over 30 at 10.
-  `listen-client-http-urls` would give gRPC a listener of its own ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L128)), but etcd-druid renders the configuration and does not offer it ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/component/configmap/etcdconfig.go#L55)); once it does, the step goes back to zero.
+  `listen-client-http-urls` would give gRPC a listener of its own ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L128)), but etcd-druid renders the configuration and does not offer it ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/configmap/etcdconfig.go#L55)); once it does, the step goes back to zero.
 - Health compares each condition it applies with the cache unless it has just read it live, and its predicates ignore its own conditions, so a write the server holds and the cache does not yet, such as a `Reachable` False, stays until its next pass, a `health.period` (5 s by default) later.
 
 ## From KubeconfigRequest (2026-10-30)
@@ -158,9 +158,9 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the backups (2026-11-01)
 
 - Until etcd-backup-restore sorts snapshot sets by revision, a compaction Job of etcd-druid that lists the store before a `Backup`'s full snapshot lands and saves its own after it makes the copy take the compacted set, which ends below the seal, while the `Backup` reads `Completed`; the restore's seal check refuses such a `Backup` (`RestoreFailed`).
-  The copier sorts the sets by their full snapshot's `CreatedOn` ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L175-L177), the same on `master` on 2026-11-02), while the restore and the compactor take the full snapshot with the highest revision ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/miscellaneous/miscellaneous.go#L129-L150)).
+  The copier sorts the sets by their full snapshot's `CreatedOn` ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L175-L177), the same on `master` on 2026-11-02), while the restore and the compactor take the full snapshot with the highest revision ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L129-L150)).
   Propose upstream that it sort by the full snapshot's last revision, then by `CreatedOn`.
-  When the fix is released: bump the etcd-backup-restore image the copy Job runs, which comes from etcd-druid's image vector ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.0/internal/images/images.yaml#L20-L25)); remove the `@todo` at the copy task's creation in `internal/controller/datastore/backup.go`; and add a test that would have caught it if one is feasible, such as an e2e step that saves a full snapshot of a lower revision after the `Backup`'s and checks that the copy holds the seal.
+  When the fix is released: bump the etcd-backup-restore image the copy Job runs, which comes from etcd-druid's image vector ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/images/images.yaml#L20-L25)); remove the `@todo` at the copy task's creation in `internal/controller/datastore/backup.go`; and add a test that would have caught it if one is feasible, such as an e2e step that saves a full snapshot of a lower revision after the `Backup`'s and checks that the copy holds the seal.
 
 - A `Backup` started after the store moved through `<cp>-etcd-backup`, but before the sidecar's files hold the new keys, puts its full snapshot into the old store, while its copy Job reads the new keys when it starts and finds nothing there, which succeeds; the kubelet's update delay bounds the window ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)).
   `docs/operations.md` has a person wait for that upload after the two moves no `Backup` sees; a move the `Backup` records is not covered.
@@ -204,7 +204,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `apply` drops empty scheduling constraints for that reason, and an empty `sharedConfig` needs the same.
 - A person's edit of the `Etcd`'s `spec.backup.store` to a value the schema of `status.datastore.snapshots` refuses fails every status apply while `keep` or `copied` carries the store: while the class waits for its grant or is held for its credentials, while the operator revision is held, and while the recorded class is gone, until a class of its name is created again and granted; `DatastoreReady`, `BackupReady` and `status.datastore` stop being written meanwhile.
   A store a person adds under a class without one, or an `endpointOverride` under a class whose store names no endpoint, is a field Lodia's apply does not own: it stays, and every status apply fails, held or not, until a class edit that renders that field is granted.
-  etcd-druid's schema takes any provider or none, `Local` among them, no container, and a prefix and an endpoint of any length ([store.go](https://github.com/gardener/etcd-druid/blob/v0.39.0/api/core/v1alpha1/store.go#L13-L35)); the status takes S3, GCS, ABS and Swift, a bucket of at least one character, a prefix of 1 to 512 characters and an endpoint of at most 512.
+  etcd-druid's schema takes any provider or none, `Local` among them, no container, and a prefix and an endpoint of any length ([store.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/store.go#L13-L35)); the status takes S3, GCS, ABS and Swift, a bucket of at least one character, a prefix of 1 to 512 characters and an endpoint of at most 512.
 
 ## From the provider's audit (2026-11-11)
 
@@ -220,12 +220,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Six Markdown files are hard-wrapped against `CONTRIBUTING.md:27`: `CLAUDE.md`, `SECURITY.md`, `ADOPTERS.md`, `CODE_OF_CONDUCT.md`, `docs/review-checklist.md` and `docs/etcd-spike-2026-10.md`.
 - The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
   A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
-
-## From the datastore tests' time (2026-11-11)
-
-- `TestTheMetricsServeTheSamplesOfTheSamplerSetupReturns` (`internal/operator/operator_test.go`) starts its etcd on ports that `testserver.NewTestConfig` chose by listening on port 0 and closing ([test_server.go](https://github.com/kubernetes/apiserver/blob/v0.37.1/pkg/storage/etcd3/testserver/test_server.go#L37-L50)); a socket that takes such a port first fails the test on `bind: address already in use`, and on macOS the probe, on the wildcard address, also hands out a port another process holds on `127.0.0.1`.
-  The datastore tests no longer have the window: their `etcdConfig` and `runEtcd` (`internal/controller/datastore/embeddedetcd_test.go`) give each etcd listeners that etcd itself binds.
-  Share them with this test.
 
 ## From the kubelet certificates' lifetime (2026-11-12)
 
@@ -271,3 +265,18 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Refuse the three flags, or render each replica's pod IP as `--peer-advertise-ip` with the cluster CA as `--peer-ca-file` and turn the proxy on, which is a decision of its own.
 - The copy's etcd runs `versions.EtcdImage` from `gcr.io/etcd-development` by digest; move it under the configured registry once the `registry` key is read ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "The operator revision").
 - The rehearsal's verdict names no snapshot size: the etcd image has no shell, so the size reaches the operator only through the `snapshot` container's log or the copy's `apiserver_storage_size_bytes`, a read of the copy's whole `/metrics`.
+
+## From the delta restore (2026-11-21)
+
+- Four open defects in etcd-backup-restore's restore through delta snapshots ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L480-L530)).
+  [#1043](https://github.com/gardener/etcd-backup-restore/issues/1043) and [#1044](https://github.com/gardener/etcd-backup-restore/issues/1044) fail a restore loudly with `mismatched event revision`, whatever the leases: two deltas that start at one revision after a leader handoff, and a full snapshot named by a revision read before the snapshot is taken ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/snapshotter/snapshotter.go#L341-L368)), whose content can end above the first delta.
+  [#1045](https://github.com/gardener/etcd-backup-restore/issues/1045) and [#1046](https://github.com/gardener/etcd-backup-restore/issues/1046) need a lease that expires while the restore's embedded etcd replays deltas: it revokes the lease and the revision moves.
+  Only `applyFirstDeltaSnapshot` trims events, by the revision it reads right after it fetched and decoded the first delta alone.
+  A revocation before that read drops the first delta's leading events, and the restore reports success (#1045).
+  A revocation later, during the replay, leaves the revision one ahead, and [`verifySnapshotRevision`](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L583-L594) aborts with `mismatched event revision` (#1046).
+  The only leases in a tenant's etcd are an Event's, `--event-ttl`, an hour by default ([options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/apiserver/options/options.go#L129)), and etcd counts a restored lease from its restart ([lessor.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/lease/lessor.go#L482-L490)), so both need a replay longer than the TTL.
+  Lodia's defaults, a full snapshot a day and a delta every 5 minutes (`api/v1alpha1/datastore_types.go`), make a one-member tenant that loses its volume replay up to a day of deltas.
+  What Lodia does: CEL refuses an `event-ttl` under 1h in `apiServer.extraArgs`, which assumes that a replay of the deltas at the quota takes less than an hour.
+  `TestOneMemberRestoredThroughDeltas` (`nightly-restore.yml`) logs a replay's duration and its number of deltas; its runs on kind replayed 2 and 3 deltas in 0.65 s and 1.05 s, on a database of a few hundred revisions, so the assumption at the quota is still not measured.
+  When #1045 and #1046 are fixed and released: bump the etcd-backup-restore image that etcd-druid's image vector names, lower the 1h floor in `api/v1alpha1/controlplane_types.go` to refuse 0 and below, since with 0 Events never expire, and drop the cases between 0 and 1h from `test/api/validation_test.go` and the restore's clause from `docs/api/controlplane.md`.
+  Nothing in Lodia works around #1043 and #1044; the bump is all they take.

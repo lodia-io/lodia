@@ -12,7 +12,6 @@ import (
 	"net"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -38,6 +37,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/metrics"
 	"go.lodia.io/lodia/internal/secretcache"
@@ -45,17 +45,12 @@ import (
 
 const healthTimeout = 5 * time.Second
 
-// etcdDruidStatusSync is how often etcd-druid syncs an Etcd's status, its
-// chart's etcdStatusSyncPeriod
-// (https://github.com/gardener/etcd-druid/blob/v0.39.0/charts/values.yaml#L63).
-const etcdDruidStatusSync = 15 * time.Second
-
 // Scheme holds the kinds the controllers read and write.
 func Scheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(lodiav1alpha1.AddToScheme(scheme))
-	utilruntime.Must(druidv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(etcddruid.AddToScheme(scheme))
 	utilruntime.Must(gatewayv1.Install(scheme))
 	return scheme
 }
@@ -122,7 +117,8 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 // LoadConfig returned, Version the operator's build version, SignerImage
 // lodia-signer's, which runs beside each API server, TunnelImage
 // lodia-tunnel's, which runs on each node of a gateway tenant,
-// EtcdDruidVersion, EtcdDruidNamespace and EtcdDruidDeployment etcd-druid's,
+// EtcdDruidVersion, EtcdDruidNamespace, EtcdDruidDeployment and
+// EtcdDruidStatusSync etcd-druid's,
 // OperatorNamespace the operator's, which each etcd's NetworkPolicy admits,
 // and GatewayAPI what GatewayAPI found. Dial, when set, opens every
 // connection PKI, Tenant, Health and the rehearsal make to a tenant, whose
@@ -135,6 +131,7 @@ type Inputs struct {
 	EtcdDruidVersion    string
 	EtcdDruidNamespace  string
 	EtcdDruidDeployment string
+	EtcdDruidStatusSync time.Duration
 	OperatorNamespace   string
 	GatewayAPI          bool
 	Dial                func(ctx context.Context, network, address string) (net.Conn, error)
@@ -143,11 +140,13 @@ type Inputs struct {
 // Sources are the controllers Setup registers whose memory Lodia's metrics
 // serve: Health, with its counter of failed probes, health-nodes, with its
 // histogram of lag and its counts of the nodes, and the etcd sampler, with its
-// samples. No registry holds the counter or the histogram.
+// samples, and the engine the collector reads the etcds through. No registry
+// holds the counter or the histogram.
 type Sources struct {
 	Health *health.Reconciler
 	Nodes  *health.NodesReconciler
 	Etcd   *datastore.SampleReconciler
+	Druid  *etcddruid.Engine
 }
 
 type controllers struct {
@@ -166,8 +165,9 @@ type controllers struct {
 
 func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 	secrets := secretcache.New(mgr.GetCache(), mgr.GetAPIReader())
-	dialEtcd := func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-		return datastore.DialEtcd(ctx, secrets, etcd)
+	druid := &etcddruid.Engine{Namespace: in.EtcdDruidNamespace, Deployment: in.EtcdDruidDeployment, Version: in.EtcdDruidVersion, StatusSync: in.EtcdDruidStatusSync}
+	dialEtcd := func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
+		return druid.Dial(ctx, secrets, etcd)
 	}
 	c := &controllers{
 		pki: &pki.Reconciler{
@@ -183,19 +183,17 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 		},
 		requests: &pki.KubeconfigRequestReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Clock: clock.RealClock{}, PolicyGrace: 10 * time.Second},
 		datastore: &datastore.Reconciler{
-			Client:              mgr.GetClient(),
-			Reader:              mgr.GetAPIReader(),
-			EtcdDruidNamespace:  in.EtcdDruidNamespace,
-			EtcdDruidDeployment: in.EtcdDruidDeployment,
-			EtcdDruidVersion:    in.EtcdDruidVersion,
-			Revision:            revision,
-			OperatorNamespace:   in.OperatorNamespace,
-			EtcdClient:          dialEtcd,
-			Clock:               clock.RealClock{},
+			Client:            mgr.GetClient(),
+			Reader:            mgr.GetAPIReader(),
+			Druid:             druid,
+			Revision:          revision,
+			OperatorNamespace: in.OperatorNamespace,
+			EtcdClient:        dialEtcd,
+			Clock:             clock.RealClock{},
 		},
-		backup:    &datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), EtcdClient: dialEtcd, Clock: clock.RealClock{}},
-		sampler:   &datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dialEtcd, Clock: clock.RealClock{}},
-		lifecycle: newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, revision),
+		backup:    &datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
+		sampler:   &datastore.SampleReconciler{Cache: mgr.GetCache(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
+		lifecycle: newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, in.EtcdDruidStatusSync, revision),
 		tenant:    &tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: secrets, ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial},
 		health:    newHealth(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
 		nodes:     newNodes(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),
@@ -252,7 +250,7 @@ func Setup(mgr ctrl.Manager, in Inputs) (*Sources, error) {
 	if err := c.rehearsal.SetupWithManager(mgr, workers.Rehearsal.Workers); err != nil {
 		return nil, fmt.Errorf("set up the rehearsal reconciler: %w", err)
 	}
-	return &Sources{Health: c.health, Nodes: c.nodes, Etcd: c.sampler}, nil
+	return &Sources{Health: c.health, Nodes: c.nodes, Etcd: c.sampler, Druid: c.sampler.Druid}, nil
 }
 
 // Metrics is Lodia's collector over a manager's cache and its Elected, and
@@ -265,7 +263,7 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 		return nil, err
 	}
 	return &metrics.Collector{
-		Reader: reader, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts, HoldFraction: sources.Nodes.HoldFraction,
+		Reader: reader, Druid: sources.Druid, Elected: elected, Revision: revision, MaxConcurrentRollouts: in.Config.Fleet.MaxConcurrentRollouts, HoldFraction: sources.Nodes.HoldFraction,
 		EtcdSample: sources.Etcd.Sample, NodeCounts: sources.Nodes.Counts, SampleLag: sources.Nodes.SampleLag, ProbeFailures: sources.Health.ProbeFailures,
 	}, nil
 }
@@ -273,12 +271,12 @@ func Metrics(reader client.Reader, elected <-chan struct{}, in Inputs, sources *
 // newLifecycle settles a change Lodia started for as long as Health takes to
 // turn Reachable False and etcd-druid to sync a member's loss into
 // DatastoreReady (docs/decisions/upgrades-and-maintenance-windows.md).
-func newLifecycle(c client.Client, reader client.Reader, cfg Config, revision string) *lifecycle.Reconciler {
+func newLifecycle(c client.Client, reader client.Reader, cfg Config, statusSync time.Duration, revision string) *lifecycle.Reconciler {
 	return &lifecycle.Reconciler{
 		Client: c, Reader: reader, Clock: clock.RealClock{}, Revision: revision,
 		MaxConcurrentRollouts:   cfg.Fleet.MaxConcurrentRollouts,
 		MaxConcurrentRehearsals: cfg.Fleet.MaxConcurrentRehearsals,
-		Settling:                time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + etcdDruidStatusSync,
+		Settling:                time.Duration(cfg.Health.FailuresBeforeFalse)*(cfg.Health.Period.Duration+healthTimeout) + statusSync,
 	}
 }
 

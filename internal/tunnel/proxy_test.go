@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -266,6 +267,9 @@ func TestTwoProxiesShareThePort(t *testing.T) {
 	first := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	listen := first.Listen
 	second := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) { p.Listen = listen })
+	if second.Listen != listen {
+		t.Fatalf("the second proxy listens on %s, want the first's %s", second.Listen, listen)
+	}
 	if err := Probe(context.Background(), second.Socket); err != nil {
 		t.Fatal(err)
 	}
@@ -770,6 +774,48 @@ func TestProxyStopsBeforeItHasLoaded(t *testing.T) {
 	}
 }
 
+func TestTheProxyFixtureStartsOnAnotherAddressWhenOneIsTaken(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	var taken string
+	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) {
+		taken = p.Listen
+		occupy(t, taken)
+	})
+	if f.Listen == taken {
+		t.Fatalf("still on the taken address %s", taken)
+	}
+	if err := tripThrough(t, f.Listen); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTheProxyFixtureKeepsAnAddressTheTestSet(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	taken := occupy(t, "127.0.0.1:0")
+	f := newProxyFixture(t, upstream.addr, func(p *Proxy) { p.Listen = taken })
+	writeVolume(t, f.certDir, pairFiles(t, client(t, ca)))
+	writeVolume(t, f.caDir, caFiles(t, ca))
+	f.start(t)
+	if err := f.awaitReady(t); addrInUse(err) != taken {
+		t.Fatalf("awaitReady returned %v, want Run's address-in-use error for %s", err, taken)
+	}
+}
+
+func TestTheProxyFixtureReportsARunThatFailsAtOnce(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	f := newProxyFixture(t, upstream.addr, func(p *Proxy) { p.Listen = "no port" })
+	writeVolume(t, f.certDir, pairFiles(t, client(t, ca)))
+	writeVolume(t, f.caDir, caFiles(t, ca))
+	f.start(t)
+	var addrErr *net.AddrError
+	if err := f.awaitReady(t); !errors.As(err, &addrErr) {
+		t.Fatalf("awaitReady returned %v, want the error of Run", err)
+	}
+}
+
 func TestProxyFailsWhenItCannotBind(t *testing.T) {
 	ca := newCA(t, "cluster")
 	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
@@ -1046,42 +1092,53 @@ type proxyFixture struct {
 	*Proxy
 	certDir, caDir string
 	logs           *logBuffer
-	stop           func() error
+	process        *runner
+	picked         string
 }
 
 func newProxyFixture(t *testing.T, upstream string, tune func(*Proxy)) *proxyFixture {
 	t.Helper()
 	log, logs := newLog(t)
-	p, err := NewProxy(freeAddr(t), upstream, t.TempDir(), t.TempDir(), socketPath(t), log)
+	picked := freeAddr(t)
+	p, err := NewProxy(picked, upstream, t.TempDir(), t.TempDir(), socketPath(t), log)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tune != nil {
 		tune(p)
 	}
-	return &proxyFixture{Proxy: p, certDir: p.CertDir, caDir: p.CADir, logs: logs}
+	return &proxyFixture{Proxy: p, certDir: p.CertDir, caDir: p.CADir, logs: logs, picked: picked}
 }
 
 func (f *proxyFixture) start(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- f.Run(ctx) }()
-	var once sync.Once
-	var result error
-	f.stop = func() error {
-		once.Do(func() {
-			cancel()
-			result = <-done
-		})
-		return result
-	}
-	t.Cleanup(func() { _ = f.stop() })
+	f.process = startRunner(t, f.Run)
+}
+
+func (f *proxyFixture) stop() error {
+	return f.process.stop()
 }
 
 func (f *proxyFixture) waitReady(t *testing.T) {
 	t.Helper()
-	eventually(t, "proxy's socket", func() bool { return Probe(context.Background(), f.Socket) == nil })
+	if err := f.awaitReady(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *proxyFixture) awaitReady(t *testing.T) error {
+	t.Helper()
+	ready := func() bool { return Probe(context.Background(), f.Socket) == nil }
+	for attempt := 1; !f.process.await(t, "proxy's socket", ready); attempt++ {
+		err := f.process.err
+		if attempt == bindAttempts || addrInUse(err) != f.Listen || f.Listen != f.picked {
+			return fmt.Errorf("proxy returned before its socket answered: %w", err)
+		}
+		f.picked = freeAddr(t)
+		f.Listen = f.picked
+		f.start(t)
+	}
+	return nil
 }
 
 func startProxy(t *testing.T, upstream string, pair, ca map[string][]byte, tune func(*Proxy)) *proxyFixture {

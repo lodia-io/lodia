@@ -41,6 +41,11 @@ spec:
             {{- else }}
             - --etcd-druid-version={{ required "etcdDruidVersion must name the version etcd-druid runs while etcdDruid.enabled is false" .Values.etcdDruidVersion }}
             {{- end }}
+            {{- if .Values.etcdDruid.enabled }}
+            - --etcd-druid-status-sync-period={{ .Values.etcdDruid.operatorConfig.controllers.etcd.etcdStatusSyncPeriod }}
+            {{- else }}
+            - --etcd-druid-status-sync-period={{ required "etcdDruidStatusSyncPeriod must name how often etcd-druid syncs an Etcd's status while etcdDruid.enabled is false" .Values.etcdDruidStatusSyncPeriod }}
+            {{- end }}
             - --etcd-druid-namespace={{ include "lodia.etcdDruidNamespace" . }}
             - --etcd-druid-deployment={{ include "lodia.etcdDruidDeployment" . }}
             - --operator-namespace={{ .Release.Namespace }}

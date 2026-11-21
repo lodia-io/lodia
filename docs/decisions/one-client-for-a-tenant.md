@@ -16,7 +16,7 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   An inventory entry of a kind outside the table is of a kind no longer served, and an entry at another version is addressed at the table's.
   Writes are server-side applies as `lodia/tenant` that force, deletes carry the UID and `resourceVersion` the prune read and propagate in the background, and reads decode a UID, a `resourceVersion`, whether one of the `managedFields` entries is Lodia's apply, the first ten sorted names of the others, a workload's rollout fields and the inventory's entries, counted up to 256.
 - **The data of the Secrets of a tenant's access is read from memory for as long as their `resourceVersion` stays.**
-  `internal/secretcache` is a `client.Reader` that the operator builds once, and that Tenant, `health`, `health-nodes` and `DialEtcd` read through: each reconciler has it as its field `Secrets`, so that `Reader` keeps meaning a live read ([conditions](../../.claude/rules/conditions.md)).
+  `internal/secretcache` is a `client.Reader` that the operator builds once, and that Tenant, `health`, `health-nodes` and `etcddruid.Engine.Dial` read through: each reconciler has it as its field `Secrets`, so that `Reader` keeps meaning a live read ([conditions](../../.claude/rules/conditions.md)).
   A `Get` of a `*corev1.Secret` reads its metadata from the manager's cache.
   When the cache holds it at the UID and `resourceVersion` of the copy in memory, the reader returns a deep copy of that copy and sends nothing.
   Otherwise it reads the Secret from the API server and returns that, and keeps the result only when the cache, read again under the lock that guards the copies, holds that same UID and `resourceVersion`.
@@ -51,7 +51,7 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   A wait is never decided on a copy: where a copy would make Tenant, `health` or `health-nodes` wait or report a Secret unusable, because another owner keeps it, this `ControlPlane` does not control it or it holds no certificate or key pair, the pass reads that Secret from the API server and decides on what it holds.
   A pass that waits sends that read, and a tenant at rest never does.
 - **At rest the operator sends the API server no `get` of a Secret.**
-  Before this change it sent three in each pass of `health` and one in each of `health-nodes`, every 5 s, and the two of `DialEtcd` in the sampler's pass once a minute, 833 a second at 1,000 tenants, and Tenant's every 10 minutes beside them, five in a gateway pass, 8.3 a second, and two in a load-balancer pass, 3.3 a second.
+  Before this change it sent three in each pass of `health` and one in each of `health-nodes`, every 5 s, and the two of the etcd's dialer in the sampler's pass once a minute, 833 a second at 1,000 tenants, and Tenant's every 10 minutes beside them, five in a gateway pass, 8.3 a second, and two in a load-balancer pass, 3.3 a second.
   PKI's two lists of the namespace's Secrets in its pass over each tenant every 10 minutes, the labelled ones whole and every one's metadata, are as they were, about 3.3 a second at 1,000 tenants ([operations](../operations.md#scale)).
   The cache already knows each Secret's `resourceVersion`, since PKI's `Owns(&corev1.Secret{}, builder.OnlyMetadata)` holds the metadata of the Secrets under the operator's label selector.
 

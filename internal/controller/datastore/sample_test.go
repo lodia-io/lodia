@@ -23,7 +23,6 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.etcd.io/etcd/server/v3/embed"
 	"google.golang.org/grpc/connectivity"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -40,8 +39,10 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/testetcd"
 )
 
 var sampledAt = time.Date(2026, 11, 11, 8, 0, 0, 0, time.UTC)
@@ -62,8 +63,8 @@ func fakeCache(objs ...client.Object) client.WithWatch {
 	return fake.NewClientBuilder().WithScheme(k8s.Scheme()).WithObjects(objs...).Build()
 }
 
-func dialURL(endpoint string) func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-	return func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+func dialURL(endpoint string) func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
+	return func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
 		return clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 5 * time.Second})
 	}
 }
@@ -88,65 +89,7 @@ func servedSample(t *testing.T, r *datastore.SampleReconciler, cp *lodiav1alpha1
 	return sample
 }
 
-func clientURL(cfg *embed.Config) string { return cfg.ListenClientUrls[0].String() }
-
 var unreachable = url.URL{Scheme: "http", Host: "127.0.0.1:1"}
-
-func etcdMember(t *testing.T, name string) *embed.Config {
-	t.Helper()
-	cfg := etcdConfig(t)
-	cfg.Name = name
-	cfg.InitialClusterToken = t.Name()
-	return cfg
-}
-
-func startMembers(t *testing.T, cfgs ...*embed.Config) []func() {
-	t.Helper()
-	stops := make([]func(), len(cfgs))
-	etcds := make([]*embed.Etcd, len(cfgs))
-	for i, cfg := range cfgs {
-		e, err := embed.StartEtcd(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		etcds[i] = e
-		stops[i] = sync.OnceFunc(e.Close)
-		t.Cleanup(stops[i])
-	}
-	for _, e := range etcds {
-		select {
-		case <-e.Server.ReadyNotify():
-		case <-time.After(60 * time.Second):
-			t.Fatal("an etcd member took too long to start")
-		}
-		go func() {
-			if err := <-e.Err(); err != nil {
-				t.Error(err)
-			}
-		}()
-	}
-	return stops
-}
-
-func etcdCluster(t *testing.T, n int, configure func(i int, cfg *embed.Config)) ([]func(), []*embed.Config) {
-	t.Helper()
-	cfgs := make([]*embed.Config, n)
-	var initial []string
-	for i := range cfgs {
-		cfgs[i] = etcdMember(t, "m"+strconv.Itoa(i))
-		if n > 1 {
-			socketPeer(cfgs[i])
-		}
-		initial = append(initial, cfgs[i].Name+"="+cfgs[i].AdvertisePeerUrls[0].String())
-	}
-	for i, cfg := range cfgs {
-		cfg.InitialCluster = strings.Join(initial, ",")
-		if configure != nil {
-			configure(i, cfg)
-		}
-	}
-	return startMembers(t, cfgs...), cfgs
-}
 
 func etcdClient(t *testing.T, endpoint string) *clientv3.Client {
 	t.Helper()
@@ -169,19 +112,19 @@ func dbSize(t *testing.T, c *clientv3.Client, endpoint string) int64 {
 
 func sampler(objs ...client.Object) (*datastore.SampleReconciler, *clocktesting.FakeClock) {
 	clk := clocktesting.NewFakeClock(sampledAt)
-	return &datastore.SampleReconciler{Cache: fakeCache(objs...), Clock: clk}, clk
+	return &datastore.SampleReconciler{Druid: newDruid(), Cache: fakeCache(objs...), Clock: clk}, clk
 }
 
 func TestOneMemberGivesItsLeaderAndItsSize(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	cp, etcd := sampledControlPlane("one", "uid-one")
 	r, clk := sampler(cp, etcd)
-	r.EtcdClient = dialURL(clientURL(cfgs[0]))
+	r.EtcdClient = dialURL(member.ClientURL)
 	samplePass(t, r, client.ObjectKeyFromObject(cp))
 	clk.Step(5 * time.Second)
 	got := servedSample(t, r, cp)
-	want := dbSize(t, etcdClient(t, clientURL(cfgs[0])), clientURL(cfgs[0]))
+	want := dbSize(t, etcdClient(t, member.ClientURL), member.ClientURL)
 	if !got.HasLeader || got.DBSize == nil || *got.DBSize != want || len(got.Alarms) > 0 {
 		t.Errorf("the sample of one member is %+v with size %v, want its leader, its size %d and no alarm", got, got.DBSize, want)
 	}
@@ -189,8 +132,8 @@ func TestOneMemberGivesItsLeaderAndItsSize(t *testing.T) {
 
 func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *testing.T) {
 	t.Parallel()
-	members, cfgs := etcdCluster(t, 3, nil)
-	c := etcdClient(t, clientURL(cfgs[0]))
+	cluster := testetcd.StartCluster(t, 3, nil)
+	c := etcdClient(t, cluster.Members[0].ClientURL)
 	value := strings.Repeat("v", 10<<10)
 	for i := range 300 {
 		if _, err := c.Put(t.Context(), fmt.Sprintf("/bulk/%03d", i), value); err != nil {
@@ -209,8 +152,8 @@ func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *test
 		t.Fatal(err)
 	}
 	urlOf, stop := map[string]string{}, map[string]func(){}
-	for i, cfg := range cfgs {
-		urlOf[cfg.Name], stop[cfg.Name] = clientURL(cfg), members[i]
+	for _, m := range cluster.Members {
+		urlOf[m.Name], stop[m.Name] = m.ClientURL, m.Stop
 	}
 	var order []string
 	idOf := map[string]uint64{}
@@ -259,20 +202,18 @@ func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *test
 
 func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 2, func(i int, cfg *embed.Config) {
-		cfg.StrictReconfigCheck = false
+	cluster := testetcd.StartCluster(t, 2, func(i int, cfg *testetcd.Config) {
+		cfg.NoStrictReconfigCheck = true
 		if i == 1 {
-			cfg.AdvertiseClientUrls = []url.URL{unreachable}
+			cfg.AdvertiseClientURL = unreachable.String()
 		}
 	})
-	c := etcdClient(t, clientURL(cfgs[0]))
+	c := etcdClient(t, cluster.Members[0].ClientURL)
 	cp, etcd := sampledControlPlane("learning", "uid-learning")
 	r, clk := sampler(cp, etcd)
-	r.EtcdClient = dialURL(clientURL(cfgs[0]))
-	learner := etcdMember(t, "learner")
-	learner.StrictReconfigCheck = false
-	socketPeer(learner)
-	added, err := c.MemberAddAsLearner(t.Context(), []string{learner.AdvertisePeerUrls[0].String()})
+	r.EtcdClient = dialURL(cluster.Members[0].ClientURL)
+	learner := cluster.Prepare("learner", testetcd.Config{NoStrictReconfigCheck: true})
+	added, err := c.MemberAddAsLearner(t.Context(), []string{learner.PeerURL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,13 +230,7 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 		t.Errorf("one voting member of two answering beside a learner not started yet gives %+v with size %v, want no leader and the member's size", got, got.DBSize)
 	}
 
-	learner.InitialCluster = strings.Join([]string{
-		cfgs[0].Name + "=" + cfgs[0].AdvertisePeerUrls[0].String(),
-		cfgs[1].Name + "=" + cfgs[1].AdvertisePeerUrls[0].String(),
-		learner.Name + "=" + learner.AdvertisePeerUrls[0].String(),
-	}, ",")
-	learner.ClusterState = embed.ClusterStateFlagExisting
-	startMembers(t, learner)
+	learner.Join()
 	testenv.Eventually(t, func() error {
 		list, err := c.MemberList(t.Context())
 		if err != nil {
@@ -310,11 +245,11 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 	})
 
 	testenv.Eventually(t, func() error {
-		voter, err := c.Status(t.Context(), clientURL(cfgs[0]))
+		voter, err := c.Status(t.Context(), cluster.Members[0].ClientURL)
 		if err != nil {
 			return err
 		}
-		learning, err := c.Status(t.Context(), clientURL(learner))
+		learning, err := c.Status(t.Context(), learner.ClientURL)
 		if err != nil {
 			return err
 		}
@@ -335,7 +270,7 @@ func TestALearnerIsNotCountedInTheQuorum(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, m := range list.Members {
-		if m.GetName() == cfgs[1].Name {
+		if m.GetName() == cluster.Members[1].Name {
 			if _, err := c.MemberRemove(t.Context(), m.GetID()); err != nil {
 				t.Fatal(err)
 			}
@@ -364,7 +299,7 @@ func TestAMemberListThatFailsGivesNoLeaderAndNoSize(t *testing.T) {
 }
 
 func TestAClientThatLeavesThePassTooLittleOfItsDeadlineKeepsNoSample(t *testing.T) {
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	for _, c := range []struct {
 		left   time.Duration
 		sample bool
@@ -375,10 +310,10 @@ func TestAClientThatLeavesThePassTooLittleOfItsDeadlineKeepsNoSample(t *testing.
 		t.Run(c.left.String()+" left", func(t *testing.T) {
 			cp, etcd := sampledControlPlane("slow", "uid-slow")
 			r, clk := sampler(cp, etcd)
-			r.EtcdClient = func(ctx context.Context, e *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+			r.EtcdClient = func(ctx context.Context, e *etcddruid.Store) (*clientv3.Client, error) {
 				deadline, _ := ctx.Deadline()
 				time.Sleep(time.Until(deadline) - c.left)
-				return dialURL(clientURL(cfgs[0]))(ctx, e)
+				return dialURL(member.ClientURL)(ctx, e)
 			}
 			samplePass(t, r, client.ObjectKeyFromObject(cp))
 			clk.Step(5 * time.Second)
@@ -392,7 +327,7 @@ func TestAClientThatLeavesThePassTooLittleOfItsDeadlineKeepsNoSample(t *testing.
 
 func TestEveryPassClosesItsClient(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	for _, c := range []struct {
 		name    string
 		timeout time.Duration
@@ -405,8 +340,8 @@ func TestEveryPassClosesItsClient(t *testing.T) {
 			cp, etcd := sampledControlPlane("closing", "uid-closing")
 			r, clk := sampler(cp, etcd)
 			var dialled []*clientv3.Client
-			r.EtcdClient = func(ctx context.Context, e *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-				c, err := dialURL(clientURL(cfgs[0]))(ctx, e)
+			r.EtcdClient = func(ctx context.Context, e *etcddruid.Store) (*clientv3.Client, error) {
+				c, err := dialURL(member.ClientURL)(ctx, e)
 				dialled = append(dialled, c)
 				return c, err
 			}
@@ -431,8 +366,8 @@ func TestEveryPassClosesItsClient(t *testing.T) {
 
 func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, func(_ int, cfg *embed.Config) { cfg.QuotaBackendBytes = 1 << 20 })
-	c := etcdClient(t, clientURL(cfgs[0]))
+	member := testetcd.Start(t, testetcd.Config{QuotaBackendBytes: 1 << 20})
+	c := etcdClient(t, member.ClientURL)
 	value := strings.Repeat("v", 64<<10)
 	for i := 0; ; i++ {
 		_, err := c.Put(t.Context(), fmt.Sprintf("/full/%d", i), value)
@@ -448,7 +383,7 @@ func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
 	}
 	cp, etcd := sampledControlPlane("full", "uid-full")
 	r, clk := sampler(cp, etcd)
-	r.EtcdClient = dialURL(clientURL(cfgs[0]))
+	r.EtcdClient = dialURL(member.ClientURL)
 	testenv.Eventually(t, func() error {
 		samplePass(t, r, client.ObjectKeyFromObject(cp))
 		clk.Step(time.Minute)
@@ -459,7 +394,7 @@ func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
 		return nil
 	})
 
-	status, err := c.Status(t.Context(), clientURL(cfgs[0]))
+	status, err := c.Status(t.Context(), member.ClientURL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +411,7 @@ func TestAMemberWrittenPastItsQuotaReportsNoSpace(t *testing.T) {
 
 func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	for _, c := range []struct {
 		name         string
 		change       func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object
@@ -510,7 +445,7 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			cp, etcd := sampledControlPlane("forgotten", "uid-forgotten")
 			r, clk := sampler(cp, etcd)
-			r.EtcdClient = dialURL(clientURL(cfgs[0]))
+			r.EtcdClient = dialURL(member.ClientURL)
 			samplePass(t, r, client.ObjectKeyFromObject(cp))
 			clk.Step(5 * time.Second)
 			servedSample(t, r, cp)
@@ -527,12 +462,12 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 
 func TestAReadOfTheCacheThatFailsForgetsTheSampleUntilTheNextMinute(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	for _, failing := range []client.Object{&lodiav1alpha1.ControlPlane{}, &druidv1alpha1.Etcd{}} {
 		t.Run(fmt.Sprintf("%T", failing), func(t *testing.T) {
 			cp, etcd := sampledControlPlane("unread", "uid-unread")
 			r, clk := sampler(cp, etcd)
-			r.EtcdClient = dialURL(clientURL(cfgs[0]))
+			r.EtcdClient = dialURL(member.ClientURL)
 			samplePass(t, r, client.ObjectKeyFromObject(cp))
 			clk.Step(5 * time.Second)
 			servedSample(t, r, cp)
@@ -556,14 +491,14 @@ func TestAReadOfTheCacheThatFailsForgetsTheSampleUntilTheNextMinute(t *testing.T
 
 func TestADialThatFailsForgetsTheSample(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	cp, etcd := sampledControlPlane("undialled", "uid-undialled")
 	r, clk := sampler(cp, etcd)
-	r.EtcdClient = dialURL(clientURL(cfgs[0]))
+	r.EtcdClient = dialURL(member.ClientURL)
 	samplePass(t, r, client.ObjectKeyFromObject(cp))
 	clk.Step(5 * time.Second)
 	servedSample(t, r, cp)
-	r.EtcdClient = func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+	r.EtcdClient = func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
 		return nil, errors.New("injected: the client certificate cannot be read")
 	}
 	if got := samplePass(t, r, client.ObjectKeyFromObject(cp)); got.RequeueAfter != time.Minute {
@@ -576,10 +511,10 @@ func TestADialThatFailsForgetsTheSample(t *testing.T) {
 
 func TestARecreatedControlPlaneIsSampledUnderItsNewUIDAlone(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	first, firstEtcd := sampledControlPlane("again", "uid-first")
 	r, clk := sampler(first, firstEtcd)
-	r.EtcdClient = dialURL(clientURL(cfgs[0]))
+	r.EtcdClient = dialURL(member.ClientURL)
 	key := client.ObjectKeyFromObject(first)
 	samplePass(t, r, key)
 	clk.Step(5 * time.Second)
@@ -604,12 +539,12 @@ func TestARecreatedControlPlaneIsSampledUnderItsNewUIDAlone(t *testing.T) {
 
 func TestEachSampleStandsAMinuteWhateverItsPassTook(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	cp, etcd := sampledControlPlane("timed", "uid-timed")
 	r, clk := sampler(cp, etcd)
 	took := 100 * time.Millisecond
-	endpoint := clientURL(cfgs[0])
-	r.EtcdClient = func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+	endpoint := member.ClientURL
+	r.EtcdClient = func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
 		clk.Step(took)
 		return dialURL(endpoint)(ctx, etcd)
 	}
@@ -694,7 +629,7 @@ func formedControlPlane(t *testing.T, ns, name string) *lodiav1alpha1.ControlPla
 	return getControlPlane(t, ns, name)
 }
 
-func runSampler(t *testing.T, ns string, dial func(context.Context, *druidv1alpha1.Etcd) (*clientv3.Client, error)) *datastore.SampleReconciler {
+func runSampler(t *testing.T, ns string, dial func(context.Context, *etcddruid.Store) (*clientv3.Client, error)) *datastore.SampleReconciler {
 	t.Helper()
 	options, err := operator.Cache(false)
 	if err != nil {
@@ -710,7 +645,7 @@ func runSampler(t *testing.T, ns string, dial func(context.Context, *druidv1alph
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &datastore.SampleReconciler{Cache: mgr.GetCache(), EtcdClient: dial, Clock: clock.RealClock{}}
+	r := &datastore.SampleReconciler{Druid: newDruid(), Cache: mgr.GetCache(), EtcdClient: dial, Clock: clock.RealClock{}}
 	if err := r.SetupWithManager(mgr, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -728,10 +663,10 @@ func runSampler(t *testing.T, ns string, dial func(context.Context, *druidv1alph
 
 func TestAMemberThatHangsEndsThePassWithinItsDeadline(t *testing.T) {
 	hole, holeURL := listenBlackHole(t)
-	_, cfgs := etcdCluster(t, 1, func(_ int, cfg *embed.Config) { cfg.AdvertiseClientUrls = []url.URL{holeURL} })
+	member := testetcd.Start(t, testetcd.Config{AdvertiseClientURL: holeURL.String()})
 	ns := namespace(t)
 	cp := formedControlPlane(t, ns, "hanging")
-	r := runSampler(t, ns, dialURL(clientURL(cfgs[0])))
+	r := runSampler(t, ns, dialURL(member.ClientURL))
 	testenv.EventuallyWithin(t, 15*time.Second, func() error {
 		got, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID)
 		if !ok {
@@ -778,8 +713,8 @@ func TestASecretReadThatHangsEndsThePassWithinItsDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := runSampler(t, ns, func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-		return datastore.DialEtcd(ctx, hanging, etcd)
+	r := runSampler(t, ns, func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
+		return newDruid().Dial(ctx, hanging, etcd)
 	})
 	select {
 	case got := <-reads:
@@ -803,13 +738,13 @@ func (f roundTripper) RoundTrip(req *http.Request) (*http.Response, error) { ret
 
 func TestOnlyACreationOrADeletionBringsAPassBeforeItsMinute(t *testing.T) {
 	t.Parallel()
-	_, cfgs := etcdCluster(t, 1, nil)
+	member := testetcd.Start(t, testetcd.Config{})
 	ns := namespace(t)
 	cp := formedControlPlane(t, ns, "steady")
 	var dials atomic.Int32
-	r := runSampler(t, ns, func(ctx context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
+	r := runSampler(t, ns, func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
 		dials.Add(1)
-		return dialURL(clientURL(cfgs[0]))(ctx, etcd)
+		return dialURL(member.ClientURL)(ctx, etcd)
 	})
 	testenv.EventuallyWithin(t, 15*time.Second, func() error {
 		if got, ok := r.Sample(client.ObjectKeyFromObject(cp), cp.UID); !ok || !got.HasLeader {

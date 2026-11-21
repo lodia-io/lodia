@@ -22,13 +22,11 @@ import (
 	"testing"
 	"time"
 
-	"go.etcd.io/etcd/server/v3/embed"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apiserver/pkg/storage/etcd3/testserver"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -40,6 +38,7 @@ import (
 	"go.lodia.io/lodia/internal/controller/health"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/operator"
+	"go.lodia.io/lodia/internal/testetcd"
 )
 
 const (
@@ -165,7 +164,7 @@ func startFleet(t *testing.T, dir string) *fleet {
 	f.platform = startPlatform(t, cfg, admin, logs)
 	f.cache = f.platform.mgr.GetCache()
 	f.tenants = startTenants(t, admin, cfg, nodesPerTenant)
-	f.settings = operatorSettings{Tenants: f.tenants.address(), Etcd: startEtcd(t), Version: firstVersion, MaxConcurrentRollouts: operator.DefaultConfig().Fleet.MaxConcurrentRollouts}
+	f.settings = operatorSettings{Tenants: f.tenants.address(), Etcd: testetcd.Start(t, testetcd.Config{}).ClientURL, Version: firstVersion, MaxConcurrentRollouts: operator.DefaultConfig().Fleet.MaxConcurrentRollouts}
 	return f
 }
 
@@ -189,22 +188,6 @@ func knobs(t *testing.T) (int, float64) {
 
 func runtimeVersion() string {
 	return fmt.Sprintf("%d CPUs, %s %s/%s", runtime.NumCPU(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
-}
-
-func startEtcd(t *testing.T) string {
-	t.Helper()
-	member := testserver.NewTestConfig(t)
-	server, err := embed.StartEtcd(member)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(server.Close)
-	select {
-	case <-server.Server.ReadyNotify():
-	case <-time.After(time.Minute):
-		t.Fatal("the etcd member took too long to start")
-	}
-	return member.ListenClientUrls[0].String()
 }
 
 func (f *fleet) create(from, to int) {

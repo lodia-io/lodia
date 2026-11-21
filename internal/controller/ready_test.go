@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +19,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 )
 
 func TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints(t *testing.T) {
@@ -39,12 +39,7 @@ func TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoint
 	}
 
 	eventually(t, func() error {
-		etcd := &druidv1alpha1.Etcd{}
-		if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns.Name, Name: cp.Name + "-etcd"}, etcd); err != nil {
-			return err
-		}
-		etcd.Status = druidv1alpha1.EtcdStatus{ObservedGeneration: new(etcd.Generation), Ready: new(true), Replicas: 1, ReadyReplicas: 1}
-		return k8s.Status().Update(t.Context(), etcd)
+		return druidtest.SetStatus(t.Context(), k8s, ns.Name, cp.Name)
 	})
 	for _, suffix := range []string{"kube-apiserver", "konnectivity", "tunnel"} {
 		eventually(t, func() error {
