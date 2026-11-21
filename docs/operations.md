@@ -856,7 +856,7 @@ At 1,000 tenants on Linux the kube-apiserver held 6.0 GiB at the most, etcd 0.9 
 | Deployments and StatefulSets whose status follows their spec | the management cluster's controllers and kubelets | pods |
 | an etcd-druid that serves a new `Etcd`, and a request to reconcile one, with a ready status, and writes new timestamps into every status every 15 s | etcd-druid | the etcd's pods, volumes and snapshots |
 | a Gateway that accepts every route | the Gateway's implementation | `attachedRoutes` and the data path |
-| one etcd member that every sample reads, after the two Secret reads of `datastore.DialEtcd` | each tenant's etcd | TLS to etcd |
+| one etcd member that every sample reads, after the two Secret reads of `etcddruid.Engine.Dial` | each tenant's etcd | TLS to etcd |
 | the operator as its ServiceAccount, bound to the chart's ClusterRoles, under the API server's priority and fairness | the operator's identity | leader election and the scrape of Lodia's collector |
 
 A run creates the fleet and waits until every `ControlPlane` is Ready; it measures the fleet at rest over a minute, one period of the etcd sampler, once the idle connections of the creation have closed, and fails if that minute holds a read of a Secret, then the idle connections, one `ControlPlane` updated and every one at once, a batch of gateway tenants beside the routes of the fleet, with the operator stopped the lists that a gateway tenant's pass, a slot's count and an operator's first grant and first route write take, a restart, a wave of a new revision with a slot for every tenant, the most a wave writes at once, a share of the tenants hanging on every path, a tenth of them, at most 100, answering their lists of Leases and Nodes at Health's bounds, and 10 minutes of a wave at the default slots.
@@ -894,7 +894,7 @@ Each nightly run writes its report into the summary of its workflow run.
 
 What the numbers answer:
 - **Secret reads.**
-  Tenant, `health`, `health-nodes` and `DialEtcd` read the access Secrets from memory for as long as their `resourceVersion` stays ([decision](decisions/one-client-for-a-tenant.md)), so that a tenant at rest sends the API server no read of a Secret: the runner's 300 tenants sent it none over a minute at rest, in 0.0 to 0.1 requests a second in all, watches only.
+  Tenant, `health`, `health-nodes` and `etcddruid.Engine.Dial` read the access Secrets from memory for as long as their `resourceVersion` stays ([decision](decisions/one-client-for-a-tenant.md)), so that a tenant at rest sends the API server no read of a Secret: the runner's 300 tenants sent it none over a minute at rest, in 0.0 to 0.1 requests a second in all, watches only.
   PKI's passes over each tenant every 10 minutes read: its two lists of the namespace's Secrets without the cache, the labelled ones whole and every one's metadata, about 3.3 a second at 1,000 tenants, none of which the minute at rest held.
 - **What a change costs.**
   One `ControlPlane` updated costs one pass each of PKI, Lifecycle, Workloads and the Datastore controller, 18 requests to the API server besides the reads of its window at rest and PKI's three bindings in the tenant; `health` and `health-nodes` pass only on what they read, and Tenant only on its inputs.

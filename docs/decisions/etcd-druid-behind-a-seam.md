@@ -1,0 +1,73 @@
+# etcd-druid sits behind a seam of Lodia's own, `internal/etcddruid`
+
+Decided 2026-11-21.
+Built; `internal/etcddruid` holds it.
+
+## Decision
+
+- **Only `internal/etcddruid` names etcd-druid in production code**: its types, its annotations, its labels, its ports, its task kinds, its Lease names, its StatefulSet, and the lines of its source that Lodia's reading rests on.
+  The Datastore controller, the backup reconciler, the etcd sampler and the metrics collector hold one `*etcddruid.Engine`, which `internal/operator` builds from the flags `--etcd-druid-namespace`, `--etcd-druid-deployment`, `--etcd-druid-version` and `--etcd-druid-status-sync-period`, and get Lodia's values back: a `Store`, a `ControlPlane`'s etcd as read or rendered, a `Rollout`, the members' workload as read, and a `Copy`, a copy of snapshots.
+  Each call takes the reader, the client, the field manager and the clock its caller used before, so every read keeps its cache or live choice ([independent-controllers](independent-controllers.md)).
+- The RBAC markers on `druid.gardener.cloud` stay in `internal/controller/datastore`, since `make generate` writes each controller's ClusterRole from the markers of its own package, and the controllers' messages keep naming the objects a person finds in the namespace: `Etcd`, `EtcdOpsTask`, `EtcdCopyBackupsTask` and the full snapshot Lease.
+- `internal/etcddruid/druidtest` writes, for tests that run no etcd-druid, what etcd-druid v0.39.2 writes: an `Etcd`'s status, the removal of its annotation and its tasks' outcomes, each with the line of etcd-druid it follows; every test outside the engine that wrote them calls it.
+  `test/` keeps its own: the e2e suites run etcd-druid, and the fleet runs a stand-in of its own for a thousand tenants.
+- `internal/etcddruid/seam_test.go` fails on a Go file outside `internal/etcddruid`, but for tests and `test/`, that imports `github.com/gardener/etcd-druid`.
+- An engine with no `Etcd`, no StatefulSet, no claims and no tasks answers the same questions: a store's identity, its members, formed, rolled out, its snapshots, a full snapshot past a revision, a copy.
+  So a second engine is a second package with the same methods, and the interface is extracted then.
+
+## Why
+
+- What Lodia does with etcd-druid rests on what etcd-druid's reconciler writes, not on its API: when a run ID changes and the annotation goes, which revision of the StatefulSet a member runs, what the full snapshot Lease's holder means, which set of snapshots a copy takes.
+  Each is a line of etcd-druid's source at one tag, and its API is `v1alpha1` alone.
+  In one package, a release of etcd-druid that moves one of them changes that package and the table below, and the tests read one statement of it.
+- Of Lodia's options for its etcd, staying on etcd-druid behind a seam is the cheap one that keeps the gates on the real thing, and it is the first step both of staying and of running etcd itself ([dedicated-etcd-by-default](dedicated-etcd-by-default.md#consequences)).
+
+## Rejected
+
+- An interface now: one engine, one caller; it is extracted with the second engine.
+- depguard: `.golangci.yml` is shared by every Segla repository unchanged, so a test holds the rule.
+- An engine with clients and a clock of its own: it would be wired beside the reconcilers' own, and a test that intercepts a reconciler's client or moves its clock would miss the engine's calls.
+
+## Consequences
+
+What Lodia assumes of etcd-druid v0.39.2 and of the etcd-backup-restore v0.45.3 it runs, and what pins each against them; a test that runs on `druidtest` pins Lodia's reading, not etcd-druid.
+
+| assumption | Lodia relies on it in | pinned by |
+|---|---|---|
+| etcd-druid's names of an etcd's Services, StatefulSet revision, Leases, Role and RoleBinding fit a label or a DNS label while the `ControlPlane`'s name is at most 32 characters ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/helper.go#L22-L30), [helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/helper.go#L224-L246)) | the name's `MaxLength` in `api/v1alpha1/controlplane_types.go` | `test/api/names_test.go`, through etcd-druid's own name functions |
+| the `Etcd` schema takes what a class renders, its schedules and providers among them | the `DatastoreClass` schema | `test/api/etcddruid_test.go` |
+| the sidecar takes the last `v1/` anywhere in a snapshot's key for its layout ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/snapshot.go#L39-L59)) | a class prefix without `v1/` | nothing |
+| the sidecar reads a store's location from keys of its credentials Secret, per provider ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/s3_snapstore.go#L106-L139)) | `Backup.status.snapshots.fromSecret` | gate G3, for S3 |
+| etcd-druid stamps `observedGeneration` only after it synced a spec ([reconcile_complete.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconcile_complete.go#L33-L41)) | `status.datastore.members.updated` | `TestDatastoreOnKind` |
+| etcd-druid rolls the members only for a Secret of a new name, and the sidecar keeps the certificate it started with | PKI's certificate generations | `TestDatastoreOnKind`, whose generation 2 rolls the member |
+| the members are reached at etcd-druid's client and peer Services ([helper.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/helper.go#L22-L30)) | the names in PKI's etcd certificates | `internal/controller/pki/names_test.go`, through etcd-druid's own name functions |
+| the sidecar and etcd reach each other at `<etcd>-local` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L626-L627)) | the name in PKI's etcd and backup-restore certificates | every gate |
+| etcd-druid reads the CA under `ca.crt` for the members and under `bundle.crt` for its own calls unless the key is named ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L468), [snapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/compaction/snapshot.go#L87)) | `dataKey: ca.crt` on the three TLS blocks | every gate |
+| with `enableEtcdSpecAutoReconcile: false` etcd-druid reconciles a spec only for a new `Etcd` or on request ([reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconcile_spec.go#L200-L224)) | asking for each reconcile | `make chart`, for the setting; the nightly upgrade of etcd-druid across a patch |
+| a spec reconcile writes a new run ID in its first status write and syncs the `Etcd` that write returns ([reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconcile_spec.go#L33-L42), [etcdstatus.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/utils/etcdstatus.go#L83-L93)), and one that succeeds removes the annotation at its end ([reconcile_complete.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconcile_complete.go#L44-L55)) | a request counts as served only under another run ID | the nightly upgrade of etcd-druid across a patch |
+| a spec reconcile writes `lastOperation` at its start and at its end only ([reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconcile_spec.go#L33-L49)), and etcd-druid's predicate drops an update while it is `Processing` ([register.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/register.go#L61-L64)), so etcd-druid takes a request made meanwhile at its next periodic pass ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconciler.go#L147)) | no request while a reconcile runs, for at most three minutes | nothing |
+| a spec reconcile leaves `Processing` at its last spec step, before its status pass and the annotation's removal ([reconcile_spec.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconcile_spec.go#L33-L42), [reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconciler.go#L118-L145)) | a request in that tail costs at most one more reconcile | nothing |
+| etcd-druid stamps `lastUpdateTime` from its own clock ([etcdstatus.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/utils/etcdstatus.go#L89)) | the three minutes run on the operator's clock | nothing |
+| the image tag of etcd-druid's Deployment and its replica counts tell which etcd-druid serves a request, and with leader election one serves at a time | the wait for etcd-druid's Deployment under a new operator revision | `make chart`, for leader election; the nightly upgrade of etcd-druid across a patch |
+| etcd-druid syncs an `Etcd`'s status every `etcdStatusSyncPeriod` and watches no StatefulSet ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconciler.go#L147), [register.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/register.go#L32)) | the poll of a rollout and Lifecycle's settling time | `make chart`, which checks that the flag and etcd-druid get one value |
+| etcd-druid syncs the StatefulSet before it removes its annotation ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconciler.go#L119-L142)) | the second read of the StatefulSet in a pass | nothing |
+| a new etcd-druid renders every `Etcd` it reconciles anew | etcd-druid's version and namespace in the operator revision | the nightly upgrade of etcd-druid across a patch |
+| the sidecar sets the full snapshot Lease's holder to the last revision of each full snapshot it uploaded and never lowers it ([heartbeat.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/health/heartbeat/heartbeat.go#L200-L222)) | a full snapshot past the seal and past a restore's marker | gate G3 |
+| an `EtcdOpsTask` takes an on-demand snapshot only while the `Etcd` is `Ready` ([ondemandsnapshot.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcdopstask/handler/ondemandsnapshot/ondemandsnapshot.go#L181-L188)), and a finished one names no revision ([etcdopstask.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/etcdopstask.go#L137-L161)) | when a full snapshot is asked again | gate G3 |
+| an `EtcdCopyBackupsTask` with `maxBackups: 1` copies the newest full snapshot and the deltas after it ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L196-L214)), and only what the target lacks ([copier.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/copier/copier.go#L127-L151)) | a `Backup`'s copy and a restore's | gate G3; which set is the newest, nothing (`todo.md`) |
+| a task's name and `-worker` are a label value of its copy Job's pods ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcdcopybackupstask/reconciler.go#L389-L396)) | `backup-<UID>` and `restore-<UID>` | nothing |
+| the sidecar replays a revision of a delta in one transaction of at most 10,240 operations ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/types/restorer.go#L27)) | the bound of a restore's cleanup | nothing |
+| the sidecar skips a scheduled defragmentation while the database is at most 3 GiB and its free space at most its threshold ([etcdutil.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/etcdutil/etcdutil.go#L443-L466)) | the class's schedule, passed through | nothing |
+| etcd-druid names the volume claim template after the `Etcd` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L233)) | finding the claims by name | `TestDatastoreOnKind`, whose deletion under `Delete` reclaims them |
+| the members carry etcd-druid's default labels and listen on 2380 and 8080 ([constants.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/common/constants.go#L55-L60)) | the etcd's NetworkPolicy | every gate; gate G2 for three members |
+| `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` lets the PodDisruptionBudget evict an unhealthy member, an annotation etcd-druid marks as not for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/poddistruptionbudget/poddisruptionbudget.go#L36-L38)) | `highAvailability` | nothing |
+| etcd-druid mounts a store's Secret from the `Etcd`'s namespace | the credentials copy | gate G3 |
+| etcd-druid holds its finalizer on every Secret an `Etcd` references ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/secret/reconciler.go#L44-L101)) | a terminating Secret counts as mounted | nothing |
+| etcd-druid's `BackupReady` follows the renewals of the snapshot Leases ([check_backup_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/health/condition/check_backup_ready.go#L34-L125)) | `BackupReady` | gate G3 |
+| a member without a leader leaves the client Service by etcd-druid's readiness probe ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L603-L610)) | the sampler's leader | nothing |
+
+## Code
+
+- `internal/etcddruid` — the `Engine`: the reads, the render, the copy and the apply of an `Etcd`, the reconcile handshake with its sightings, the etcd's NetworkPolicy, the claims' names, the dialer, the tasks and the full snapshot Lease; `export_test.go` gives its external tests the handshake's wait.
+- `internal/etcddruid/druidtest` — etcd-druid's CRDs for envtest, and its writes for the tests.
+- `internal/etcddruid/seam_test.go` — the rule above.
