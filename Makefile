@@ -14,6 +14,8 @@ E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 FLEET_TENANTS ?= 1000
 FLEET_HANGING ?= 0.1
 FLEET_DIR ?= $(CURDIR)/work/fleet
+ETCD_DIR ?= $(CURDIR)/work/etcd
+ETCD_BINARY = LODIA_ETCD_BINARY="$$(go run ./test/etcdbinary $(ETCD_DIR))"
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
 RACE_PACKAGES = ./internal/controller/health ./internal/metrics
@@ -77,10 +79,14 @@ lint:
 	cd api && golangci-lint run ./...
 	cd test/monitoring && golangci-lint run ./...
 
+.PHONY: etcd
+etcd: ## fetch etcd's release binary at the version etcd-wrapper runs into ETCD_DIR, after checking it against the release's SHA256SUMS, unless it is there, and print its path
+	go run ./test/etcdbinary $(ETCD_DIR)
+
 .PHONY: test
-test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd
+test: etcd ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd, and the tests of Lodia's calls to etcd run the binary that make etcd fetches
 	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
+	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
 	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)
 	out="$$(mktemp)" && st="$$(mktemp)" && { LODIA_HEALTH_TEST_WITHOUT_ENVTEST=1 go test -race -count=1 -v -run '^($(APART_TESTS))$$' ./internal/controller/health; echo $$? > "$$st"; } 2>&1 | tee "$$out"; \
 	status="$$(cat "$$st")"; [ -n "$$status" ] || status=1; \
@@ -90,9 +96,9 @@ test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector, 
 	cd api && go test ./...
 
 .PHONY: fleet
-fleet: ## the operator against a synthetic fleet of FLEET_TENANTS ControlPlanes on envtest, FLEET_HANGING of whose tenants hang in one phase; the report and the logs go to FLEET_DIR (docs/operations.md, Scale)
+fleet: etcd ## the operator against a synthetic fleet of FLEET_TENANTS ControlPlanes on envtest, FLEET_HANGING of whose tenants hang in one phase; the report and the logs go to FLEET_DIR (docs/operations.md, Scale)
 	mkdir -p $(FLEET_DIR)
-	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" LODIA_FLEET_TENANTS=$(FLEET_TENANTS) LODIA_FLEET_HANGING=$(FLEET_HANGING) LODIA_FLEET_REPORT=$(FLEET_DIR)/report.txt \
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) LODIA_FLEET_TENANTS=$(FLEET_TENANTS) LODIA_FLEET_HANGING=$(FLEET_HANGING) LODIA_FLEET_REPORT=$(FLEET_DIR)/report.txt \
 		go test -count=1 -v -timeout 4h -run '^TestFleet$$' ./test/fleet
 
 .PHONY: restore-keys
