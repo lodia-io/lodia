@@ -57,7 +57,8 @@ type Option func(etcd string, generation int64, s *druidv1alpha1.EtcdStatus)
 // reconciled (internal/controller/etcd/reconcile_complete.go#L33-L41), counts
 // the StatefulSet's pods (internal/controller/etcd/reconcile_status.go#L70-L92),
 // lists the members from their Leases (internal/health/etcdmember/check_ready.go#L59-L111)
-// and writes the condition of each of its checks
+// and writes the condition of each of its checks, which keeps its transition
+// time while its status holds
 // (internal/health/status/check.go#L36-L44, internal/health/condition/builder.go#L91-L117),
 // BackupReady only for an Etcd with a store
 // (internal/health/condition/check_backup_ready.go#L43-L47).
@@ -90,7 +91,11 @@ func SetStatus(ctx context.Context, c client.Client, namespace, cp string, optio
 func synced(etcd *druidv1alpha1.Etcd) []druidv1alpha1.Condition {
 	now := metav1.Now()
 	condition := func(conditionType druidv1alpha1.ConditionType, status druidv1alpha1.ConditionStatus, reason, message string) druidv1alpha1.Condition {
-		return druidv1alpha1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, LastTransitionTime: now, LastUpdateTime: now}
+		transition := now
+		if old := druidv1alpha1.GetCondition(etcd, conditionType); old != nil && old.Status == status {
+			transition = old.LastTransitionTime
+		}
+		return druidv1alpha1.Condition{Type: conditionType, Status: status, Reason: reason, Message: message, LastTransitionTime: transition, LastUpdateTime: now}
 	}
 	conditions := []druidv1alpha1.Condition{
 		condition(druidv1alpha1.ConditionTypeAllMembersReady, druidv1alpha1.ConditionTrue, "AllMembersReady", "All members are ready"),
