@@ -615,8 +615,9 @@ func TestARequestThatConflictsIsMadeByTheNextPass(t *testing.T) {
 			return c.Patch(ctx, obj, patch, opts...)
 		},
 	})
-	if result, err := passOf(t, operatorAt(racing, revision), ns, cp); err != nil || result.RequeueAfter != 15*time.Second {
-		t.Errorf("a pass whose request conflicts returned %v and a requeue after %s, want none and 15s", err, result.RequeueAfter)
+	racer := operatorAt(racing, revision)
+	if result, err := passOf(t, racer, ns, cp); err != nil || result.RequeueAfter != racer.Druid.StatusSync {
+		t.Errorf("a pass whose request conflicts returned %v and a requeue after %s, want none and %s", err, result.RequeueAfter, racer.Druid.StatusSync)
 	}
 	etcd := getEtcd(t, ns, cp)
 	if err := namesGeneration(2)(etcd); err != nil {
@@ -831,8 +832,8 @@ func TestAGrantAsksEtcdDruidOnceItRunsTheGivenVersion(t *testing.T) {
 		t.Run(c.deployment, func(t *testing.T) {
 			r := operatorAt(unpaused(k8s), revision)
 			r.Druid.Deployment = c.deployment
-			if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
-				t.Errorf("a request that waits for etcd-druid requeues after %s, want 15s", result.RequeueAfter)
+			if result := mustPass(t, r, ns, cp); result.RequeueAfter != r.Druid.StatusSync {
+				t.Errorf("a request that waits for etcd-druid requeues after %s, want %s", result.RequeueAfter, r.Druid.StatusSync)
 			}
 			etcd := getEtcd(t, ns, cp)
 			if quota := quantity(etcd.Spec.Etcd.Quota); quota != "3Gi" || stamped(etcd) != revision {
@@ -918,8 +919,8 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	t.Run("the record differs", func(t *testing.T) {
 		waiting := operatorAt(unpaused(k8s), revision)
 		waiting.Druid.Deployment = "absent"
-		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != 15*time.Second {
-			t.Errorf("a pass whose record differs from a settled Etcd requeues after %s, want 15s", result.RequeueAfter)
+		if result := mustPass(t, waiting, ns, cp); result.RequeueAfter != waiting.Druid.StatusSync {
+			t.Errorf("a pass whose record differs from a settled Etcd requeues after %s, want %s", result.RequeueAfter, waiting.Druid.StatusSync)
 		}
 		if got := reportedRevision(t, ns, cp); got != previousRevision {
 			t.Errorf("status.datastore.operatorRevision is %q, want %s kept", got, previousRevision)
@@ -1074,8 +1075,8 @@ func druidEnds(t *testing.T, ns, cp, run string) {
 
 func asksAgain(t *testing.T, r *datastore.Reconciler, ns, cp, request, run string) {
 	t.Helper()
-	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
-		t.Errorf("a pass over a request that is not served requeues after %s, want 15s", result.RequeueAfter)
+	if result := mustPass(t, r, ns, cp); result.RequeueAfter != r.Druid.StatusSync {
+		t.Errorf("a pass over a request that is not served requeues after %s, want %s", result.RequeueAfter, r.Druid.StatusSync)
 	}
 	if err := requestedAs(request, true)(getEtcd(t, ns, cp)); err != nil {
 		t.Errorf("a request etcd-druid's annotation is gone from, not served: %v", err)
@@ -1219,8 +1220,8 @@ func servedRequest(t *testing.T, cp string) (string, *datastore.Reconciler, stri
 
 func waits(t *testing.T, r *datastore.Reconciler, ns, cp, request, run string) {
 	t.Helper()
-	if result := mustPass(t, r, ns, cp); result.RequeueAfter != 15*time.Second {
-		t.Errorf("a pass while a reconcile that started after the request runs requeues after %s, want 15s", result.RequeueAfter)
+	if result := mustPass(t, r, ns, cp); result.RequeueAfter != r.Druid.StatusSync {
+		t.Errorf("a pass while a reconcile that started after the request runs requeues after %s, want %s", result.RequeueAfter, r.Druid.StatusSync)
 	}
 	if err := requestedAs(request, false)(getEtcd(t, ns, cp)); err != nil || recordedRun(t, ns, cp) != run {
 		t.Errorf("a pass while a reconcile that started after the request runs left run ID %q, want %q: %v", recordedRun(t, ns, cp), run, err)
