@@ -221,7 +221,7 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			deltas, took, err := restoreOf(string(logs))
+			deltas, base, took, err := restoreOf(string(logs))
 			if err != nil {
 				t.Errorf("the log of backup-restore in %s: %v", pod.Name, err)
 				for line := range strings.Lines(string(logs)) {
@@ -230,7 +230,14 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 					}
 				}
 			} else {
-				t.Logf("backup-restore restored %s's etcd through %d delta snapshots in %s", key.Name, deltas, took)
+				t.Logf("backup-restore restored %s's etcd from a full snapshot that ends at revision %d through %d delta snapshots in %s", key.Name, base, deltas, took)
+				markerRevision, err := strconv.ParseInt(marker.ResourceVersion, 10, 64)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if base >= markerRevision {
+					t.Errorf("the restore started from a full snapshot that ends at revision %d, not before the marker's %d: a scheduled full snapshot was taken after the marker, and the deltas did not bring it back", base, markerRevision)
+				}
 			}
 			access = openTenant(ctx, t, k8s, key)
 			until(ctx, t, 2*time.Minute, "the tenant serves the marker and the Event it had", func(ctx context.Context) error {
@@ -278,9 +285,10 @@ func snapshotLease(ctx context.Context, k8s client.Client, namespace, name strin
 	return strconv.ParseInt(ptr.Deref(lease.Spec.HolderIdentity, ""), 10, 64)
 }
 
-func restoreOf(logs string) (int, time.Duration, error) {
+func restoreOf(logs string) (int, int64, time.Duration, error) {
 	var started, ended time.Time
 	var deltas int
+	var base int64
 	var based bool
 	for line := range strings.Lines(logs) {
 		stamp, message, _ := strings.Cut(line, " ")
@@ -292,7 +300,7 @@ func restoreOf(logs string) (int, time.Duration, error) {
 		case strings.Contains(message, restoreStarts):
 			started = at
 		case strings.Contains(message, restoresBase):
-			based = true
+			base, based = baseRevision(message)
 		case strings.Contains(message, restoreEnds):
 			ended = at
 		}
@@ -302,9 +310,9 @@ func restoreOf(logs string) (int, time.Duration, error) {
 	}
 	switch {
 	case started.IsZero() || ended.IsZero() || !based:
-		return 0, 0, fmt.Errorf("it holds no complete restore from a base snapshot: started %v, from a base snapshot %t, ended %v", started, based, ended)
+		return 0, 0, 0, fmt.Errorf("it holds no complete restore from a named base snapshot: started %v, from a base snapshot %t, ended %v", started, based, ended)
 	case deltas < 2:
-		return 0, 0, fmt.Errorf("the restore went through %d delta snapshots, want the one that holds the marker and the next", deltas)
+		return 0, 0, 0, fmt.Errorf("the restore went through %d delta snapshots, want the one that holds the marker and the next", deltas)
 	}
-	return deltas, ended.Sub(started), nil
+	return deltas, base, ended.Sub(started), nil
 }
