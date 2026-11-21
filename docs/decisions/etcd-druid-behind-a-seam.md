@@ -17,8 +17,9 @@ Built; `internal/etcddruid` holds it.
 
 ## Why
 
-- What Lodia does with etcd-druid rests on what etcd-druid's reconciler writes, not on its API: when a run ID changes and the annotation goes, which revision of the StatefulSet a member runs, what the full snapshot Lease's holder means, which set of snapshots a copy takes.
-  Each is a line of etcd-druid's source at one tag, and its API is `v1alpha1` alone.
+- What Lodia does with etcd-druid rests on what etcd-druid's reconciler writes, not on its API: when a run ID changes and the annotation goes, which revision of the StatefulSet a member runs.
+  It also rests on what the etcd-backup-restore sidecar etcd-druid deploys does: what the full snapshot Lease's holder means, which set of snapshots a copy takes.
+  Each is a line of one of their sources at one tag, and etcd-druid's API is `v1alpha1` alone.
   In one package, a release of etcd-druid that moves one of them changes that package and the table below, and the tests read one statement of it.
 - Of Lodia's options for its etcd, staying on etcd-druid behind a seam is the cheap one that keeps the gates on the real thing, and it is the first step both of staying and of running etcd itself ([dedicated-etcd-by-default](dedicated-etcd-by-default.md#consequences)).
 
