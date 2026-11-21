@@ -491,6 +491,36 @@ func TestAFlushThatEndsShortOfTheSealIsSentAgain(t *testing.T) {
 	}
 }
 
+func TestAFinishedFlushReplacedBeforeItsDeleteStays(t *testing.T) {
+	t.Parallel()
+	src := newSource(t, nil, nil)
+	now := clocktesting.NewFakePassiveClock(time.Now())
+	r := src.reconciler(cached)
+	r.Clock = now
+	created := createBackup(t, src.ns, "replaced", nil)
+	backup := passes(t, r, src.ns, created.Name, func(*lodiav1alpha1.Backup) error {
+		if getFlush(t, src.ns, created.UID) == nil {
+			return errors.New("no EtcdOpsTask yet")
+		}
+		return nil
+	})
+	finished := backup.Status.StartedAt.Add(10 * time.Minute)
+	finishFlush(t, src.ns, task(created.UID), druidv1alpha1.TaskStateSucceeded, finished)
+	now.SetTime(finished.Add(10 * time.Minute))
+	racing := &replacing{WithWatch: k8s, t: t, kind: &druidv1alpha1.EtcdOpsTask{}}
+	racer := *r
+	racer.Client = racing
+	if _, err := reconcileBackup(&racer, src.ns, created.Name); !apierrors.IsConflict(err) {
+		t.Fatalf("a pass whose finished EtcdOpsTask was replaced before its delete returned %v, want a conflict", err)
+	}
+	if racing.replaced == "" {
+		t.Fatal("the pass deleted no EtcdOpsTask")
+	}
+	if again := getFlush(t, src.ns, created.UID); again == nil || again.UID != racing.replaced || !again.DeletionTimestamp.IsZero() {
+		t.Fatalf("the EtcdOpsTask that replaced the finished one is %+v, want %s kept", again, racing.replaced)
+	}
+}
+
 func TestALeaseThatReachesTheSealWhileTheNextFlushWaitsStartsTheCopy(t *testing.T) {
 	t.Parallel()
 	src := newSource(t, nil, nil)

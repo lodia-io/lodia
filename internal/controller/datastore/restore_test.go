@@ -598,6 +598,30 @@ func failCopy(t *testing.T, ns, name, message string, at time.Time) {
 	}
 }
 
+type replacing struct {
+	client.WithWatch
+	t        *testing.T
+	kind     client.Object
+	replaced types.UID
+}
+
+func (r *replacing) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if reflect.TypeOf(obj) == reflect.TypeOf(r.kind) && r.replaced == "" {
+		fresh := obj.DeepCopyObject().(client.Object)
+		fresh.SetResourceVersion("")
+		fresh.SetUID("")
+		fresh.SetManagedFields(nil)
+		if err := k8s.Delete(ctx, obj); err != nil {
+			r.t.Fatal(err)
+		}
+		if err := k8s.Create(ctx, fresh); err != nil {
+			r.t.Fatal(err)
+		}
+		r.replaced = fresh.GetUID()
+	}
+	return r.WithWatch.Delete(ctx, obj, opts...)
+}
+
 type restoreMarkerJSON struct {
 	Backup lodiav1alpha1.UIDReference `json:"backup"`
 	Source lodiav1alpha1.UIDReference `json:"source"`
@@ -1869,6 +1893,25 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 		return nil
 	})
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "copying Backup a-1 into this ControlPlane's prefix")
+}
+
+func TestAFailedCopyReplacedBeforeItsDeleteStays(t *testing.T) {
+	t.Parallel()
+	r := newRestore(t, restoreSetup{})
+	task := r.waitCopyTask(t)
+	failed := time.Now().Truncate(time.Second)
+	failCopy(t, r.ns, task.Name, "the bucket is gone", failed)
+	racing := &replacing{WithWatch: k8s, t: t, kind: &druidv1alpha1.EtcdCopyBackupsTask{}}
+	reconciler := &datastore.Reconciler{Client: racing, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clocktesting.NewFakePassiveClock(failed.Add(time.Minute))}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !apierrors.IsConflict(err) {
+		t.Fatalf("a pass whose failed copy was replaced before its delete returned %v, want a conflict", err)
+	}
+	if racing.replaced == "" {
+		t.Fatal("the pass deleted no EtcdCopyBackupsTask")
+	}
+	if again := r.copyTask(t); again == nil || again.UID != racing.replaced || !again.DeletionTimestamp.IsZero() {
+		t.Fatalf("the EtcdCopyBackupsTask that replaced the failed one is %+v, want %s kept", again, racing.replaced)
+	}
 }
 
 func TestACleanupTheEtcdRefusesAtItsQuota(t *testing.T) {
