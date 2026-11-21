@@ -142,7 +142,7 @@ type EtcdBackup struct {
 	Store BackupStore `json:"store"`
 
 	// FullSnapshotSchedule is a cron expression as defragmentation.schedule
-	// takes it; the hour moves into the tenant's maintenance window.
+	// takes it.
 	// +optional
 	// +kubebuilder:default="0 0 * * *"
 	FullSnapshotSchedule CronSchedule `json:"fullSnapshotSchedule,omitempty"`
