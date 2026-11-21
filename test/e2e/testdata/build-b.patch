@@ -1,8 +1,8 @@
-diff --git a/internal/controller/datastore/etcd.go b/internal/controller/datastore/etcd.go
-index 1cef698..f273dd4 100644
---- a/internal/controller/datastore/etcd.go
-+++ b/internal/controller/datastore/etcd.go
-@@ -77,6 +77,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
+diff --git a/internal/etcddruid/render.go b/internal/etcddruid/render.go
+index b1ab57e..867a22a 100644
+--- a/internal/etcddruid/render.go
++++ b/internal/etcddruid/render.go
+@@ -83,6 +83,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
  	if current != nil {
  		etcd.UID = current.UID
  	}
