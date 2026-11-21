@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -750,6 +751,62 @@ func TestServeStopsBeforeItHasLoaded(t *testing.T) {
 	}
 }
 
+func TestTheServerFixtureStartsOnAnotherAddressWhenOneIsTaken(t *testing.T) {
+	for name, address := range map[string]func(*Server) *string{
+		"the listener": func(s *Server) *string { return &s.Listen },
+		"/healthz":     func(s *Server) *string { return &s.HealthAddr },
+	} {
+		t.Run(name, func(t *testing.T) {
+			var taken string
+			f := startServer(t, func(s *Server) {
+				taken = *address(s)
+				occupy(t, taken)
+			})
+			if now := *address(f.Server); now == taken {
+				t.Fatalf("still on the taken address %s", now)
+			}
+			c, err := dialTLS(t, f.Listen, f.config())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := roundTrip(c); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestTheServerFixtureKeepsAnAddressTheTestSet(t *testing.T) {
+	for name, address := range map[string]func(*Server) *string{
+		"the listener": func(s *Server) *string { return &s.Listen },
+		"/healthz":     func(s *Server) *string { return &s.HealthAddr },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cluster, tunnelCA := newCA(t, "cluster"), newCA(t, "tunnel")
+			taken := occupy(t, "127.0.0.1:0")
+			f := newServerFixture(t, func(s *Server) { *address(s) = taken }, cluster, tunnelCA)
+			writeVolume(t, f.certDir, pairFiles(t, serving(t, cluster)))
+			writeVolume(t, f.caDir, caFiles(t, tunnelCA))
+			f.start(t)
+			if err := f.awaitHealthy(t); addrInUse(err) != taken {
+				t.Fatalf("awaitHealthy returned %v, want Run's address-in-use error for %s", err, taken)
+			}
+		})
+	}
+}
+
+func TestTheServerFixtureReportsARunThatFailsAtOnce(t *testing.T) {
+	cluster, tunnelCA := newCA(t, "cluster"), newCA(t, "tunnel")
+	f := newServerFixture(t, func(s *Server) { s.Listen = "no port" }, cluster, tunnelCA)
+	writeVolume(t, f.certDir, pairFiles(t, serving(t, cluster)))
+	writeVolume(t, f.caDir, caFiles(t, tunnelCA))
+	f.start(t)
+	var addrErr *net.AddrError
+	if err := f.awaitHealthy(t); !errors.As(err, &addrErr) {
+		t.Fatalf("awaitHealthy returned %v, want the error of Run", err)
+	}
+}
+
 func TestServeFailsWhenItCannotBind(t *testing.T) {
 	for name, tune := range map[string]func(s *Server, taken string){
 		"the listener": func(s *Server, taken string) { s.Listen = taken },
@@ -816,7 +873,9 @@ type serverFixture struct {
 	clientPair     tls.Certificate
 	upstream       *plainUpstream
 	logs           *logBuffer
-	stop           func() error
+	process        *runner
+	pickedListen   string
+	pickedHealth   string
 }
 
 func startServer(t *testing.T, tune func(*Server)) *serverFixture {
@@ -834,35 +893,31 @@ func newServerFixture(t *testing.T, tune func(*Server), cluster, tunnelCA *certs
 	t.Helper()
 	log, logs := newLog(t)
 	upstream := startPlainUpstream(t, echo)
-	s := NewServer(freeAddr(t), tunnelHost, t.TempDir(), t.TempDir(), upstream.addr, freeAddr(t), log)
+	listen, health := freeAddr(t), freeAddr(t)
+	s := NewServer(listen, tunnelHost, t.TempDir(), t.TempDir(), upstream.addr, health, log)
 	if tune != nil {
 		tune(s)
 	}
 	return &serverFixture{
 		Server: s, certDir: s.CertDir, caDir: s.ClientCADir, cluster: cluster, tunnelCA: tunnelCA,
 		clientPair: tlsPair(t, client(t, tunnelCA)), upstream: upstream, logs: logs,
+		pickedListen: listen, pickedHealth: health,
 	}
 }
 
 func (f *serverFixture) start(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- f.Run(ctx) }()
-	var once sync.Once
-	var result error
-	f.stop = func() error {
-		once.Do(func() {
-			cancel()
-			result = <-done
-		})
-		return result
-	}
-	t.Cleanup(func() { _ = f.stop() })
+	f.process = startRunner(t, f.Run)
+}
+
+func (f *serverFixture) stop() error {
+	return f.process.stop()
 }
 
 func (f *serverFixture) healthy() bool {
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+f.HealthAddr+"/healthz", http.NoBody)
+	ctx, cancel := context.WithTimeout(context.Background(), waitFor)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+f.HealthAddr+"/healthz", http.NoBody)
 	if err != nil {
 		return false
 	}
@@ -876,7 +931,38 @@ func (f *serverFixture) healthy() bool {
 
 func (f *serverFixture) waitHealthy(t *testing.T) {
 	t.Helper()
-	eventually(t, "serve's /healthz", f.healthy)
+	if err := f.awaitHealthy(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f *serverFixture) awaitHealthy(t *testing.T) error {
+	t.Helper()
+	for attempt := 1; !f.process.await(t, "serve's /healthz", f.healthy); attempt++ {
+		err := f.process.err
+		if attempt == bindAttempts || !f.rebind(t, err) {
+			return fmt.Errorf("serve returned before /healthz answered: %w", err)
+		}
+		f.start(t)
+	}
+	return nil
+}
+
+func (f *serverFixture) rebind(t *testing.T, err error) bool {
+	t.Helper()
+	switch addr := addrInUse(err); {
+	case addr == "":
+		return false
+	case addr == f.Listen && f.Listen == f.pickedListen:
+		f.pickedListen = freeAddr(t)
+		f.Listen = f.pickedListen
+	case addr == f.HealthAddr && f.HealthAddr == f.pickedHealth:
+		f.pickedHealth = freeAddr(t)
+		f.HealthAddr = f.pickedHealth
+	default:
+		return false
+	}
+	return true
 }
 
 func (f *serverFixture) config() *tls.Config {

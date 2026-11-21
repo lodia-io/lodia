@@ -43,8 +43,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/operator"
-	"go.lodia.io/lodia/internal/testenv"
 )
 
 const (
@@ -56,7 +56,7 @@ const (
 	gatewayListener   = "tls"
 	druidNamespace    = "etcd-druid"
 	druidDeployment   = "etcd-druid"
-	druidVersion      = "v0.39.0"
+	druidVersion      = "v0.39.2"
 	operatorNamespace = "lodia-system"
 	operatorUser      = "system:serviceaccount:" + operatorNamespace + ":lodia"
 	// boundedBody is a list a tenant at Health's bounds answers: just under
@@ -73,7 +73,7 @@ func namespaceOf(i int) string { return fmt.Sprintf("fleet-%04d", i) }
 
 func startManagement(t *testing.T) (*rest.Config, client.Client) {
 	t.Helper()
-	druid, err := testenv.DruidCRDs()
+	druid, err := druidtest.CRDs()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,10 +362,6 @@ func (d druid) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, er
 	}
 	before := etcd.DeepCopy()
 	now := metav1.Now()
-	operation := druidv1alpha1.LastOperationTypeReconcile
-	if etcd.Status.LastOperation == nil {
-		operation = druidv1alpha1.LastOperationTypeCreate
-	}
 	replicas := etcd.Spec.Replicas
 	etcd.Status.ObservedGeneration = new(etcd.Generation)
 	etcd.Status.Ready = new(true)
@@ -382,7 +378,7 @@ func (d druid) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, er
 		{Type: druidv1alpha1.ConditionTypeAllMembersReady, Status: druidv1alpha1.ConditionTrue, LastTransitionTime: now, LastUpdateTime: now, Reason: "AllMembersReady", Message: "All members are ready"},
 	}
 	etcd.Status.LastOperation = &druidapicommon.LastOperation{
-		Type: operation, State: druidv1alpha1.LastOperationStateSucceeded, Description: "served by the fleet's stand-in", RunID: string(uuid.NewUUID()), LastUpdateTime: now,
+		Type: druidv1alpha1.LastOperationTypeReconcile, State: druidv1alpha1.LastOperationStateSucceeded, Description: "served by the fleet's stand-in", RunID: string(uuid.NewUUID()), LastUpdateTime: now,
 	}
 	return ctrl.Result{}, client.IgnoreNotFound(d.Status().Patch(ctx, etcd, client.MergeFrom(before)))
 }

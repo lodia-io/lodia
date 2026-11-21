@@ -8,11 +8,14 @@ ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
 E2E_HA_TEST ?= TestHighAvailabilityGate
+E2E_RESTORE_TEST ?= TestRestoreGate
 E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
 E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 FLEET_TENANTS ?= 1000
 FLEET_HANGING ?= 0.1
 FLEET_DIR ?= $(CURDIR)/work/fleet
+ETCD_DIR ?= $(CURDIR)/work/etcd
+ETCD_BINARY = LODIA_ETCD_BINARY="$$(go run ./test/etcdbinary $(ETCD_DIR))"
 CHART = charts/lodia
 CONTROLLERS = datastore health lifecycle pki tenant workloads
 RACE_PACKAGES = ./internal/controller/health ./internal/metrics
@@ -76,10 +79,14 @@ lint:
 	cd api && golangci-lint run ./...
 	cd test/monitoring && golangci-lint run ./...
 
+.PHONY: etcd
+etcd: ## fetch etcd's release binary at the version etcd-wrapper runs into ETCD_DIR, after checking it against the SHA-256 versions.EtcdArchives pins, unless it is there, and print its path
+	go run ./test/etcdbinary $(ETCD_DIR)
+
 .PHONY: test
-test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd
+test: etcd ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd, and the tests of Lodia's calls to etcd run the binary that make etcd fetches
 	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
+	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
 	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)
 	out="$$(mktemp)" && st="$$(mktemp)" && { LODIA_HEALTH_TEST_WITHOUT_ENVTEST=1 go test -race -count=1 -v -run '^($(APART_TESTS))$$' ./internal/controller/health; echo $$? > "$$st"; } 2>&1 | tee "$$out"; \
 	status="$$(cat "$$st")"; [ -n "$$status" ] || status=1; \
@@ -89,9 +96,9 @@ test: ## unit and envtest tests, those of RACE_PACKAGES with the race detector, 
 	cd api && go test ./...
 
 .PHONY: fleet
-fleet: ## the operator against a synthetic fleet of FLEET_TENANTS ControlPlanes on envtest, FLEET_HANGING of whose tenants hang in one phase; the report and the logs go to FLEET_DIR (docs/operations.md, Scale)
+fleet: etcd ## the operator against a synthetic fleet of FLEET_TENANTS ControlPlanes on envtest, FLEET_HANGING of whose tenants hang in one phase; the report and the logs go to FLEET_DIR (docs/operations.md, Scale)
 	mkdir -p $(FLEET_DIR)
-	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" LODIA_FLEET_TENANTS=$(FLEET_TENANTS) LODIA_FLEET_HANGING=$(FLEET_HANGING) LODIA_FLEET_REPORT=$(FLEET_DIR)/report.txt \
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) LODIA_FLEET_TENANTS=$(FLEET_TENANTS) LODIA_FLEET_HANGING=$(FLEET_HANGING) LODIA_FLEET_REPORT=$(FLEET_DIR)/report.txt \
 		go test -count=1 -v -timeout 4h -run '^TestFleet$$' ./test/fleet
 
 .PHONY: restore-keys
@@ -110,14 +117,18 @@ chart: ## lint and render the chart with image tags, then with image digests; wi
 	@policies="$$(helm template lodia $(CHART) --namespace lodia-system --set crds.enabled=false | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} /^  name: kubeconfigrequests\.lodia\.io$$/ {print kind}' | sort | tr '\n' ' ')"; \
 	[ "$$policies" = "ValidatingAdmissionPolicy ValidatingAdmissionPolicyBinding " ] || { echo "with crds.enabled=false the chart renders [$$policies] named kubeconfigrequests.lodia.io, want a ValidatingAdmissionPolicy and its binding"; exit 1; }
 	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.image.tag=v0.0.0-check | grep -q -- '--etcd-druid-version=v0.0.0-check$$' || { echo "--etcd-druid-version does not follow etcdDruid.image.tag"; exit 1; }
-	! helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidDeployment=etcd-druid > /dev/null 2>&1 || { echo "with etcdDruid.enabled=false the chart renders without etcdDruidVersion"; exit 1; }
-	! helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check > /dev/null 2>&1 || { echo "with etcdDruid.enabled=false the chart renders without etcdDruidDeployment"; exit 1; }
+	! helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidDeployment=etcd-druid,etcdDruidStatusSyncPeriod=9s > /dev/null 2>&1 || { echo "with etcdDruid.enabled=false the chart renders without etcdDruidVersion"; exit 1; }
+	! helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidStatusSyncPeriod=9s > /dev/null 2>&1 || { echo "with etcdDruid.enabled=false the chart renders without etcdDruidDeployment"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.operatorConfig.controllers.etcd.etcdStatusSyncPeriod=7s | grep -q -- '--etcd-druid-status-sync-period=7s$$' || { echo "--etcd-druid-status-sync-period does not follow etcdDruid.operatorConfig.controllers.etcd.etcdStatusSyncPeriod"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.operatorConfig.controllers.etcd.etcdStatusSyncPeriod=7s | grep -q 'etcdStatusSyncPeriod: 7s$$' || { echo "etcd-druid does not sync status at etcdDruid.operatorConfig.controllers.etcd.etcdStatusSyncPeriod"; exit 1; }
+	! helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidDeployment=etcd-druid > /dev/null 2>&1 || { echo "with etcdDruid.enabled=false the chart renders without etcdDruidStatusSyncPeriod"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidDeployment=etcd-druid,etcdDruidStatusSyncPeriod=9s | grep -q -- '--etcd-druid-status-sync-period=9s$$' || { echo "--etcd-druid-status-sync-period does not follow etcdDruidStatusSyncPeriod"; exit 1; }
 	helm template lodia $(CHART) --namespace lodia-system | grep -q 'enableEtcdSpecAutoReconcile: false$$' || { echo "etcd-druid runs with its automatic spec reconcile"; exit 1; }
 	helm template lodia $(CHART) --namespace lodia-system | grep -A1 '^    leaderElection:$$' | grep -q '^      enabled: true$$' || { echo "etcd-druid runs without leader election"; exit 1; }
 	helm template lodia $(CHART) --namespace lodia-system | grep -q -- '--etcd-druid-deployment=etcd-druid$$' || { echo "--etcd-druid-deployment does not name the subchart's Deployment etcd-druid"; exit 1; }
 	helm template lodia $(CHART) --namespace lodia-system | awk '/^---/ {kind = ""; ns = ""} /^kind: / {kind = $$2} /^  namespace: / {ns = $$2} /^    resourceNames: \[etcd-druid\]$$/ && kind == "Role" && ns == "lodia-system" {found = 1} END {exit !found}' || { echo "no Role in the release namespace lets the operator read etcd-druid's Deployment"; exit 1; }
-	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidDeployment=druid-check | grep -q -- '--etcd-druid-deployment=druid-check$$' || { echo "--etcd-druid-deployment does not follow etcdDruidDeployment"; exit 1; }
-	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidDeployment=druid-check | awk '/^---/ {kind = ""; ns = ""} /^kind: / {kind = $$2} /^  namespace: / {ns = $$2} /^    resourceNames: \[druid-check\]$$/ && kind == "Role" && ns == "druid" {found = 1} END {exit !found}' || { echo "no Role in etcdDruidNamespace lets the operator read etcdDruidDeployment"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidDeployment=druid-check,etcdDruidStatusSyncPeriod=9s | grep -q -- '--etcd-druid-deployment=druid-check$$' || { echo "--etcd-druid-deployment does not follow etcdDruidDeployment"; exit 1; }
+	helm template lodia $(CHART) --namespace lodia-system --set etcdDruid.enabled=false,etcdDruidNamespace=druid,etcdDruidVersion=v0.0.0-check,etcdDruidDeployment=druid-check,etcdDruidStatusSyncPeriod=9s | awk '/^---/ {kind = ""; ns = ""} /^kind: / {kind = $$2} /^  namespace: / {ns = $$2} /^    resourceNames: \[druid-check\]$$/ && kind == "Role" && ns == "druid" {found = 1} END {exit !found}' || { echo "no Role in etcdDruidNamespace lets the operator read etcdDruidDeployment"; exit 1; }
 	helm lint --strict $(CHART) --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST)
 	helm template lodia $(CHART) --namespace lodia-system --set image.digest=$(DIGEST),signerImage.digest=$(DIGEST),tunnelImage.digest=$(DIGEST) > /dev/null
 	helm template lodia $(CHART) --namespace lodia-system | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} kind == "ServiceMonitor" || kind == "PrometheusRule" || kind == "Service" && /^  name: lodia-metrics$$/ {found = 1} END {exit found}' || { echo "the defaults render the Service lodia-metrics, a ServiceMonitor or a PrometheusRule"; exit 1; }
@@ -189,10 +200,10 @@ e2e-ha: ## gate G2 against a highly available tenant, on a kind cluster of its o
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: e2e-restore
-e2e-restore: ## gate G3, a Backup of a tenant and a restore from it, against an S3 store in the cluster, on a kind cluster of its own that it deletes afterwards
+e2e-restore: ## gate G3, a Backup of a tenant and a restore from it, against an S3 store in the cluster, on a kind cluster of its own that it deletes afterwards; E2E_RESTORE_TEST=TestOneMemberRestoredThroughDeltas runs the nightly restore of a one-member tenant instead
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,restore -count=1 -timeout 40m -run '^TestRestoreGate$$' ./test/e2e/...; status=$$?; \
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,restore -count=1 -timeout 40m -run '^$(E2E_RESTORE_TEST)$$' ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
@@ -237,7 +248,7 @@ e2e-upgrade-ha: ## the nightly upgrade of a highly available tenant, on a kind c
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: e2e-maintenance
-e2e-maintenance: ## gate G5, an operator upgrade that re-renders tenants only in their windows, on a kind cluster of its own that it deletes afterwards; E2E_MAINTENANCE_TEST=TestFleetLimitInQueueOrder runs the nightly fleet limit instead
+e2e-maintenance: ## gate G5, an operator upgrade that re-renders tenants only in their windows, on a kind cluster of its own that it deletes afterwards; E2E_MAINTENANCE_TEST=TestFleetLimitInQueueOrder or TestEtcdDruidPatchUpgradeUnderAHeldTenant runs a nightly instead
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,maintenance -count=1 -timeout 40m -run '^$(E2E_MAINTENANCE_TEST)$$' ./test/e2e/...; status=$$?; \

@@ -310,6 +310,8 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		plugins  = "disable-admission-plugins is plugin names of letters and digits joined by commas, and nothing else"
 		lifetime = "service-account-max-token-expiration is a duration as Go prints it, without its zero units"
 		masks    = "a node mask size is a positive decimal number without a sign or a leading zero"
+		grammar  = "event-ttl is a duration as Go's time.ParseDuration reads it"
+		floor    = "event-ttl is at least 1h, kube-apiserver's default"
 	)
 	args := func(component string, flags map[string]any) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, flags, "spec", component, "extraArgs") }
@@ -391,6 +393,45 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"tokens of an hour with a leading zero", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "01h"})}, lifetime},
 		{"tokens of an hour and sixty minutes", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": "1h60m"})}, lifetime},
 		{"tokens of an empty life", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"service-account-max-token-expiration": ""})}, lifetime},
+		{"event-ttl of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1h"})}, ""},
+		{"event-ttl of an hour as Go prints it", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1h0m0s"})}, ""},
+		{"event-ttl of an hour in minutes", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "60m"})}, ""},
+		{"event-ttl of an hour in seconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3600s"})}, ""},
+		{"event-ttl of an hour in milliseconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3600000ms"})}, ""},
+		{"event-ttl of an hour in microseconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3600000000us"})}, ""},
+		{"event-ttl of an hour in microseconds with a micro sign", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3600000000µs"})}, ""},
+		{"event-ttl of an hour in microseconds with a Greek mu", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3600000000μs"})}, ""},
+		{"event-ttl of an hour in nanoseconds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3600000000000ns"})}, ""},
+		{"event-ttl of an hour with a sign", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "+1h"})}, ""},
+		{"event-ttl of an hour with a leading zero", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "01h"})}, ""},
+		{"event-ttl of an hour in two halves", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "30m30m"})}, ""},
+		{"event-ttl of two and a half hours as a fraction", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "2.5h"})}, ""},
+		{"event-ttl of a week", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "168h"})}, ""},
+		{"event-ttl of an hour with a point and no fraction", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1.h"})}, ""},
+		{"event-ttl of an hour and a quarter with a leading point", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": ".5h45m"})}, ""},
+		{"event-ttl of an hour in minutes after zero hours", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "0h60m"})}, ""},
+		{"event-ttl of a second short of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "59m59s"})}, floor},
+		{"event-ttl of a nanosecond short of an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3599999999999ns"})}, floor},
+		{"event-ttl of half an hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "30m"})}, floor},
+		{"event-ttl of half an hour with a leading point", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": ".5h"})}, floor},
+		{"event-ttl of zero", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "0"})}, floor},
+		{"event-ttl of zero with a unit", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "0h"})}, floor},
+		{"event-ttl of zero with a sign", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "-0"})}, floor},
+		{"event-ttl of a negative hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "-1h"})}, floor},
+		{"event-ttl of more than a Go duration holds", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "2562048h"})}, floor},
+		{"event-ttl of a day", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1d"})}, grammar},
+		{"event-ttl of an empty duration", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": ""})}, grammar},
+		{"event-ttl of an hour and a half with a space", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1h 30m"})}, grammar},
+		{"event-ttl of an hour in capitals", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1H"})}, grammar},
+		{"event-ttl of an hour without a unit", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3600"})}, grammar},
+		{"event-ttl of an hour with a last number without a unit", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1h30"})}, grammar},
+		{"event-ttl of an hour with a doubled point", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1.5.5h"})}, grammar},
+		{"event-ttl of an hour in scientific notation", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "3.6e3s"})}, grammar},
+		{"event-ttl of an hour with an unknown unit", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "1hr"})}, grammar},
+		{"event-ttl of a unit alone", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "h"})}, grammar},
+		{"event-ttl of a zero with a point", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "0.0"})}, grammar},
+		{"event-ttl of a double zero", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "00"})}, grammar},
+		{"event-ttl of a quoted hour", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"event-ttl": "\"1h\""})}, grammar},
 		{"the external signer's gate off", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": false}, "spec", "apiServer", "featureGates")
 		}}, signer},
@@ -403,7 +444,11 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 			for _, mutate := range c.mutate {
 				mutate(t, obj)
 			}
-			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+			err := k8s.Create(context.Background(), obj, client.DryRunAll)
+			expect(t, err, c.want)
+			if c.want == floor && strings.Contains(err.Error(), grammar) {
+				t.Fatalf("the format refused a value the floor refuses: %v", err)
+			}
 		})
 	}
 }

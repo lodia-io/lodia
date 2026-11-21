@@ -21,7 +21,7 @@ func revisionInputs() operator.Inputs {
 		Version:            "v1.2.3",
 		SignerImage:        "registry.example/lodia-signer:v1.2.3",
 		TunnelImage:        "registry.example/lodia-tunnel:v1.2.3",
-		EtcdDruidVersion:   "v0.39.0@sha256:80d2ee4803acf96c46f8f1169772127ac2fb9aee7903a3a27c3af8cd1ad78775",
+		EtcdDruidVersion:   "v0.39.2@sha256:8b6313f529cfd1539dbd372756a9ca930ed95aeb5a672864d51ab7ebcfe145db",
 		EtcdDruidNamespace: "lodia-system",
 		OperatorNamespace:  "lodia-system",
 	}
@@ -49,6 +49,7 @@ func TestTheRevisionIsTheVersionAndADigestOfTheRunTimeInputs(t *testing.T) {
 	other := revisionInputs()
 	other.Config.Health.Period.Duration++
 	other.GatewayAPI = !other.GatewayAPI
+	other.EtcdDruidStatusSync++
 	if got := revisionOf(t, other); got != revision {
 		t.Errorf("an input outside the digest changed the revision from %q to %q", revision, got)
 	}

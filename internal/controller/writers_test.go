@@ -6,7 +6,6 @@ package controller_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"os"
 	"os/exec"
@@ -18,9 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gardener/etcd-druid/api/core/v1alpha1/crds"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -34,9 +31,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/operator"
 )
 
@@ -273,7 +270,7 @@ func start(t *testing.T) client.WithWatch {
 
 func serve(t *testing.T) (*rest.Config, client.WithWatch) {
 	t.Helper()
-	druid, err := druidCRDs()
+	druid, err := druidtest.CRDs()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +308,7 @@ func run(t *testing.T, cfg *rest.Config) func() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := operator.Setup(mgr, operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.0", EtcdDruidNamespace: "etcd-druid", EtcdDruidDeployment: "etcd-druid", OperatorNamespace: "lodia-system", GatewayAPI: true}); err != nil {
+	if _, err := operator.Setup(mgr, operator.Inputs{Config: operator.DefaultConfig(), Version: "v0.0.0-test", SignerImage: "registry.example/lodia-signer:test", TunnelImage: "registry.example/lodia-tunnel:test", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "etcd-druid", EtcdDruidDeployment: "etcd-druid", EtcdDruidStatusSync: 15 * time.Second, OperatorNamespace: "lodia-system", GatewayAPI: true}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -328,20 +325,4 @@ func run(t *testing.T, cfg *rest.Config) func() {
 	}
 	t.Cleanup(stop)
 	return stop
-}
-
-func druidCRDs() ([]*apiextensionsv1.CustomResourceDefinition, error) {
-	manifests, err := crds.GetAll("1.35")
-	if err != nil {
-		return nil, err
-	}
-	var out []*apiextensionsv1.CustomResourceDefinition
-	for name, manifest := range manifests {
-		crd := &apiextensionsv1.CustomResourceDefinition{}
-		if err := yaml.Unmarshal([]byte(manifest), crd); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-		out = append(out, crd)
-	}
-	return out, nil
 }

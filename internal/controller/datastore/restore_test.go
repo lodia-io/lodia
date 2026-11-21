@@ -48,7 +48,10 @@ import (
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid"
+	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/testetcd"
 )
 
 type restoredEtcd struct {
@@ -62,10 +65,10 @@ var restoredEtcds sync.Map
 
 var errUnanswered = errors.New("injected: the etcd did not answer")
 
-func dialRestored(_ context.Context, etcd *druidv1alpha1.Etcd) (*clientv3.Client, error) {
-	value, ok := restoredEtcds.Load(etcd.Namespace + "/" + etcd.Name)
+func dialRestored(_ context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
+	value, ok := restoredEtcds.Load(etcd.Namespace() + "/" + etcd.Name())
 	if !ok {
-		return nil, fmt.Errorf("no etcd stands in for Etcd %s/%s", etcd.Namespace, etcd.Name)
+		return nil, fmt.Errorf("no etcd stands in for Etcd %s/%s", etcd.Namespace(), etcd.Name())
 	}
 	e := value.(*restoredEtcd)
 	if e.unreachable.Load() {
@@ -240,13 +243,7 @@ func newRestore(t *testing.T, setup restoreSetup) *restore {
 		setup.class(class)
 	}
 	createClass(t, class)
-	if setup.quota == 0 {
-		r.etcd = &restoredEtcd{Client: runEtcd(t, nil).Client}
-	} else {
-		config := etcdConfig(t)
-		config.QuotaBackendBytes = setup.quota
-		r.etcd = &restoredEtcd{Client: runEtcd(t, config).Client}
-	}
+	r.etcd = &restoredEtcd{Client: runEtcd(t, &testetcd.Config{QuotaBackendBytes: setup.quota}).Client}
 	key := r.ns + "/" + restoredCP + "-etcd"
 	restoredEtcds.Store(key, r.etcd)
 	t.Cleanup(func() { restoredEtcds.Delete(key) })
@@ -390,8 +387,20 @@ func (r *restore) copied(t *testing.T) *druidv1alpha1.Etcd {
 	finishCopy(t, r.ns, r.waitCopyTask(t).Name, druidv1alpha1.EtcdCopyBackupsTaskSucceeded, "")
 	etcd := waitEtcd(t, r.ns, restoredCP, nil)
 	runStatefulSet(t, r.ns, restoredCP, 1)
-	setEtcdStatus(t, r.ns, restoredCP, nil)
+	setEtcdStatus(t, r.ns, restoredCP)
 	return etcd
+}
+
+func (r *restore) setReady(t *testing.T, condition druidv1alpha1.Condition) {
+	t.Helper()
+	setEtcdStatus(t, r.ns, restoredCP, druidtest.Condition(condition))
+	poke(t, r.ns)
+	testenv.Eventually(t, func() error {
+		if ready := managerReads.readyOf(client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}); ready == nil || !equality.Semantic.DeepEqual(*ready, condition) {
+			return fmt.Errorf("the suite's manager has read Ready %+v, want %+v", ready, condition)
+		}
+		return nil
+	})
 }
 
 func (r *restore) marker(t *testing.T) int64 {
@@ -596,17 +605,33 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 
 func failCopy(t *testing.T, ns, name, message string, at time.Time) {
 	t.Helper()
-	task := &druidv1alpha1.EtcdCopyBackupsTask{}
-	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: name}, task); err != nil {
+	if err := druidtest.FinishCopy(t.Context(), k8s, ns, name, druidv1alpha1.EtcdCopyBackupsTaskFailed, message, at); err != nil {
 		t.Fatal(err)
 	}
-	task.Status.Conditions = []druidv1alpha1.Condition{{
-		Type: druidv1alpha1.EtcdCopyBackupsTaskFailed, Status: druidv1alpha1.ConditionTrue, Reason: "JobFailed", Message: message,
-		LastTransitionTime: metav1.NewTime(at), LastUpdateTime: metav1.NewTime(at),
-	}}
-	if err := k8s.Status().Update(t.Context(), task); err != nil {
-		t.Fatal(err)
+}
+
+type replacing struct {
+	client.WithWatch
+	t        *testing.T
+	kind     client.Object
+	replaced types.UID
+}
+
+func (r *replacing) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
+	if reflect.TypeOf(obj) == reflect.TypeOf(r.kind) && r.replaced == "" {
+		fresh := obj.DeepCopyObject().(client.Object)
+		fresh.SetResourceVersion("")
+		fresh.SetUID("")
+		fresh.SetManagedFields(nil)
+		if err := k8s.Delete(ctx, obj); err != nil {
+			r.t.Fatal(err)
+		}
+		if err := k8s.Create(ctx, fresh); err != nil {
+			r.t.Fatal(err)
+		}
+		r.replaced = fresh.GetUID()
 	}
+	return r.WithWatch.Delete(ctx, obj, opts...)
 }
 
 type restoreMarkerJSON struct {
@@ -736,7 +761,7 @@ func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testin
 
 func TestABackupBeingDeletedRestoresAndGoesOnceTheRestoreIsComplete(t *testing.T) {
 	t.Parallel()
-	backups := &datastore.BackupReconciler{Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
+	backups := &datastore.BackupReconciler{Druid: newDruid(), Client: cached, Reader: apiReader, Clock: clock.RealClock{}}
 	pass := func(t *testing.T, ns string) *lodiav1alpha1.Backup {
 		t.Helper()
 		if _, err := reconcileBackup(backups, ns, backupName); err != nil {
@@ -895,7 +920,7 @@ func TestARestoreCheckThatCannotRunHoldsTheRestore(t *testing.T) {
 
 	r.etcd.unreachable.Store(true)
 	runStatefulSet(t, r.ns, restoredCP, 1)
-	setEtcdStatus(t, r.ns, restoredCP, nil)
+	setEtcdStatus(t, r.ns, restoredCP)
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "waiting for etcd of b to answer")
 	if r.marker(t) != 0 {
 		t.Fatal("cleaned up through an etcd that does not answer")
@@ -920,7 +945,7 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
 	for _, c := range []struct {
 		name            string
 		check           func()
@@ -929,7 +954,7 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 	}{
 		{"the etcd does not answer", func() { r.etcd.unreachable.Store(true) }, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd b-etcd has quorum, 1 of 1 members ready"},
 		{"no member ready", func() {
-			setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) { s.Ready, s.ReadyReplicas = new(false), 0 })
+			setEtcdStatus(t, r.ns, restoredCP, druidtest.Members(1, 0))
 			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "")
 		}, metav1.ConditionFalse, lodiav1alpha1.ReasonQuorumLost, "Etcd b-etcd has 0 of 1 members ready"},
 	} {
@@ -958,7 +983,7 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
-		reconciler := &datastore.Reconciler{Client: noControlPlaneWrite(t, stale), Reader: failing, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+		reconciler := &datastore.Reconciler{Client: noControlPlaneWrite(t, stale), Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, injected) {
 			t.Fatalf("the pass returned %v, want %v", err, injected)
 		}
@@ -974,30 +999,22 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	created := r.copied(t).CreationTimestamp.Time
 	readyAt := created.Add(time.Second)
 	time.Sleep(time.Until(created.Add(2 * time.Second)))
-	quorate := func(at time.Time) druidv1alpha1.Condition {
-		return druidv1alpha1.Condition{Status: druidv1alpha1.ConditionTrue, Reason: "Quorate", Message: "The majority of ETCD members is ready", LastTransitionTime: metav1.NewTime(at)}
+	type quorum struct {
+		quorate bool
+		at      time.Time
 	}
-	lost := func(at time.Time) druidv1alpha1.Condition {
-		return druidv1alpha1.Condition{Status: druidv1alpha1.ConditionFalse, Reason: "QuorumLost", Message: "The majority of ETCD members is not ready", LastTransitionTime: metav1.NewTime(at)}
-	}
+	quorate := func(at time.Time) quorum { return quorum{true, at} }
+	lost := func(at time.Time) quorum { return quorum{false, at} }
 	now := clocktesting.NewFakePassiveClock(time.Now())
-	setReady := func(condition druidv1alpha1.Condition) {
+	setReady := func(q quorum) {
 		t.Helper()
-		condition.Type, condition.LastUpdateTime = druidv1alpha1.ConditionTypeReady, metav1.NewTime(now.Now()).Rfc3339Copy()
-		setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) { s.Conditions = append(s.Conditions, condition) })
-		poke(t, r.ns)
-		testenv.Eventually(t, func() error {
-			if ready := managerReads.readyOf(client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}); ready == nil || !equality.Semantic.DeepEqual(*ready, condition) {
-				return fmt.Errorf("the suite's manager has read Ready %+v, want %+v", ready, condition)
-			}
-			return nil
-		})
+		r.setReady(t, druidtest.Ready(q.quorate, q.at, metav1.NewTime(now.Now()).Rfc3339Copy().Time))
 	}
 	setReady(quorate(readyAt))
 	r.etcd.unreachable.Store(false)
 	poke(t, r.ns)
 	marker := r.cleanedUp(t)
-	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: now}
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
 	pass := func() (time.Duration, error) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return result.RequeueAfter, err
@@ -1010,22 +1027,22 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 			}
 			return c.Delete(ctx, obj, opts...)
 		},
-	}), Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: now}
+	}), Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
 	ops := r.opsTask(t)
 	if !ops.CreationTimestamp.After(readyAt) {
 		t.Fatalf("the first EtcdOpsTask was created at %s, not after the Etcd was ready at %s", ops.CreationTimestamp.UTC(), readyAt.UTC())
 	}
 	for _, round := range []struct {
 		state              druidv1alpha1.TaskState
-		ready              druidv1alpha1.Condition
-		after              []druidv1alpha1.Condition
+		ready              quorum
+		after              []quorum
 		started, start     time.Time
 		finished, interval time.Duration
 	}{
 		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, time.Time{}, readyAt, 10 * time.Minute, 10 * time.Minute},
 		{druidv1alpha1.TaskStateSucceeded, quorate(readyAt), nil, time.Time{}, readyAt, 3 * time.Hour, time.Hour},
 		{druidv1alpha1.TaskStateSucceeded, lost(readyAt.Add(5 * time.Minute)), nil, time.Time{}, created, 20 * time.Minute, 20 * time.Minute},
-		{druidv1alpha1.TaskStateFailed, lost(created.Add(51 * time.Minute)), []druidv1alpha1.Condition{quorate(created.Add(52 * time.Minute))}, created.Add(time.Minute), created, 50 * time.Minute, 50 * time.Minute},
+		{druidv1alpha1.TaskStateFailed, lost(created.Add(51 * time.Minute)), []quorum{quorate(created.Add(52 * time.Minute))}, created.Add(time.Minute), created, 50 * time.Minute, 50 * time.Minute},
 		{druidv1alpha1.TaskStateFailed, quorate(created.Add(90 * time.Minute)), nil, created.Add(90*time.Minute - time.Second), created, 2 * time.Hour, time.Hour},
 		{druidv1alpha1.TaskStateRejected, lost(readyAt), nil, time.Time{}, created, 30 * time.Minute, 30 * time.Minute},
 		{druidv1alpha1.TaskStateFailed, quorate(created.Add(4 * time.Hour)), nil, created.Add(4*time.Hour + time.Second), created.Add(4 * time.Hour), 10 * time.Minute, 10 * time.Minute},
@@ -1050,8 +1067,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 		}
 		setReady(round.ready)
 		if !round.started.IsZero() {
-			ops.Status.State, ops.Status.StartedAt = new(druidv1alpha1.TaskStateInProgress), new(metav1.NewTime(round.started))
-			if err := k8s.Status().Update(t.Context(), ops); err != nil {
+			if err := druidtest.StartSnapshot(t.Context(), k8s, r.ns, ops.Name, round.started); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1096,8 +1112,9 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 	r := newRestore(t, restoreSetup{})
 	created := r.copied(t).CreationTimestamp.Time
 	marker := r.cleanedUp(t)
+	r.setReady(t, druidtest.Ready(false, created.Add(5*time.Minute), time.Now().Truncate(time.Second)))
 	now := clocktesting.NewFakePassiveClock(time.Now())
-	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: now}
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
 	pass := func() error {
 		_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return err
@@ -1118,12 +1135,7 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 		return nil
 	})
 	now.SetTime(rejected.Add(40 * time.Second))
-	setEtcdStatus(t, r.ns, restoredCP, func(s *druidv1alpha1.EtcdStatus) {
-		s.Conditions = append(s.Conditions, druidv1alpha1.Condition{
-			Type: druidv1alpha1.ConditionTypeReady, Status: druidv1alpha1.ConditionTrue, Reason: "Quorate", Message: "The majority of ETCD members is ready",
-			LastTransitionTime: metav1.NewTime(rejected.Add(30 * time.Second)), LastUpdateTime: metav1.NewTime(now.Now()),
-		})
-	})
+	setEtcdStatus(t, r.ns, restoredCP, druidtest.Condition(druidtest.Ready(true, rejected.Add(30*time.Second), now.Now())))
 	testenv.Eventually(t, func() error {
 		if err := pass(); err != nil {
 			return err
@@ -1139,6 +1151,7 @@ func TestALeaseThatReachesTheMarkerWhileTheNextFullSnapshotWaitsCompletesTheRest
 	t.Parallel()
 	r := newRestore(t, restoreSetup{})
 	created := r.copied(t).CreationTimestamp.Time
+	r.setReady(t, druidtest.Ready(true, created, time.Now().Truncate(time.Second)))
 	marker := r.cleanedUp(t)
 	lease := restoredCP + "-etcd-full-snap"
 	createLease(t, r.ns, lease, strconv.FormatInt(marker-1, 10))
@@ -1448,7 +1461,7 @@ func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
 				t.Errorf("the Etcd created again asks for %d members with store %+v, want 1 with %+v", etcd.Spec.Replicas, etcd.Spec.Backup.Store, first.Spec.Backup.Store)
 			}
 			consistently(t, kept)
-			setEtcdStatus(t, r.ns, restoredCP, nil)
+			setEtcdStatus(t, r.ns, restoredCP)
 			waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "ignored Lease b-etcd-full-snap, created before Etcd b-etcd")
 			if err := kept(); err != nil {
 				t.Fatal(err)
@@ -1587,7 +1600,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
-		reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+		reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
 			t.Fatal(err)
 		}
@@ -1673,7 +1686,7 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1812,7 +1825,7 @@ func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: stale, Reader: k8s, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	reconciler := &datastore.Reconciler{Client: stale, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1844,7 +1857,7 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 	failed := time.Now().Truncate(time.Second)
 	failCopy(t, r.ns, task.Name, "the bucket is gone", failed)
 	now := clocktesting.NewFakePassiveClock(failed.Add(time.Minute - time.Second))
-	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: now}
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
 	pass := func() (time.Duration, error) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return result.RequeueAfter, err
@@ -1870,7 +1883,7 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 			return c.Delete(ctx, obj, opts...)
 		},
 	})
-	if _, err := (&datastore.Reconciler{Client: refusing, Reader: apiReader, EtcdDruidNamespace: druidNamespace, OperatorNamespace: operatorNamespace, Revision: revision, EtcdDruidDeployment: druidDeployment, EtcdDruidVersion: druidVersion, EtcdClient: dialRestored, Clock: now}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, refused) {
+	if _, err := (&datastore.Reconciler{Client: refusing, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, refused) {
 		t.Fatalf("a pass whose delete was refused returned %v, want %v", err, refused)
 	}
 	if again := r.copyTask(t); again == nil || again.UID != task.UID || !again.DeletionTimestamp.IsZero() {
@@ -1886,6 +1899,25 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 		return nil
 	})
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRestoring, "copying Backup a-1 into this ControlPlane's prefix")
+}
+
+func TestAFailedCopyReplacedBeforeItsDeleteStays(t *testing.T) {
+	t.Parallel()
+	r := newRestore(t, restoreSetup{})
+	task := r.waitCopyTask(t)
+	failed := time.Now().Truncate(time.Second)
+	failCopy(t, r.ns, task.Name, "the bucket is gone", failed)
+	racing := &replacing{WithWatch: k8s, t: t, kind: &druidv1alpha1.EtcdCopyBackupsTask{}}
+	reconciler := &datastore.Reconciler{Client: racing, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clocktesting.NewFakePassiveClock(failed.Add(time.Minute))}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !apierrors.IsConflict(err) {
+		t.Fatalf("a pass whose failed copy was replaced before its delete returned %v, want a conflict", err)
+	}
+	if racing.replaced == "" {
+		t.Fatal("the pass deleted no EtcdCopyBackupsTask")
+	}
+	if again := r.copyTask(t); again == nil || again.UID != racing.replaced || !again.DeletionTimestamp.IsZero() {
+		t.Fatalf("the EtcdCopyBackupsTask that replaced the failed one is %+v, want %s kept", again, racing.replaced)
+	}
 }
 
 func TestACleanupTheEtcdRefusesAtItsQuota(t *testing.T) {

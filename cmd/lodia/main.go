@@ -8,6 +8,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -24,6 +25,7 @@ var version string
 
 func main() {
 	var metricsAddr, probeAddr, configPath, signerImage, tunnelImage, etcdDruidVersion, etcdDruidNamespace, etcdDruidDeployment, operatorNamespace string
+	var etcdDruidStatusSync time.Duration
 	var leaderElect bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "Address of the metrics endpoint, served over HTTPS behind authentication and authorization.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "Address of the health and readiness probes.")
@@ -33,6 +35,7 @@ func main() {
 	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, a gateway tenant's in-cluster path to its API server; required.")
 	flag.StringVar(&etcdDruidVersion, "etcd-druid-version", "", "Version of etcd-druid, what follows the repository and its colon in its image, a digest included, which the operator revision covers; required.")
 	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
+	flag.DurationVar(&etcdDruidStatusSync, "etcd-druid-status-sync-period", 0, "How often etcd-druid syncs an Etcd's status, its etcdStatusSyncPeriod, which the Datastore controller polls a rollout at and Lifecycle's settling time counts; required.")
 	flag.StringVar(&etcdDruidDeployment, "etcd-druid-deployment", "", "Name of etcd-druid's Deployment in --etcd-druid-namespace, which must run --etcd-druid-version in every replica before an etcd is handed to it under a new operator revision; required.")
 	flag.StringVar(&operatorNamespace, "operator-namespace", "", "Namespace the operator runs in, whose pods each etcd's NetworkPolicy admits to the client port; required.")
 	opts := zap.Options{}
@@ -58,6 +61,10 @@ func main() {
 	}
 	if etcdDruidDeployment == "" {
 		log.Error(nil, "--etcd-druid-deployment is required")
+		os.Exit(1)
+	}
+	if etcdDruidStatusSync <= 0 {
+		log.Error(nil, "--etcd-druid-status-sync-period is required")
 		os.Exit(1)
 	}
 	if operatorNamespace == "" {
@@ -102,7 +109,7 @@ func main() {
 		log.Error(err, "create the manager")
 		os.Exit(1)
 	}
-	in := operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, EtcdDruidDeployment: etcdDruidDeployment, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}
+	in := operator.Inputs{Config: config, Version: version, SignerImage: signerImage, TunnelImage: tunnelImage, EtcdDruidVersion: etcdDruidVersion, EtcdDruidNamespace: etcdDruidNamespace, EtcdDruidDeployment: etcdDruidDeployment, EtcdDruidStatusSync: etcdDruidStatusSync, OperatorNamespace: operatorNamespace, GatewayAPI: gatewayAPI}
 	sources, err := operator.Setup(mgr, in)
 	if err != nil {
 		log.Error(err, "set up the controllers")

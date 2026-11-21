@@ -39,7 +39,7 @@ func classTenant(t *testing.T, ns, name, class string) *datastore.Reconciler {
 	mustPass(t, r, ns, name)
 	answer(t, ns, name)
 	runStatefulSet(t, ns, name, 1)
-	setEtcdStatus(t, ns, name, nil)
+	setEtcdStatus(t, ns, name)
 	mustPass(t, r, ns, name)
 	return r
 }
@@ -68,7 +68,7 @@ func rollOut(t *testing.T, r *datastore.Reconciler, ns, cp string) {
 	answer(t, ns, cp)
 	mustPass(t, r, ns, cp)
 	answer(t, ns, cp)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	mustPass(t, r, ns, cp)
 }
 
@@ -380,7 +380,7 @@ func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	t.Run("etcd-druid has not observed the generation", func(t *testing.T) {
 		keeps(t, r)
 	})
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	t.Run("a member is not updated", func(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) { s.UpdatedReplicas = 0 })
 		keeps(t, r)
@@ -401,7 +401,7 @@ func unrolledTenant(t *testing.T, ns, name string) *datastore.Reconciler {
 	answer(t, ns, name)
 	runStatefulSet(t, ns, name, 1)
 	setStatefulSetStatus(t, ns, name, func(s *appsv1.StatefulSetStatus) { s.AvailableReplicas, s.ReadyReplicas = 0, 0 })
-	setEtcdStatus(t, ns, name, nil)
+	setEtcdStatus(t, ns, name)
 	mustPass(t, r, ns, name)
 	return r
 }
@@ -490,7 +490,7 @@ func TestAClassReportNeverMovesBackwardsAcrossARoll(t *testing.T) {
 	}
 
 	answer(t, ns, cp)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	setStatefulSetStatus(t, ns, cp, nil)
 	mustPass(t, r, ns, cp)
 	runsClass(t, ns, cp, "3Gi", "2")
@@ -613,7 +613,7 @@ func TestAnEtcdCreatedAgainFromAnotherClassReportsItsOwnClass(t *testing.T) {
 		t.Errorf("while generation 2 of %s rolls status.datastore.class is at generation %d, want 1", second.Name, got)
 	}
 	answer(t, ns, cp)
-	setEtcdStatus(t, ns, cp, nil)
+	setEtcdStatus(t, ns, cp)
 	setStatefulSetStatus(t, ns, cp, nil)
 	mustPass(t, r, ns, cp)
 	runsClass(t, ns, cp, "3Gi", "2")

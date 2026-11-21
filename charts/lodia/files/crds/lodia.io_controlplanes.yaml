@@ -500,6 +500,16 @@ spec:
                         duration(self[''service-account-max-token-expiration'']) >=
                         duration(''1h'') && duration(self[''service-account-max-token-expiration''])
                         <= duration(''8760h'')'
+                    - message: event-ttl is a duration as Go's time.ParseDuration
+                        reads it, such as 1h30m0s or 3600s
+                      rule: '!(''event-ttl'' in self) || self[''event-ttl''].matches(''^[-+]?(0|(([0-9]+([.][0-9]*)?|[.][0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$'')'
+                    - message: 'event-ttl is at least 1h, kube-apiserver''s default:
+                        with 0 Events never expire and fill the tenant''s etcd to
+                        its quota, and an Event''s lease that expires during a restore
+                        through deltas aborts it or drops a write (etcd-backup-restore#1045,
+                        #1046)'
+                      rule: '!(''event-ttl'' in self) || duration(self[''event-ttl''])
+                        >= duration(''1h'')'
                   featureGates:
                     additionalProperties:
                       type: boolean

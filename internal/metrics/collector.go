@@ -11,7 +11,6 @@ import (
 	"context"
 	"time"
 
-	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -21,6 +20,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/datastore"
+	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/versions"
 )
 
@@ -136,10 +136,11 @@ func NewProbeFailures() *prometheus.CounterVec {
 	return failures
 }
 
-// Collector builds the metrics from Reader, the manager's cache, once Elected,
-// the manager's, is closed, with Revision, the running operator revision,
-// MaxConcurrentRollouts, fleet.maxConcurrentRollouts, HoldFraction,
-// health.holdFraction in thousandths, EtcdSample, the sample the etcd sampler
+// Collector builds the metrics from Reader, the manager's cache, which Druid
+// reads the etcds from, once Elected, the manager's, is closed, with Revision,
+// the running operator revision, MaxConcurrentRollouts,
+// fleet.maxConcurrentRollouts, HoldFraction, health.holdFraction in
+// thousandths, EtcdSample, the sample the etcd sampler
 // serves of a ControlPlane's etcd, by its name and UID, and NodeCounts, the
 // count of a ControlPlane's nodes health-nodes published, by its name and UID.
 // It serves SampleLag and ProbeFailures, Health's, which no registry holds, so
@@ -147,6 +148,7 @@ func NewProbeFailures() *prometheus.CounterVec {
 // once.
 type Collector struct {
 	Reader                client.Reader
+	Druid                 *etcddruid.Engine
 	Elected               <-chan struct{}
 	Revision              string
 	MaxConcurrentRollouts int
@@ -181,14 +183,10 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 		logf.Log.WithName("metrics").Error(err, "list the ControlPlanes: this scrape gets none of Lodia's metrics")
 		return
 	}
-	var etcds druidv1alpha1.EtcdList
-	if err := c.Reader.List(ctx, &etcds); err != nil {
+	byName, err := c.Druid.List(ctx, c.Reader)
+	if err != nil {
 		logf.Log.WithName("metrics").Error(err, "list the Etcds: this scrape gets none of Lodia's metrics")
 		return
-	}
-	byName := make(map[types.NamespacedName]*druidv1alpha1.Etcd, len(etcds.Items))
-	for i := range etcds.Items {
-		byName[client.ObjectKeyFromObject(&etcds.Items[i])] = &etcds.Items[i]
 	}
 	ch <- prometheus.MustNewConstMetric(maxConcurrentRollouts, prometheus.GaugeValue, float64(c.MaxConcurrentRollouts))
 	ch <- prometheus.MustNewConstMetric(holdThresholdRatio, prometheus.GaugeValue, float64(c.HoldFraction)/1000)
@@ -200,7 +198,7 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	}
 }
 
-func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) {
+func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store) {
 	emit := func(desc *prometheus.Desc, value float64, labels ...string) {
 		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, value, append([]string{cp.Namespace, cp.Name}, labels...)...)
 	}
@@ -271,11 +269,11 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 			emit(datastoreMembersUpdated, float64(*d.Members.Updated))
 		}
 	}
-	if etcd != nil && metav1.IsControlledBy(etcd, cp) {
-		if quota := etcd.Spec.Etcd.Quota; quota != nil {
+	if etcd != nil && etcd.ControlledBy(cp) {
+		if quota := etcd.Quota(); quota != nil {
 			emit(datastoreQuota, float64(quota.Value()))
 		}
-		if period := etcd.Spec.Backup.DeltaSnapshotPeriod; etcd.Spec.Backup.Store != nil && period != nil && period.Duration >= time.Second {
+		if period, ok := etcd.DeltaSnapshotPeriod(); ok && period >= time.Second {
 			emit(datastoreDeltaSnapshotPeriod, period.Seconds())
 		}
 	}

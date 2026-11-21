@@ -18,7 +18,7 @@ go tool kind delete cluster --name lodia-e2e-dev --kubeconfig work/e2e/dev.kubec
 `go test` runs in the package directory, so it needs an absolute `E2E_KUBECONFIG`; `make e2e` resolves a relative one, and runs `go test -v` so that each scenario's lines are in the log.
 
 Before the first test, the suite installs Lodia as a user does, and needs Docker and `helm` on the `PATH` for it: it builds `cmd/lodia`, `cmd/lodia-signer` and `cmd/lodia-tunnel` with ko straight into the kind cluster (`KO_DOCKER_REPO=kind.local`, as the hard way does, and `VERSION` from `git describe --tags --always --dirty`), then runs `helm dependency build` and installs [`charts/lodia`](../../charts/lodia) into `lodia-system` with those three images and `metrics.service.enabled=true`.
-The chart brings the CRDs and etcd-druid v0.39.0, its dependency; the operator runs in the cluster under the chart's RBAC, and every test asserts against it.
+The chart brings the CRDs and etcd-druid v0.39.2, its dependency; the operator runs in the cluster under the chart's RBAC, and every test asserts against it.
 The suite leaves the chart installed.
 
 - `TestDatastoreOnKind`: PKI issues the etcd certificate generations, and generation 2 is the one it issues under the same CA once a member Secret of generation 1 is deleted, the roll a tenant sees in production.
@@ -138,6 +138,35 @@ A later grant finds none waiting only for a tenant seen waiting before, whose `R
 A `FleetLimit` status without a `target.scheduledFor` at or before its time fails the test, since every wait for a slot carries one.
 The four become eligible within one second, so the order by `target.scheduledFor` across seconds is held by the envtest `TestTheQueueGoesByScheduledForNamespaceAndName` in `internal/controller/lifecycle`.
 
+## Nightly: etcd-druid upgraded across a patch
+
+`TestEtcdDruidPatchUpgradeUnderAHeldTenant` (`make e2e-maintenance E2E_MAINTENANCE_TEST=TestEtcdDruidPatchUpgradeUnderAHeldTenant`), in the build tag of G5, runs every night in [`nightly-etcd-druid.yml`](../../.github/workflows/nightly-etcd-druid.yml), on demand, and on a pull request that changes the workflow or the test.
+It runs the handshake of the Datastore controller with etcd-druid, `requestReconcile` in [`datastore.go`](../../internal/controller/datastore/datastore.go), against two releases of etcd-druid, which no other test does.
+
+The chart pins etcd-druid v0.39.2.
+The test names that release and the one before it, v0.39.1 by its image index digest, each with the sidecars it renders: etcd-wrapper v0.8.3 and etcdbrctl v0.45.2 at v0.39.1 ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.1/internal/images/images.yaml#L8-L25)), v0.8.4 and v0.45.3 at v0.39.2 ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/images/images.yaml#L8-L25)).
+They are the `-next` images that the feature gate `UpgradeEtcdVersion`, which the chart turns on, selects ([values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/charts/values.yaml#L22-L24), [image.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/utils/image.go#L39-L44)).
+The chart's templates are the same at both tags ([compare](https://github.com/gardener/etcd-druid/compare/v0.39.1...v0.39.2) lists no file under `charts/`), so the image tag alone moves etcd-druid.
+The test fails when the chart pins another release than the one it names.
+
+1. Before any tenant exists, a Helm upgrade with `--reuse-values` sets `etcdDruid.image.tag` to v0.39.1, and the operator, whose revision covers etcd-druid's version, restarts under it.
+   A one-member `ControlPlane` with a window four hours away turns `Ready` and `Idle` at one operator revision, A, and its member runs the v0.39.1 sidecars.
+   Watches then record the `Etcd`, its StatefulSet and member pod, etcd-druid's Deployment and the `ControlPlane`, to the end of the test.
+2. etcd-druid's Deployment is paused, and a Helm upgrade sets the tag to v0.39.2.
+   The Deployment then asks for v0.39.2 and still runs v0.39.1, the state a rollout passes through, held so that the wait for the rollout, and not the order of the steps, keeps the request back.
+   The operator restarts with the new `--etcd-druid-version`, and the tenant is `WaitingForWindow` at revision A in every part for 2 minutes: the `Etcd` carries no `druid.gardener.cloud/operation`, its request annotation and the member pod are those of step 1, and no status of the tenant was seen with `Ready` other than True.
+3. The tenant's window is edited to hold now.
+   An edit of `spec` grants the pending revision, B, at once ([upgrades-and-maintenance-windows](../../docs/decisions/upgrades-and-maintenance-windows.md)), and this one changes nothing the Datastore controller renders.
+   For a minute, with the Deployment still paused, etcd-druid is asked for nothing and `status.datastore.operatorRevision` stays A.
+4. The Deployment is resumed.
+   The tenant reports every part at B, `Ready` and `Idle`, within 10 minutes, and stays so for 30 seconds.
+   Over the whole record, the `Etcd`'s request annotation took one new value, for revision B, after the Deployment ran v0.39.2 in every replica.
+   `druid.gardener.cloud/operation` was set once and removed once, and one spec reconcile started under it, which ends `Reconcile` `Succeeded`.
+   `status.datastore.operatorRevision` moved once, from A to B, the StatefulSet's `updateRevision` moved once, and the member pod was replaced once and runs the v0.39.2 sidecars.
+   etcd-druid may run one more spec reconcile from its cache once the annotation is gone, which changes nothing; the test logs how many ran.
+
+The test logs the record, one line for each change of what it watches, with the seconds from its start.
+
 ## Gate G2: a highly available control plane
 
 `TestHighAvailabilityGate` checks the second item of the [phase 2 gate](../../docs/roadmap.md#phase-2--production).
@@ -159,7 +188,7 @@ The test logs each recorded change and, for each condition, the longest time it 
 
 That bound is the system's while etcd serves gRPC on its HTTP server's listener.
 Over TLS, etcd 3.5.27 serves gRPC under its HTTP server ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L243)), and when it stops it shuts that server down and then stops gRPC ([etcd.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/etcd.go#L474-L488)).
-In the grpc-go and golang.org/x/net etcd-wrapper v0.8.2 builds etcd with ([go.mod](https://github.com/gardener/etcd-wrapper/blob/v0.8.2/go.mod#L68-L75)), stopping closes the transport of every call gRPC serves ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1966-L1978)), after which none of them writes anything ([handler_server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/internal/transport/handler_server.go#L219-L226)), and returns from every call that arrives later before it writes anything ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1123-L1143)).
+In the grpc-go and golang.org/x/net etcd-wrapper v0.8.4 builds etcd with ([go.mod](https://github.com/gardener/etcd-wrapper/blob/v0.8.4/go.mod#L68-L75)), stopping closes the transport of every call gRPC serves ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1966-L1978)), after which none of them writes anything ([handler_server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/internal/transport/handler_server.go#L219-L226)), and returns from every call that arrives later before it writes anything ([server.go](https://github.com/grpc/grpc-go/blob/v1.83.2/server.go#L1123-L1143)).
 The HTTP/2 server then ends the stream itself, after gRPC's headers if they went out, or else with a status 200 and no content type ([server.go](https://github.com/golang/net/blob/v0.58.0/http2/server.go#L2557-L2621)).
 The etcd client of Kubernetes v1.37.0, on grpc-go v1.82.1 ([go.mod](https://github.com/kubernetes/kubernetes/blob/v1.37.0/go.mod#L58-L80)), calls the first `Internal`, `server closed the stream without sending trailers` ([http2_client.go](https://github.com/grpc/grpc-go/blob/v1.82.1/internal/transport/http2_client.go#L1264-L1271)), and the second `Unknown`, `unexpected HTTP status code received from server: 200 (OK); malformed header: missing HTTP content-type` ([http2_client.go](https://github.com/grpc/grpc-go/blob/v1.82.1/internal/transport/http2_client.go#L1562-L1611)).
 It retries a read only on `Unavailable` ([retry.go](https://github.com/etcd-io/etcd/blob/v3.7.0/client/v3/retry.go#L54-L75)), and the API server answers 500 to an error that is no `metav1.Status` ([status.go](https://github.com/kubernetes/apiserver/blob/v0.37.0/pkg/endpoints/handlers/responsewriters/status.go#L60-L81)).
@@ -172,13 +201,13 @@ Zero stays the target (`todo.md`).
 It sits behind a build tag of its own, `restore` with `e2e`, and `make e2e-restore` runs it on a kind cluster of its own as `make e2e-ha` runs G2; the `e2e-restore` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
 
 Before any class exists, the test runs versitygw v1.10.0, by digest, in the namespace `lodia-e2e-s3` with its posix backend on an emptyDir and random root keys, waits for its Deployment to be `Available`, and creates the bucket `lodia-e2e` with an `amazon/aws-cli` Job, by digest, that must be `Complete`.
-The credentials go into `lodia-system` as `accessKeyID`, `secretAccessKey`, `region` and `s3ForcePathStyle`, the keys etcd-backup-restore reads for S3 ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/snapstore/s3_snapstore.go#L106-L244)), and the class `e2e-restore` stores at `http://versitygw.lodia-e2e-s3.svc:7070` under the prefix `e2e`, with a delta snapshot every 10 seconds.
+The credentials go into `lodia-system` as `accessKeyID`, `secretAccessKey`, `region` and `s3ForcePathStyle`, the keys etcd-backup-restore reads for S3 ([s3_snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/s3_snapstore.go#L106-L244)), and the class `e2e-restore` stores at `http://versitygw.lodia-e2e-s3.svc:7070` under the prefix `e2e`, with a delta snapshot every 10 seconds.
 
 1. The `ControlPlane` `a`, in `nodePort` mode, turns `Ready`, and `BackupReady` True, `BackupSucceeded`.
 2. In `a`, the test writes two namespaces with three Secrets of 32 random bytes and a ConfigMap each, whose data hashes it logs, a CRD and one object, a Role and its binding, and what binds a cluster to its world: a bootstrap token, a Node `source-node` with its Lease and a CSR, a LoadBalancer Service, a PersistentVolume with the `Delete` policy and a CronJob.
    It keeps `a`'s cluster and client CAs and a token of the ServiceAccount `restore-a/default`.
 3. The `Backup` `a-1` turns `Ready`, `Completed`: its `status.source` is `a`'s UID, its prefix `e2e/<namespace UID>/backups/<Backup UID>`, its seal at a revision; it carries its UID in `lodia.io/sealed-uid` and the finalizer `lodia.io/restore-source`, `a-1.encryption-config` is immutable and controlled by it, and its two tasks are gone.
-   An `amazon/aws-cli` Job lists the bucket under that prefix, which must hold a full snapshot whose last revision, the third field of the object name `Full-<start>-<last>-<time>` ([snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.1/pkg/types/snapstore.go#L119-L121)), is at least the seal's.
+   An `amazon/aws-cli` Job lists the bucket under that prefix, which must hold a full snapshot whose last revision, the third field of the object name `Full-<start>-<last>-<time>` ([snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/types/snapstore.go#L119-L121)), is at least the seal's.
 4. The test writes the ConfigMap `restore-a/after-backup` in `a`.
 5. The `ControlPlane` `b`, with `a`'s namespace, class, version and network and `restoreFrom.backupRef` `a-1`, `Pending` by default, turns `DatastoreReady` True with `status.restore` naming `a-1` and `a`, and `APIServerReady` True with its controller manager held at 0 replicas; `AddonsApplied` turns True, `ControllersLeading` False, `AwaitingRelease`, naming the LoadBalancer Service, the PersistentVolume and the CronJob, and `Ready` is False.
 6. `b` serves the Secrets and ConfigMaps with `a`'s hashes, and the Widget, the Role and its binding with `a`'s UIDs and contents.
@@ -205,6 +234,28 @@ It must exit 0, and `junit_01.xml` must hold 16 test cases `[It] <spec>` with th
 The specs pull their own images, by the tags the conformance image names ([manifest.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/test/utils/image/manifest.go#L211-L245)).
 
 Every wait is bounded and waits for a condition; no duration is asserted.
+
+## Nightly: a one-member tenant restored through deltas
+
+`TestOneMemberRestoredThroughDeltas` (`make e2e-restore E2E_RESTORE_TEST=TestOneMemberRestoredThroughDeltas`), in the build tag and on the store of G3, runs every night in [`nightly-restore.yml`](../../.github/workflows/nightly-restore.yml), on demand, and on a pull request that changes the workflow or the test.
+It restores a full snapshot and the delta snapshots after it, the path of etcd-backup-restore's open issues [#1043](https://github.com/gardener/etcd-backup-restore/issues/1043) to [#1046](https://github.com/gardener/etcd-backup-restore/issues/1046), on the versions Lodia runs.
+
+The class has the default full snapshot schedule and a delta snapshot every 10 seconds; the API accepts any duration from zero up, and etcd-backup-restore takes no delta snapshot under a second ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/types/snapshotter.go#L81-L83)).
+It sets no `event-ttl`, so the Event below lives on its lease for an hour ([options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/apiserver/options/options.go#L129)).
+
+1. A one-member `ControlPlane` turns `Ready` with `BackupReady` True, `BackupSucceeded`, and its `Etcd` asks for one member, the class's delta period and the default schedule.
+2. The test writes an Event in the tenant and reads the tenant's etcd revision, then creates an `EtcdOpsTask` for a full snapshot and waits until the `Etcd`'s full snapshot Lease holds a revision at or past it.
+   The sidecar sets that holder after it uploaded the snapshot ([heartbeat.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/health/heartbeat/heartbeat.go#L200-L222)), and `fullSnapshotRevision` in [`backup.go`](../../internal/controller/datastore/backup.go) reads it the same way.
+3. The ConfigMap `default/e2e-marker` is written at a revision past that Lease's, so no full snapshot holds it.
+   The delta snapshot Lease holds the last revision of the newest delta snapshot ([heartbeat.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/health/heartbeat/heartbeat.go#L270-L284)): the test waits until it passes the marker's revision, and then until it moves once more, so that two delta snapshots lie between the full snapshot and the loss.
+   The marker is not the first event after the full snapshot: the leader election Leases of the controller manager and the scheduler write every few seconds, and the test logs how many revisions lie between them.
+4. The member's claim and then its pod are deleted.
+5. A new member pod, on a new claim, turns Ready, and the `ControlPlane` turns `Ready`.
+   The log of `backup-restore` in that pod holds, between `data directory found to be invalid, restoring it from backup-bucket` ([initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/initializer/initializer.go#L136)) and `Successfully restored the etcd data directory.` ([initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/initializer/initializer.go#L249)), a restore from a base snapshot whose last revision, in its name `Full-<start>-<last>-<time>` ([snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/types/snapstore.go#L118-L121)), is below the marker's, and `Attempting to apply N delta snapshots for restoration` with N at least 2 ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L98)).
+   A scheduled full snapshot after the marker, near the class's `0 0 * * *`, would hold the marker in the base, and the test fails then.
+   The test ends the restore at the initializer's line: the restorer logs `Restoration complete.` only past the first delta snapshot ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L250-L253)).
+6. The tenant serves the marker and the Event with the UIDs and data they had.
+   The test logs the time from the pod's start to its `Ready` and to the tenant's `Ready`, the number of delta snapshots and the span of the restore in the log.
 
 ## The gateway gate
 
