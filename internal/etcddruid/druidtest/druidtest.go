@@ -176,13 +176,15 @@ func SyncedAt(at time.Time) Option {
 }
 
 // NotAllUpdated reports a member that does not run the Etcd's spec yet
-// (internal/health/condition/check_all_members_updated.go#L48-L51).
+// (internal/health/condition/check_all_members_updated.go#L48-L51), as a
+// change from True, which moves the transition to the sync.
 func NotAllUpdated() Option {
 	return func(_ string, _ int64, s *druidv1alpha1.EtcdStatus) {
 		i := slices.IndexFunc(s.Conditions, func(c druidv1alpha1.Condition) bool {
 			return c.Type == druidv1alpha1.ConditionTypeAllMembersUpdated
 		})
-		s.Conditions[i].Status, s.Conditions[i].Reason, s.Conditions[i].Message = druidv1alpha1.ConditionFalse, "NotAllMembersUpdated", "At least one member is not yet updated"
+		c := &s.Conditions[i]
+		c.Status, c.Reason, c.Message, c.LastTransitionTime = druidv1alpha1.ConditionFalse, "NotAllMembersUpdated", "At least one member is not yet updated", c.LastUpdateTime
 	}
 }
 
