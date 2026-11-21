@@ -125,7 +125,7 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 
 ## Consequences
 
-- Agents share the passthrough listener on 443: the konnectivity agent sends its `--proxy-server-host` as SNI ([hard way, spike c](../hard-way.md#c-spike-does-the-konnectivity-agent-send-sni)).
+- Agents share the passthrough listener on 443: the konnectivity agent sends its `--proxy-server-host` as SNI ([hard way, spike c](https://github.com/lodia-io/lodia/blob/005734e/docs/hard-way.md#c-spike-does-the-konnectivity-agent-send-sni)).
   Go sends no SNI for an IP address ([`hostnameInSNI`](https://github.com/golang/go/blob/go1.26.10/src/crypto/tls/handshake_client.go#L1305-L1315)), so agents dial `konnectivity.<cp>` by name.
 - `apiserver-proxy` runs on every node; its scope is exactly one address and one listener, and it is in the inventory like every other in-tenant object.
 - The tunnel adds a second TLS session to every in-cluster API connection, not to kubelets or users; the phase 2 gate measures the overhead.

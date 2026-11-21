@@ -18,7 +18,7 @@ go.work.sum
 *.kubeconfig
 .claude/settings.local.json
 
-# hard way: generated keys, certificates and kubeconfigs
+# generated and downloaded files: e2e and fleet runs, the etcd binary, the packaged chart
 /work/
 
 # the chart's dependencies, fetched by helm dependency build

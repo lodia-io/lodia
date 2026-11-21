@@ -11,7 +11,6 @@ The six controllers are built, high availability included, and the Helm chart in
 - [`docs/decisions/`](docs/decisions/) — why it is built this way, one decision per file; [project-home](docs/decisions/project-home.md) has the name's origin.
 - [`docs/analysis.md`](docs/analysis.md) — what we learned from the hosted control plane solutions that came before, and where the bar is.
 - [`docs/roadmap.md`](docs/roadmap.md) — the phases, and how each one is verified before the next starts.
-- [`docs/hard-way.md`](docs/hard-way.md) — a hosted control plane built by hand in kind, step by step: what Lodia will automate.
 - [`docs/operations.md`](docs/operations.md) — upgrading and running Lodia; the runbooks.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — building and testing, and what CI runs on every pull request and every night.
 - [`CLAUDE.md`](CLAUDE.md) — how to work on the repository.

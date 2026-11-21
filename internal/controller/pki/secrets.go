@@ -1214,7 +1214,7 @@ type etcdProfile struct {
 }
 
 // etcdProfiles are the certificates etcd-druid expects for the Etcd named
-// <cp>-etcd, as hack/etcd-spike/pki.sh issued them.
+// <cp>-etcd, as the etcd spike issued them (docs/etcd-spike-2026-10.md).
 func (t *tenant) etcdProfiles() []etcdProfile {
 	n := contract.EtcdName(t.cp.Name)
 	forms := func(names ...string) []string {

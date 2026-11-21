@@ -4,7 +4,7 @@ A working doc: the phase 0 spike of
 [dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md), run on
 2026-10-24. What stays true moves into that decision, `docs/README.md` and
 `docs/operations.md`; then this file is deleted. Its files are in
-[`hack/etcd-spike/`](../hack/etcd-spike/).
+[`hack/etcd-spike/` at 005734e](https://github.com/lodia-io/lodia/tree/005734e/hack/etcd-spike).
 
 Moved on 2026-10-25, with the Datastore controller: the **DatastoreClass →
 Etcd** table into [`README.md`](README.md#a-tenant-namespace), where the code
@@ -169,7 +169,7 @@ tests check it.
 
 ## How to run it again
 
-From the repository root, on a laptop with Docker (about 4 GB for the
+From the repository root at 005734e (`git switch --detach 005734e`), on a laptop with Docker (about 4 GB for the
 spike), helm and the hard way's tools; the hard way may run beside it on its
 own cluster and port. Every command reaches the spike's cluster through `mk`
 and `tk`, never your current context.
