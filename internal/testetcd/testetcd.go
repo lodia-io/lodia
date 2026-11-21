@@ -286,6 +286,7 @@ func (m *Member) launch(binary, state, initial string) {
 	cmd.Dir = c.dir
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = stopWithin
+	endWithTheTestBinary(cmd)
 	p := &process{cmd: cmd, cancel: cancel, log: &tail{}, done: make(chan struct{})}
 	cmd.Stdout, cmd.Stderr = p.log, p.log
 	if err := cmd.Start(); err != nil {

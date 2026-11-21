@@ -19,6 +19,8 @@ Every other tool runs through `go tool`, except ko and hydrophone, which run thr
 
 The tests of Lodia's calls to etcd run etcd's release binary at `versions.EtcdVersion`, the etcd that etcd-wrapper runs in production, and no embedded etcd.
 `make test` and `make fleet` fetch it into `work/etcd` first (`make etcd`); a test run by hand needs `LODIA_ETCD_BINARY="$(go run ./test/etcdbinary work/etcd)"`.
+A test binary that `go test`'s timeout or a SIGKILL ended skips its cleanup: on Linux the kernel ends its etcd with it.
+On macOS the etcd stays on its port and its `etcd-*` directory stays in `$TMPDIR`: `ps -eo pid,ppid,command | grep -- '--data-dir.*/etcd-'` lists them, a leftover's parent is process 1 and its directory is `lsof -a -p <pid> -d cwd`, `kill` it and remove the directory.
 
 CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-upgrade` and `make e2e-maintenance` on every pull request, and every night `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway`, `make e2e-hold`, `make e2e-upgrade-ha`, and `make e2e-ha`, `make e2e-upgrade` and `make e2e-maintenance` with their nightly tests.
 
