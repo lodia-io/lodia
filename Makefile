@@ -8,6 +8,7 @@ ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e
 E2E_HA_TEST ?= TestHighAvailabilityGate
+E2E_RESTORE_TEST ?= TestRestoreGate
 E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
 E2E_MAINTENANCE_TEST ?= TestOperatorUpgradeInWindows
 FLEET_TENANTS ?= 1000
@@ -193,10 +194,10 @@ e2e-ha: ## gate G2 against a highly available tenant, on a kind cluster of its o
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 
 .PHONY: e2e-restore
-e2e-restore: ## gate G3, a Backup of a tenant and a restore from it, against an S3 store in the cluster, on a kind cluster of its own that it deletes afterwards
+e2e-restore: ## gate G3, a Backup of a tenant and a restore from it, against an S3 store in the cluster, on a kind cluster of its own that it deletes afterwards; E2E_RESTORE_TEST=TestOneMemberRestoredThroughDeltas runs the nightly restore of a one-member tenant instead
 	mkdir -p $(E2E_DIR)
 	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,restore -count=1 -timeout 40m -run '^TestRestoreGate$$' ./test/e2e/...; status=$$?; \
+	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,restore -count=1 -timeout 40m -run '^$(E2E_RESTORE_TEST)$$' ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 

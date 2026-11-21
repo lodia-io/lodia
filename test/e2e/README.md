@@ -235,6 +235,27 @@ The specs pull their own images, by the tags the conformance image names ([manif
 
 Every wait is bounded and waits for a condition; no duration is asserted.
 
+## Nightly: a one-member tenant restored through deltas
+
+`TestOneMemberRestoredThroughDeltas` (`make e2e-restore E2E_RESTORE_TEST=TestOneMemberRestoredThroughDeltas`), in the build tag and on the store of G3, runs every night in [`nightly-restore.yml`](../../.github/workflows/nightly-restore.yml), on demand, and on a pull request that changes the workflow or the test.
+It restores a full snapshot and the delta snapshots after it, the path of etcd-backup-restore's open issues [#1043](https://github.com/gardener/etcd-backup-restore/issues/1043) to [#1046](https://github.com/gardener/etcd-backup-restore/issues/1046), on the versions Lodia runs.
+
+The class has the default full snapshot schedule and a delta snapshot every 10 seconds; the API accepts any duration from zero up, and etcd-backup-restore takes no delta snapshot under a second ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/types/snapshotter.go#L81-L83)).
+It sets no `event-ttl`, so the Event below lives on its lease for an hour ([options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/apiserver/options/options.go#L129)).
+
+1. A one-member `ControlPlane` turns `Ready` with `BackupReady` True, `BackupSucceeded`, and its `Etcd` asks for one member, the class's delta period and the default schedule.
+2. The test writes an Event in the tenant and reads the tenant's etcd revision, then creates an `EtcdOpsTask` for a full snapshot and waits until the `Etcd`'s full snapshot Lease holds a revision at or past it.
+   The sidecar sets that holder after it uploaded the snapshot ([heartbeat.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/health/heartbeat/heartbeat.go#L200-L222)), and `fullSnapshotRevision` in [`backup.go`](../../internal/controller/datastore/backup.go) reads it the same way.
+3. The ConfigMap `default/e2e-marker` is written at a revision past that Lease's, so no full snapshot holds it.
+   The delta snapshot Lease holds the last revision of the newest delta snapshot ([heartbeat.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/health/heartbeat/heartbeat.go#L270-L284)): the test waits until it passes the marker's revision, and then until it moves once more, so that two delta snapshots lie between the full snapshot and the loss.
+   The marker is not the first event after the full snapshot: the leader election Leases of the controller manager and the scheduler write every few seconds, and the test logs how many revisions lie between them.
+4. The member's claim and then its pod are deleted.
+5. A new member pod, on a new claim, turns Ready, and the `ControlPlane` turns `Ready`.
+   The log of `backup-restore` in that pod holds, between `data directory found to be invalid, restoring it from backup-bucket` ([initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/initializer/initializer.go#L136)) and `Successfully restored the etcd data directory.` ([initializer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/initializer/initializer.go#L249)), a restore from a base snapshot and `Attempting to apply N delta snapshots for restoration` with N at least 2 ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L98)).
+   The test ends the restore at the initializer's line: the restorer logs `Restoration complete.` only past the first delta snapshot ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L250-L253)).
+6. The tenant serves the marker and the Event with the UIDs and data they had.
+   The test logs the time from the pod's start to its `Ready` and to the tenant's `Ready`, the number of delta snapshots and the span of the restore in the log.
+
 ## The gateway gate
 
 `TestGatewayGate` checks the `gateway` mode of [api-exposure](../../docs/decisions/api-exposure.md) on every pull request: tenants behind a shared Gateway by SNI, a node that joins by hostname, pods that reach their API through `apiserver-proxy` and the tunnel, and one owner per hostname.
