@@ -210,7 +210,7 @@ release-images: ## build the three images with ko for PLATFORMS, tagged CHART_VE
 	done > $(IMAGES_ENV).tmp && mv $(IMAGES_ENV).tmp $(IMAGES_ENV)
 
 .PHONY: release-chart
-release-chart: ## package the chart as version and appVersion CHART_VERSION into $(RELEASE_DIR)/lodia-CHART_VERSION.tgz, with the digests of $(IMAGES_ENV) in its values.yaml, after checking the vendored etcd-druid chart; its values.yaml must differ from the tree's in the three digest lines alone; every file in it and the archive itself are dated at the commit, so that one commit packages to one archive; HELM_PUSH=true pushes it to oci://$(CHART_REGISTRY) and writes $(CHART_ENV) with its reference by the digest helm push prints
+release-chart: ## package the chart as version and appVersion CHART_VERSION into $(RELEASE_DIR)/lodia-CHART_VERSION.tgz, with the digests of $(IMAGES_ENV) in its values.yaml, after checking the vendored etcd-druid chart; its values.yaml must differ from the tree's in the three digest lines alone; every file in it and the archive itself are dated at the commit, with git, touch and helm push under TZ=UTC0 whatever the host's zone, so that one commit packages to one archive and pushes to one manifest; HELM_PUSH=true pushes it to oci://$(CHART_REGISTRY) and writes $(CHART_ENV) with its reference by the digest helm push prints
 	@[ -n "$(TAG)" ] || { echo "usage: make release-chart TAG=vX.Y.Z [HELM_PUSH=true]"; exit 1; }
 	@[ -f $(IMAGES_ENV) ] || { echo "$(IMAGES_ENV) is missing: run make release-images first"; exit 1; }
 	rm -rf $(RELEASE_DIR)/chart $(CHART_ENV)
@@ -224,13 +224,13 @@ release-chart: ## package the chart as version and appVersion CHART_VERSION into
 		line="$$($(YQ) ".$${entry%%:*}.digest | line" $$values)" && sed -i.bak "$${line}s|\"\"|\"$${entry#*:}\"|" $$values || exit 1; \
 	done && rm $$values.bak
 	epoch="$$(git log -1 --format=%ct)" && [ -n "$$epoch" ] && SOURCE_DATE_EPOCH=$$epoch helm package $(RELEASE_DIR)/chart/lodia --version $(CHART_VERSION) --app-version $(CHART_VERSION) --destination $(RELEASE_DIR) && \
-	touch -t "$$(git log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)" $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz
+	TZ=UTC0 touch -t "$$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)" $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz
 	. $(IMAGES_ENV) && \
 	want="$$(printf '<   digest: ""\n>   digest: "%s"\n' "$${LODIA_IMAGE##*@}" "$${SIGNER_IMAGE##*@}" "$${TUNNEL_IMAGE##*@}" | sort)" && \
 	got="$$(tar -xzOf $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz lodia/values.yaml | diff $(CHART)/values.yaml - | grep '^[<>]' | sort)"; \
 	[ "$$got" = "$$want" ] || { printf 'the packaged values.yaml differs from %s/values.yaml in\n%s\nwant\n%s\n' $(CHART) "$$got" "$$want"; exit 1; }
 	@if [ "$(HELM_PUSH)" = true ]; then \
-		out="$$(helm push $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz oci://$(CHART_REGISTRY))" && printf '%s\n' "$$out" && \
+		out="$$(TZ=UTC0 helm push $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz oci://$(CHART_REGISTRY))" && printf '%s\n' "$$out" && \
 		pushed="$$(printf '%s\n' "$$out" | sed -n 's/^Pushed: //p')" && digest="$$(printf '%s\n' "$$out" | sed -n 's/^Digest: //p')" && \
 		[ "$$pushed" = $(CHART_REGISTRY)/lodia:$(CHART_VERSION) ] && [ "$$(printf '%s\n' "$$digest" | grep -c .)" = 1 ] && printf '%s\n' "$$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "helm push printed pushed [$$pushed] and digest [$$digest], want $(CHART_REGISTRY)/lodia:$(CHART_VERSION) and one digest"; exit 1; }; \
 		echo "CHART_IMAGE=$(CHART_REGISTRY)/lodia@$$digest" > $(CHART_ENV); \

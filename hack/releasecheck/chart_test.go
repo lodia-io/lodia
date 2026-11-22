@@ -37,6 +37,7 @@ dependency)
 	;;
 push)
 	{ printf 'helm'; printf ' %s' "$@"; echo; } >> "$CALLS"
+	echo "${TZ-unset}" >> "$CALLS.tz"
 	cat "$PUSH_OUT"
 	;;
 *)
@@ -209,64 +210,98 @@ func TestReleaseChartPushesOnlyOnRequestAndNamesTheChartByTheDigestPushPrints(t 
 	})
 }
 
+func commitAt(t *testing.T, when time.Time) string {
+	t.Helper()
+	stamp := "@" + strconv.FormatInt(when.Unix(), 10) + " " + when.Format("-0700")
+	t.Setenv("GIT_AUTHOR_DATE", stamp)
+	t.Setenv("GIT_COMMITTER_DATE", stamp)
+	r := newRepository(t)
+	r.commit(map[string]string{"file": "content\n"})
+	return filepath.Join(r.dir, ".git")
+}
+
 func TestReleaseChartPackagesOneCommitToOneArchive(t *testing.T) {
 	const tick = 1100 * time.Millisecond
-	box, args := chartToolbox(t)
-	out, err := exec.CommandContext(t.Context(), "git", "-C", root, "log", "-1", "--format=%ct").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	seconds, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	commit := time.Unix(seconds, 0)
-
-	var sums []string
-	for i, name := range []string{"first", "second"} {
-		if i > 0 {
-			time.Sleep(tick)
-		}
-		release := filepath.Join(box.dir, name)
-		if err := os.MkdirAll(release, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(release, "images.env"), []byte(imagesEnv), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		stdout, stderr, err := runMakeEnv(t, box.env, append(args, "RELEASE_DIR="+release)...)
-		if err != nil {
-			t.Fatalf("%v\n%s%s", err, stdout, stderr)
-		}
-		archive := filepath.Join(release, "lodia-"+releaseVersion+".tgz")
-		raw, err := os.ReadFile(archive)
-		if err != nil {
-			t.Fatal(err)
-		}
-		sum := sha256.Sum256(raw)
-		sums = append(sums, hex.EncodeToString(sum[:]))
-		info, err := os.Stat(archive)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !info.ModTime().Equal(commit) {
-			t.Errorf("%s is dated %s, want the commit's %s", archive, info.ModTime().UTC(), commit.UTC())
-		}
-		var undated []string
-		for entry, modTime := range tarModTimes(t, raw) {
-			if !modTime.Equal(commit) {
-				undated = append(undated, entry)
+	for _, tt := range []struct {
+		zone   string
+		commit time.Time
+	}{
+		{zone: "Europe/Kyiv", commit: time.Date(2026, 10, 25, 1, 30, 0, 0, time.UTC)},
+		{zone: "America/New_York", commit: time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC)},
+	} {
+		t.Run(tt.zone, func(t *testing.T) {
+			zone, err := time.LoadLocation(tt.zone)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-		if len(undated) > 0 {
-			slices.Sort(undated)
-			t.Errorf("%s holds %d files not dated at the commit's %s, the first %s", archive, len(undated), commit.UTC(), undated[0])
-		}
-	}
+			wall := func(at time.Time) string { return at.In(zone).Format(time.TimeOnly) }
+			if wall(tt.commit) != wall(tt.commit.Add(-time.Hour)) && wall(tt.commit) != wall(tt.commit.Add(time.Hour)) {
+				t.Fatalf("%s is %s in %s, a time that does not repeat", tt.commit, wall(tt.commit), tt.zone)
+			}
+			box, args := chartToolbox(t)
+			env := append(slices.Clone(box.env), "TZ="+tt.zone, "GIT_DIR="+commitAt(t, tt.commit.In(zone)))
 
-	if sums[0] != sums[1] {
-		version, _ := exec.CommandContext(t.Context(), "helm", "version", "--short").Output()
-		t.Errorf("two packages of one commit have the sha256 %s and %s with %s, want one; the release pins v4.3.1", sums[0], sums[1], strings.TrimSpace(string(version)))
+			var sums []string
+			for i, name := range []string{"first", "second"} {
+				if i > 0 {
+					time.Sleep(tick)
+				}
+				release := filepath.Join(box.dir, name)
+				if err := os.MkdirAll(release, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(release, "images.env"), []byte(imagesEnv), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				stdout, stderr, err := runMakeEnv(t, env, append(args, "RELEASE_DIR="+release)...)
+				if err != nil {
+					t.Fatalf("%v\n%s%s", err, stdout, stderr)
+				}
+				archive := filepath.Join(release, "lodia-"+releaseVersion+".tgz")
+				raw, err := os.ReadFile(archive)
+				if err != nil {
+					t.Fatal(err)
+				}
+				sum := sha256.Sum256(raw)
+				sums = append(sums, hex.EncodeToString(sum[:]))
+				info, err := os.Stat(archive)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !info.ModTime().Equal(tt.commit) {
+					t.Errorf("%s is dated %s, want the commit's %s", archive, info.ModTime().UTC(), tt.commit)
+				}
+				var undated []string
+				for entry, modTime := range tarModTimes(t, raw) {
+					if !modTime.Equal(tt.commit) {
+						undated = append(undated, entry)
+					}
+				}
+				if len(undated) > 0 {
+					slices.Sort(undated)
+					t.Errorf("%s holds %d files not dated at the commit's %s, the first %s", archive, len(undated), tt.commit, undated[0])
+				}
+			}
+
+			if sums[0] != sums[1] {
+				version, _ := exec.CommandContext(t.Context(), "helm", "version", "--short").Output()
+				t.Errorf("two packages of one commit have the sha256 %s and %s with %s, want one; the release pins v4.3.1", sums[0], sums[1], strings.TrimSpace(string(version)))
+			}
+		})
+	}
+}
+
+func TestReleaseChartPushesUnderUTCWhateverTheZoneOfTheHost(t *testing.T) {
+	box, args := chartToolbox(t)
+	out := box.write("push-out", "Pushed: "+chartRegistry+"/lodia:"+releaseVersion+"\nDigest: sha256:"+strings.Repeat("5", 64)+"\n")
+
+	_, output, err := box.run(0, []string{"PUSH_OUT=" + out, "TZ=Europe/Kyiv"}, append(args, "HELM_PUSH=true")...)
+
+	if err != nil {
+		t.Fatalf("%v\n%s", err, output)
+	}
+	if got := box.read(box.calls + ".tz"); got != "UTC0\n" {
+		t.Errorf("helm push ran with TZ %q, want UTC0", got)
 	}
 }
 
