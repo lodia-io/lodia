@@ -81,5 +81,7 @@ The nightly `TestEtcdDruidPatchUpgradeUnderAHeldTenant` runs in `nightly-etcd-dr
 - `internal/etcddruid/druidtest` — etcd-druid's CRDs for envtest, and its writes for the tests.
 - `internal/etcddruid/seam_test.go` — the rule above.
 - `internal/etcddruid/versions_test.go` — fails unless `go.mod`, `Chart.yaml`, `Chart.lock` and `etcdDruid.image.tag` name one etcd-druid version.
-- `charts/etcd-druid.sha256` — the sum of the vendored etcd-druid chart, which `make chart` and `make release-chart` check after `helm dependency build`; a bump of etcd-druid updates it by hand.
+- `charts/etcd-druid.sha256` — the sum of the vendored etcd-druid chart, which `make chart` and `make release-chart` check after `helm dependency build`; a bump of etcd-druid, Renovate's pull request included, updates it by hand.
+- `test/e2e/etcddruid_nightly_test.go` — `TestEtcdDruidPatchUpgradeUnderAHeldTenant`: `druidAfter` follows the chart's tag, and a bump of etcd-druid sets `druidBefore`, the release a patch below the chart's with its digest and its sidecars' versions, by hand.
+  That edit puts the file in the pull request, whose changes then match the `paths` of `nightly-etcd-druid` and run it ([pull-request diffs](https://github.com/github/docs/blob/6d56af0c8b62bde11bb3d9df46244fab5f0a00f9/data/reusables/actions/workflows/triggering-a-workflow-paths5.md?plain=1#L3-L4)): merge it once that run is green, since a nightly red at `main`'s head makes `make release-check` refuse every release.
 - `internal/testetcd` and `test/etcdbinary` — the helper that starts etcd's release binary at `versions.EtcdVersion` for the tests of Lodia's calls to etcd, and the command `make etcd` runs to fetch it.
