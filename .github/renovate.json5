@@ -15,7 +15,7 @@
       customType: "regex",
       managerFilePatterns: ["/^charts/lodia/values\\.yaml$/"],
       matchStrings: [
-        "(?m)^etcdDruid:\\n(?:[ ]+.*\\n)*?[ ]+image:\\n[ ]+tag: (?<currentValue>v[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+        "(?:^|\\n)etcdDruid:\\n(?:[ ]+.*\\n)*?[ ]+image:\\n[ ]+tag: (?<currentValue>v[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
       ],
       depNameTemplate: "europe-docker.pkg.dev/gardener-project/releases/gardener/etcd-druid",
       datasourceTemplate: "docker",
