@@ -99,7 +99,7 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 }
 
 var buildVersion = sync.OnceValues(func() (string, error) {
-	describe := exec.Command("git", "describe", "--tags", "--always", "--dirty")
+	describe := exec.Command("git", "describe", "--tags", "--match", "v[0-9]*", "--always", "--dirty")
 	describe.Dir = root
 	out, err := describe.Output()
 	if err != nil {
