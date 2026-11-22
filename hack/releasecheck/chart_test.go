@@ -9,9 +9,13 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -203,4 +207,89 @@ func TestReleaseChartPushesOnlyOnRequestAndNamesTheChartByTheDigestPushPrints(t 
 			t.Error("the chart was not packaged")
 		}
 	})
+}
+
+func TestReleaseChartPackagesOneCommitToOneArchive(t *testing.T) {
+	const tick = 1100 * time.Millisecond
+	box, args := chartToolbox(t)
+	out, err := exec.CommandContext(t.Context(), "git", "-C", root, "log", "-1", "--format=%ct").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seconds, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit := time.Unix(seconds, 0)
+
+	var sums []string
+	for i, name := range []string{"first", "second"} {
+		if i > 0 {
+			time.Sleep(tick)
+		}
+		release := filepath.Join(box.dir, name)
+		if err := os.MkdirAll(release, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(release, "images.env"), []byte(imagesEnv), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, err := runMakeEnv(t, box.env, append(args, "RELEASE_DIR="+release)...)
+		if err != nil {
+			t.Fatalf("%v\n%s%s", err, stdout, stderr)
+		}
+		archive := filepath.Join(release, "lodia-"+releaseVersion+".tgz")
+		raw, err := os.ReadFile(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(raw)
+		sums = append(sums, hex.EncodeToString(sum[:]))
+		info, err := os.Stat(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(commit) {
+			t.Errorf("%s is dated %s, want the commit's %s", archive, info.ModTime().UTC(), commit.UTC())
+		}
+		var undated []string
+		for entry, modTime := range tarModTimes(t, raw) {
+			if !modTime.Equal(commit) {
+				undated = append(undated, entry)
+			}
+		}
+		if len(undated) > 0 {
+			slices.Sort(undated)
+			t.Errorf("%s holds %d files not dated at the commit's %s, the first %s", archive, len(undated), commit.UTC(), undated[0])
+		}
+	}
+
+	if sums[0] != sums[1] {
+		version, _ := exec.CommandContext(t.Context(), "helm", "version", "--short").Output()
+		t.Errorf("two packages of one commit have the sha256 %s and %s with %s, want one; the release pins v4.3.1", sums[0], sums[1], strings.TrimSpace(string(version)))
+	}
+}
+
+func tarModTimes(t *testing.T, raw []byte) map[string]time.Time {
+	t.Helper()
+	zipper, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	times := map[string]time.Time{}
+	archive := tar.NewReader(zipper)
+	for {
+		header, err := archive.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		times[header.Name] = header.ModTime
+	}
+	if len(times) == 0 {
+		t.Fatal("the archive holds no file")
+	}
+	return times
 }

@@ -210,7 +210,7 @@ release-images: ## build the three images with ko for PLATFORMS, tagged CHART_VE
 	done > $(IMAGES_ENV).tmp && mv $(IMAGES_ENV).tmp $(IMAGES_ENV)
 
 .PHONY: release-chart
-release-chart: ## package the chart as version and appVersion CHART_VERSION into $(RELEASE_DIR)/lodia-CHART_VERSION.tgz, with the digests of $(IMAGES_ENV) in its values.yaml, after checking the vendored etcd-druid chart; its values.yaml must differ from the tree's in the three digest lines alone; HELM_PUSH=true pushes it to oci://$(CHART_REGISTRY) and writes $(CHART_ENV) with its reference by the digest helm push prints
+release-chart: ## package the chart as version and appVersion CHART_VERSION into $(RELEASE_DIR)/lodia-CHART_VERSION.tgz, with the digests of $(IMAGES_ENV) in its values.yaml, after checking the vendored etcd-druid chart; its values.yaml must differ from the tree's in the three digest lines alone; every file in it and the archive itself are dated at the commit, so that one commit packages to one archive; HELM_PUSH=true pushes it to oci://$(CHART_REGISTRY) and writes $(CHART_ENV) with its reference by the digest helm push prints
 	@[ -n "$(TAG)" ] || { echo "usage: make release-chart TAG=vX.Y.Z [HELM_PUSH=true]"; exit 1; }
 	@[ -f $(IMAGES_ENV) ] || { echo "$(IMAGES_ENV) is missing: run make release-images first"; exit 1; }
 	rm -rf $(RELEASE_DIR)/chart $(CHART_ENV)
@@ -223,7 +223,8 @@ release-chart: ## package the chart as version and appVersion CHART_VERSION into
 	for entry in image:$${LODIA_IMAGE##*@} signerImage:$${SIGNER_IMAGE##*@} tunnelImage:$${TUNNEL_IMAGE##*@}; do \
 		line="$$($(YQ) ".$${entry%%:*}.digest | line" $$values)" && sed -i.bak "$${line}s|\"\"|\"$${entry#*:}\"|" $$values || exit 1; \
 	done && rm $$values.bak
-	helm package $(RELEASE_DIR)/chart/lodia --version $(CHART_VERSION) --app-version $(CHART_VERSION) --destination $(RELEASE_DIR)
+	epoch="$$(git log -1 --format=%ct)" && [ -n "$$epoch" ] && SOURCE_DATE_EPOCH=$$epoch helm package $(RELEASE_DIR)/chart/lodia --version $(CHART_VERSION) --app-version $(CHART_VERSION) --destination $(RELEASE_DIR) && \
+	touch -t "$$(git log -1 --format=%cd --date=format-local:%Y%m%d%H%M.%S)" $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz
 	. $(IMAGES_ENV) && \
 	want="$$(printf '<   digest: ""\n>   digest: "%s"\n' "$${LODIA_IMAGE##*@}" "$${SIGNER_IMAGE##*@}" "$${TUNNEL_IMAGE##*@}" | sort)" && \
 	got="$$(tar -xzOf $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz lodia/values.yaml | diff $(CHART)/values.yaml - | grep '^[<>]' | sort)"; \
