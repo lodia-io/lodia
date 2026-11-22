@@ -80,4 +80,6 @@ The nightly `TestEtcdDruidPatchUpgradeUnderAHeldTenant` runs in `nightly-etcd-dr
 - `internal/etcddruid` — the `Engine`: the reads, the render, the copy and the apply of an `Etcd`, the reconcile handshake with its sightings, the etcd's NetworkPolicy, the claims' names, the dialer, the tasks and the full snapshot Lease; `export_test.go` gives its external tests the handshake's wait.
 - `internal/etcddruid/druidtest` — etcd-druid's CRDs for envtest, and its writes for the tests.
 - `internal/etcddruid/seam_test.go` — the rule above.
+- `internal/etcddruid/versions_test.go` — fails unless `go.mod`, `Chart.yaml`, `Chart.lock` and `etcdDruid.image.tag` name one etcd-druid version.
+- `charts/etcd-druid.sha256` — the sum of the vendored etcd-druid chart, which `make chart` and `make release-chart` check after `helm dependency build`; a bump of etcd-druid updates it by hand.
 - `internal/testetcd` and `test/etcdbinary` — the helper that starts etcd's release binary at `versions.EtcdVersion` for the tests of Lodia's calls to etcd, and the command `make etcd` runs to fetch it.
