@@ -37,12 +37,20 @@ func goodFiles(version string) map[string]string {
 		".github/workflows/ci.yml":          "name: ci\n",
 		".github/workflows/nightly.yml":     "name: nightly\n",
 		".github/workflows/" + nightlyHA:    "name: nightly-ha\n",
-		".github/workflows/" + nightlyFleet: "name: nightly-fleet\nrun-name: nightly-fleet, ${{ inputs.tenants || '300' }} tenants\n",
+		".github/workflows/" + nightlyFleet: "name: nightly-fleet\nrun-name: nightly-fleet, ${{ inputs.tenants || '300' }} tenants\non:\n  workflow_dispatch:\n    inputs:\n      tenants:\n        default: \"300\"\n",
 		".github/workflows/release.yml":     "name: release\n",
 		chartFile:                           "apiVersion: v2\nname: lodia\nversion: 0.0.0-dev\nappVersion: 0.0.0-dev\n",
 		"README.md":                         installCommand(version),
 		"docs/README.md":                    "# Lodia\n\n" + installCommand(version),
 	}
+}
+
+func withInput(name, input, def, runName string) string {
+	file := "name: " + name + "\non:\n  workflow_dispatch:\n    inputs:\n      " + input + ":\n        default: \"" + def + "\"\n"
+	if runName != "" {
+		file += "run-name: " + runName + "\n"
+	}
+	return file
 }
 
 type repository struct {
@@ -315,6 +323,12 @@ func TestTheTagCheckAccepts(t *testing.T) {
 			dispatched.Title = fleetTitle
 			w.nightly(nightlyFleet, done(9, scheduleEvent, "failure", 0), dispatched)
 		}},
+		{name: "a run of another nightly dispatched at its default input", change: func(w *world) {
+			w.files[".github/workflows/"+nightlyHA] = withInput("nightly-ha", "shards", "4", "nightly-ha, ${{ inputs.shards || '4' }} shards")
+			dispatched := done(10, dispatchEvent, success, 10)
+			dispatched.Title = "nightly-ha, 4 shards"
+			w.nightly(nightlyHA, dispatched)
+		}},
 		{name: "a run of a pull request at the commit is no run of a nightly", change: func(w *world) {
 			w.nightly(nightlyHA, done(10, scheduleEvent, success, 0), done(11, "pull_request", "failure", 10))
 		}},
@@ -487,6 +501,21 @@ func TestTheTagCheckRefuses(t *testing.T) {
 		{name: "a nightly whose run-name holds another expression", change: func(w *world) {
 			w.files[".github/workflows/"+nightlyHA] = "name: nightly-ha\nrun-name: nightly-ha ${{ github.actor }}\n"
 		}, want: "an expression other than"},
+		{name: "a nightly that gains an input and no run-name", change: func(w *world) {
+			w.files[".github/workflows/"+nightlyHA] = withInput("nightly-ha", "shards", "4", "")
+		}, want: "the input shards of workflow_dispatch is not stated in the run-name"},
+		{name: "a nightly that gains an input its run-name does not state", change: func(w *world) {
+			w.files[".github/workflows/"+nightlyHA] = withInput("nightly-ha", "shards", "4", "nightly-ha, ${{ inputs.other || '4' }} shards")
+		}, want: "the input shards of workflow_dispatch is not stated in the run-name"},
+		{name: "a nightly whose run-name states an input with another default", change: func(w *world) {
+			w.files[".github/workflows/"+nightlyHA] = withInput("nightly-ha", "shards", "4", "nightly-ha, ${{ inputs.shards || '8' }} shards")
+		}, want: "as `${{ inputs.shards || '4' }}`"},
+		{name: "a run of another nightly dispatched at another input", change: func(w *world) {
+			w.files[".github/workflows/"+nightlyHA] = withInput("nightly-ha", "shards", "4", "nightly-ha, ${{ inputs.shards || '4' }} shards")
+			dispatched := done(10, dispatchEvent, success, 10)
+			dispatched.Title = "nightly-ha, 8 shards"
+			w.nightly(nightlyHA, dispatched)
+		}, want: "nightly-ha.yml has no completed run"},
 		{name: "a chart that is not at 0.0.0-dev", change: func(w *world) {
 			w.files[chartFile] = "apiVersion: v2\nname: lodia\nversion: 0.1.0-alpha.1\nappVersion: 0.0.0-dev\n"
 		}, want: `has version "0.1.0-alpha.1" and appVersion "0.0.0-dev"`},
@@ -662,6 +691,18 @@ func TestANightlyIsReadWithItsDefaultTitle(t *testing.T) {
 		{name: "a run-name with an input and its default", raw: "name: f\nrun-name: f, ${{ inputs.tenants || '300' }} tenants\n", want: "f, 300 tenants"},
 		{name: "a run-name with two inputs", raw: "name: f\nrun-name: ${{inputs.a||'1'}}-${{ inputs.b-c || 'x y' }}\n", want: "1-x y"},
 		{name: "a run-name with another expression", raw: "name: f\nrun-name: f ${{ github.actor }}\n", wantErr: "expression other than"},
+		{name: "an input stated with its default", raw: withInput("f", "tenants", "300", "f, ${{ inputs.tenants || '300' }} tenants"), want: "f, 300 tenants"},
+		{name: "an input stated with a default written as a number", raw: "name: f\non:\n  workflow_dispatch:\n    inputs:\n      tenants:\n        default: 300\nrun-name: f, ${{ inputs.tenants || '300' }}\n", want: "f, 300"},
+		{name: "an input with no default stated with an empty one", raw: "name: f\non:\n  workflow_dispatch:\n    inputs:\n      tenants: {}\nrun-name: f${{ inputs.tenants || '' }}\n", want: "f"},
+		{name: "two inputs, both stated", raw: "name: f\non:\n  workflow_dispatch:\n    inputs:\n      a:\n        default: '1'\n      b:\n        default: 'x'\nrun-name: ${{ inputs.a || '1' }}-${{ inputs.b || 'x' }}\n", want: "1-x"},
+		{name: "an input in a workflow with no run-name", raw: withInput("f", "tenants", "300", ""), wantErr: "the input tenants of workflow_dispatch is not stated in the run-name as `${{ inputs.tenants || '300' }}`"},
+		{name: "an input the run-name does not state", raw: withInput("f", "tenants", "300", "f"), wantErr: "the input tenants of workflow_dispatch is not stated"},
+		{name: "an input stated with another default", raw: withInput("f", "tenants", "300", "f ${{ inputs.tenants || '100' }}"), wantErr: "as `${{ inputs.tenants || '300' }}`"},
+		{name: "two inputs, one stated", raw: "name: f\non:\n  workflow_dispatch:\n    inputs:\n      a:\n        default: '1'\n      b:\n        default: 'x'\nrun-name: ${{ inputs.a || '1' }}\n", wantErr: "the input b of workflow_dispatch is not stated"},
+		{name: "an input in a workflow whose on key is quoted", raw: "name: f\n\"on\":\n  workflow_dispatch:\n    inputs:\n      tenants:\n        default: '300'\n", wantErr: "the input tenants of workflow_dispatch is not stated"},
+		{name: "a run-name that states an input the workflow does not declare", raw: "name: f\non:\n  workflow_dispatch:\nrun-name: f${{ inputs.tenants || '300' }}\n", want: "f300"},
+		{name: "a dispatch with no inputs and the events as a list", raw: "name: f\non: [workflow_dispatch]\n", want: "f"},
+		{name: "a dispatch with no inputs and the events as a word", raw: "name: f\non: workflow_dispatch\n", want: "f"},
 		{name: "a run-name with an input and no default", raw: "name: f\nrun-name: f ${{ inputs.tenants }}\n", wantErr: "expression other than"},
 		{name: "no name", raw: "on: push\n", wantErr: "no name"},
 		{name: "not YAML", raw: "name: [\n", wantErr: "yaml"},

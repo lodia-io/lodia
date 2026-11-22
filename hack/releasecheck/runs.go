@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"regexp"
 	"slices"
@@ -28,7 +29,7 @@ const (
 
 // The one expression a run-name may hold, which GitHub evaluates for a
 // scheduled run, whose inputs are empty, to the text in quotes.
-var inputOrDefault = regexp.MustCompile(`\$\{\{\s*inputs\.[A-Za-z0-9_-]+\s*\|\|\s*'([^']*)'\s*\}\}`)
+var inputOrDefault = regexp.MustCompile(`\$\{\{\s*inputs\.([A-Za-z0-9_-]+)\s*\|\|\s*'([^']*)'\s*\}\}`)
 
 // nightly is a workflow file at the commit, and the title its runs have at the
 // default of every input: a run title is the workflow's run-name, else its name.
@@ -159,17 +160,39 @@ func nightliesAt(ctx context.Context, dir, sha string) ([]nightly, error) {
 	return nightlies, nil
 }
 
+// An input of workflow_dispatch is part of a run's title at the defaults only
+// if the run-name states it with its default.
 func parseNightly(file string, raw []byte) (nightly, error) {
 	var workflow struct {
 		Name    string `json:"name"`
 		RunName string `json:"run-name"`
+		On      any    `json:"true"`
+		Quoted  any    `json:"on"`
 	}
 	if err := yaml.Unmarshal(raw, &workflow); err != nil {
 		return nightly{}, err
 	}
+	on := workflow.On
+	if on == nil {
+		on = workflow.Quoted
+	}
+	stated := map[string]string{}
+	for _, m := range inputOrDefault.FindAllStringSubmatch(workflow.RunName, -1) {
+		stated[m[1]] = m[2]
+	}
+	inputs := dispatchInputs(on)
+	var unstated []error
+	for _, name := range slices.Sorted(maps.Keys(inputs)) {
+		if got, ok := stated[name]; !ok || got != inputs[name] {
+			unstated = append(unstated, fmt.Errorf("the input %s of workflow_dispatch is not stated in the run-name as `${{ inputs.%s || '%s' }}`, so the title of a run at the defaults is not known", name, name, inputs[name]))
+		}
+	}
+	if err := errors.Join(unstated...); err != nil {
+		return nightly{}, err
+	}
 	title := workflow.Name
 	if workflow.RunName != "" {
-		title = inputOrDefault.ReplaceAllString(workflow.RunName, "$1")
+		title = inputOrDefault.ReplaceAllString(workflow.RunName, "$2")
 		if strings.Contains(title, "${{") {
 			return nightly{}, fmt.Errorf("the run-name %q has an expression other than `${{ inputs.<name> || '<default>' }}`, so the title of a run at the defaults is not known", workflow.RunName)
 		}
@@ -178,4 +201,19 @@ func parseNightly(file string, raw []byte) (nightly, error) {
 		return nightly{}, errors.New("no name")
 	}
 	return nightly{file: file, title: title}, nil
+}
+
+func dispatchInputs(on any) map[string]string {
+	events, _ := on.(map[string]any)
+	dispatch, _ := events["workflow_dispatch"].(map[string]any)
+	declared, _ := dispatch["inputs"].(map[string]any)
+	inputs := map[string]string{}
+	for name, spec := range declared {
+		fields, _ := spec.(map[string]any)
+		inputs[name] = ""
+		if fields["default"] != nil {
+			inputs[name] = fmt.Sprint(fields["default"])
+		}
+	}
+	return inputs
 }
