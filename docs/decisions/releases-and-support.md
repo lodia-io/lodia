@@ -29,7 +29,7 @@ The chart, the release workflow that builds, signs, attests and publishes the im
 - Lodia follows semver, independent of the API version.
   Until 1.0, the latest minor gets fixes; from 1.0, the two latest minors.
 - The maintainer cuts a release with two signed annotated tags at one commit, pushed together: `v<version>`, and the API module's `api/v<version>`, the tag form Go reads for a module in a subdirectory ([version tags](https://go.dev/ref/mod#vcs-version)).
-  `v*` does not match `api/v…`, since `*` does not match `/` ([filter patterns](https://github.com/github/docs/blob/6d56af0c8b62bde11bb3d9df46244fab5f0a00f9/content/actions/reference/workflows-and-actions/workflow-syntax.md?plain=1#L1648)), so only the first one runs `release.yml`.
+  `v*` matches only a tag that starts with `v`, which `api/v…` does not ([filter patterns](https://github.com/github/docs/blob/6d56af0c8b62bde11bb3d9df46244fab5f0a00f9/content/actions/reference/workflows-and-actions/workflow-syntax.md?plain=1#L1686)), so only the first one runs `release.yml`.
   The tag ruleset `release-tags` blocks moving and deleting `v*` and `api/v*`, so that the identity a signature carries, `release.yml@refs/tags/<tag>`, names one commit for good.
 - `make release-check TAG=v<version>` refuses a tag before it is pushed, and the workflow's first step refuses it again, each naming every rule the tag breaks:
   - the tag is `vMAJOR.MINOR.PATCH[-PRERELEASE]`, with no build metadata, which an image tag cannot carry, and above every published release of its major and minor;
