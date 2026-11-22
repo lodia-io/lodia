@@ -269,3 +269,11 @@ conformance: ## the Kubernetes conformance suite through hydrophone against a te
 	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,conformance -count=1 -timeout 110m -run '^TestConformance$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
 	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 || status=1; \
 	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+
+COMMIT ?= HEAD
+
+.PHONY: release-check
+release-check: ## refuse TAG before it is pushed, naming every rule it breaks: a semver tag above every published release of its line, COMMIT on origin/main with ci.yml and every nightly green at it, the local tags TAG and api/TAG at COMMIT, the chart at 0.0.0-dev, README.md and docs/README.md naming `--version` of TAG; reads GitHub with $$GITHUB_TOKEN, else with gh's
+	@[ -n "$(TAG)" ] || { echo "usage: make release-check TAG=vX.Y.Z [COMMIT=<sha>]"; exit 1; }
+	git fetch --quiet --tags origin main
+	GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" go run ./hack/releasecheck tag --commit="$(COMMIT)" "$(TAG)"
