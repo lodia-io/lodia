@@ -236,12 +236,12 @@ release-chart: ## package the chart as version and appVersion CHART_VERSION into
 	fi
 
 .PHONY: release-render-check
-release-render-check: ## fail unless the default render of CHART, a packaged chart, names exactly the three references of $(IMAGES_ENV), as the images of the operator, the signer and the tunnel
+release-render-check: ## fail unless the default render of CHART, a packaged chart, names LODIA_IMAGE as the operator container's image, SIGNER_IMAGE as --signer-image and TUNNEL_IMAGE as --tunnel-image, all of $(IMAGES_ENV), and no other ghcr.io/lodia-io reference
 	@[ "$(CHART)" != charts/lodia ] || { echo "usage: make release-render-check CHART=<packaged chart>"; exit 1; }
 	. $(IMAGES_ENV) && \
-	want="$$(printf '%s\n' "$$LODIA_IMAGE" "$$SIGNER_IMAGE" "$$TUNNEL_IMAGE" | sort)" && \
-	got="$$(helm template lodia $(CHART) --namespace lodia-system | grep -o 'ghcr\.io/lodia-io/[^"[:space:]]*' | sort)"; \
-	[ "$$got" = "$$want" ] || { printf 'the default render of %s names\n%s\nwant\n%s\n' $(CHART) "$$got" "$$want"; exit 1; }
+	want="$$(printf '%s\n' "image: $$LODIA_IMAGE" "- --signer-image=$$SIGNER_IMAGE" "- --tunnel-image=$$TUNNEL_IMAGE" | sort)" && \
+	got="$$(helm template lodia $(CHART) --namespace lodia-system | grep 'ghcr\.io/lodia-io/' | sed 's/^[[:space:]]*//' | sort)"; \
+	[ "$$got" = "$$want" ] || { printf 'the default render of %s has the lines\n%s\nwant\n%s\n' $(CHART) "$$got" "$$want"; exit 1; }
 
 .PHONY: release-pull
 release-pull: ## pull the three images of $(IMAGES_ENV), every platform of each, and the chart of $(CHART_ENV) into $(RELEASE_DIR)/pull with DOCKER_CONFIG and HELM_REGISTRY_CONFIG both empty, as an anonymous user does, then run release-render-check on the pulled chart
