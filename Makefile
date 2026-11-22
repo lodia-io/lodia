@@ -1,6 +1,6 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
-# golangci-lint, helm, promtool and dashboard-linter, which are installed on their own,
-# and ko, hydrophone and yq, which run as `go run <module>@<version>`:
+# golangci-lint, helm, promtool, dashboard-linter, cosign and gh, which are installed on their own,
+# and ko, hydrophone, yq and crane, which run as `go run <module>@<version>`:
 # their dependency graphs would move the operator's own dependencies.
 
 ENVTEST_K8S_VERSION ?= 1.35.0
@@ -57,6 +57,7 @@ GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files
 DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
 KO = go run github.com/google/ko@v0.19.1
 YQ = go run github.com/mikefarah/yq/v4@v4.54.1
+CRANE = go run github.com/google/go-containerregistry/cmd/crane@v0.22.1
 IMAGE_REGISTRY = ghcr.io/lodia-io
 CHART_REGISTRY = ghcr.io/lodia-io/charts
 PLATFORMS = linux/amd64,linux/arm64
@@ -66,6 +67,10 @@ RELEASE_DIR ?= work/release
 IMAGES_ENV = $(RELEASE_DIR)/images.env
 CHART_ENV = $(RELEASE_DIR)/chart.env
 CHART_VERSION = $(patsubst v%,%,$(TAG))
+GITHUB_REPO = lodia-io/lodia
+RELEASE_WORKFLOW = $(GITHUB_REPO)/.github/workflows/release.yml
+VERIFY_IDENTITY = --certificate-identity https://github.com/$(RELEASE_WORKFLOW)@refs/tags/$(TAG) --certificate-oidc-issuer https://token.actions.githubusercontent.com
+VERIFY_ATTESTATION = -R $(GITHUB_REPO) --signer-workflow $(RELEASE_WORKFLOW) --source-ref refs/tags/$(TAG)
 DRUID_SUM = $(CURDIR)/charts/etcd-druid.sha256
 SHA256 = $(shell command -v sha256sum > /dev/null && echo sha256sum || echo shasum -a 256)
 define check-druid-sum
@@ -186,6 +191,11 @@ monitoring: ## lint the collector's golden as promtool lints a scrape, check the
 	for dashboard in $(DASHBOARDS); do dashboard-linter lint --strict $$dashboard || exit 1; done
 	cd test/monitoring && go test -count=1 ./...
 
+.PHONY: release-login
+release-login: ## log in to the registry of IMAGE_REGISTRY as $$GITHUB_ACTOR with $$GITHUB_TOKEN, ko for the images and helm for the chart
+	@printf '%s' "$$GITHUB_TOKEN" | $(KO) login $(firstword $(subst /, ,$(IMAGE_REGISTRY))) --username "$$GITHUB_ACTOR" --password-stdin
+	@printf '%s' "$$GITHUB_TOKEN" | helm registry login $(firstword $(subst /, ,$(CHART_REGISTRY))) --username "$$GITHUB_ACTOR" --password-stdin
+
 .PHONY: release-images
 release-images: ## build the three images with ko for PLATFORMS, tagged CHART_VERSION, pushed unless KO_PUSH=false, and write the reference of each by its digest to $(IMAGES_ENV); each digest is the one ko printed for the repository of that image, whatever the order of ko's output
 	@[ -n "$(TAG)" ] || { echo "usage: make release-images TAG=vX.Y.Z [KO_PUSH=false]"; exit 1; }
@@ -232,6 +242,40 @@ release-render-check: ## fail unless the default render of CHART, a packaged cha
 	want="$$(printf '%s\n' "$$LODIA_IMAGE" "$$SIGNER_IMAGE" "$$TUNNEL_IMAGE" | sort)" && \
 	got="$$(helm template lodia $(CHART) --namespace lodia-system | grep -o 'ghcr\.io/lodia-io/[^"[:space:]]*' | sort)"; \
 	[ "$$got" = "$$want" ] || { printf 'the default render of %s names\n%s\nwant\n%s\n' $(CHART) "$$got" "$$want"; exit 1; }
+
+.PHONY: release-pull
+release-pull: ## pull the three images of $(IMAGES_ENV), every platform of each, and the chart of $(CHART_ENV) into $(RELEASE_DIR)/pull with DOCKER_CONFIG and HELM_REGISTRY_CONFIG both empty, as an anonymous user does, then run release-render-check on the pulled chart
+	rm -rf $(RELEASE_DIR)/pull
+	mkdir -p $(RELEASE_DIR)/pull/images $(RELEASE_DIR)/pull/chart
+	. $(IMAGES_ENV) && . $(CHART_ENV) && \
+	export DOCKER_CONFIG="$$(mktemp -d)" HELM_REGISTRY_CONFIG="$$(mktemp -d)/config.json" && \
+	for image in $$LODIA_IMAGE $$SIGNER_IMAGE $$TUNNEL_IMAGE; do \
+		name="$${image%@*}"; $(CRANE) pull --format oci $$image $(RELEASE_DIR)/pull/images/$${name##*/} || exit 1; \
+	done && \
+	helm pull oci://$$CHART_IMAGE --destination $(RELEASE_DIR)/pull/chart
+	set -- $(RELEASE_DIR)/pull/chart/*.tgz && [ $$# = 1 ] && $(MAKE) --no-print-directory release-render-check CHART=$$1
+
+.PHONY: release-sign
+release-sign: ## sign keyless, with the workflow's OIDC token, each image of $(IMAGES_ENV) by its digest, its index and every image the index lists, and the chart of $(CHART_ENV) by its digest
+	. $(IMAGES_ENV) && . $(CHART_ENV) && \
+	for image in $$LODIA_IMAGE $$SIGNER_IMAGE $$TUNNEL_IMAGE; do cosign sign --yes --recursive $$image || exit 1; done && \
+	cosign sign --yes $$CHART_IMAGE
+
+.PHONY: release-verify-signatures
+release-verify-signatures: ## run what a user runs for TAG, with DOCKER_CONFIG empty and the signer pinned to release.yml at refs/tags/TAG: cosign verify of each image's index by its digest, of each image that the index lists, and of the chart by its digest
+	. $(IMAGES_ENV) && . $(CHART_ENV) && \
+	export DOCKER_CONFIG="$$(mktemp -d)" && \
+	for image in $$LODIA_IMAGE $$SIGNER_IMAGE $$TUNNEL_IMAGE; do \
+		cosign verify $(VERIFY_IDENTITY) $$image || exit 1; \
+		digests="$$($(CRANE) manifest $$image | jq -r '.manifests[].digest')" && [ -n "$$digests" ] || exit 1; \
+		for digest in $$digests; do cosign verify $(VERIFY_IDENTITY) $${image%@*}@$$digest || exit 1; done; \
+	done && \
+	cosign verify $(VERIFY_IDENTITY) $$CHART_IMAGE
+
+.PHONY: release-verify-attestations
+release-verify-attestations: ## run what a user runs for TAG, with the repository, release.yml and refs/tags/TAG pinned: gh attestation verify of each image and of the chart by its digest; gh reads $$GH_TOKEN
+	. $(IMAGES_ENV) && . $(CHART_ENV) && \
+	for image in $$LODIA_IMAGE $$SIGNER_IMAGE $$TUNNEL_IMAGE $$CHART_IMAGE; do gh attestation verify oci://$$image $(VERIFY_ATTESTATION) || exit 1; done
 
 # RELEASE_DIR of its own, so that verify never leaves the digests of an image it did not push where a release's release-chart reads them.
 .PHONY: verify-release
