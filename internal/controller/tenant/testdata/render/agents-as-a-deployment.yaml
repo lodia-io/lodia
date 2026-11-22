@@ -399,7 +399,7 @@ spec:
         - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
         - --count-server-leases
         - --keepalive-time=30s
-        image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.35.1
+        image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.34.0
         livenessProbe:
           httpGet:
             path: /healthz

@@ -35,6 +35,9 @@ import (
 var updateGolden = flag.Bool("update-golden", false, "write testdata/render from the render instead of comparing with it")
 
 func TestTheRenderIsPinned(t *testing.T) {
+	table, _ := versions.For("v1.35.8")
+	tableTag := ":" + table.KonnectivityAgent[strings.LastIndex(table.KonnectivityAgent, ":")+1:]
+	const tableTagInGolden = ":$konnectivity"
 	network := lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}
 	outsideGateway := map[string]lodiav1alpha1.Endpoint{
 		"loadBalancer": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
@@ -53,7 +56,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 			addons: &lodiav1alpha1.Addons{
 				KubeProxy:    &lodiav1alpha1.KubeProxy{Mode: "ipvs", HealthzBindAddress: "::", Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}},
 				CoreDNS:      &lodiav1alpha1.CoreDNS{Replicas: new(int32(3))},
-				Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.35.1", Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment", Replicas: new(int32(2))}},
+				Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.34.0", Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment", Replicas: new(int32(2))}},
 			},
 			status:    lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "2001:db8::10", Port: 31443}},
 			endpoints: outsideGateway,
@@ -97,7 +100,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 			}
 			path := filepath.Join("testdata", "render", golden)
 			if *updateGolden {
-				if err := os.WriteFile(path, rendered.Bytes(), 0o644); err != nil {
+				if err := os.WriteFile(path, bytes.ReplaceAll(rendered.Bytes(), []byte(tableTag), []byte(tableTagInGolden)), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -105,6 +108,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			want = bytes.ReplaceAll(want, []byte(tableTagInGolden), []byte(tableTag))
 			if !bytes.Equal(rendered.Bytes(), want) {
 				t.Errorf("%s renders other bytes than %s, which would roll every tenant in that mode:\n%s", mode, path, rendered.Bytes())
 			}
@@ -482,23 +486,24 @@ func reporting(target, apiServer, controllerManager, scheduler string) *lodiav1a
 
 func TestTheAddonsRenderAtTheOldestOfTheComponents(t *testing.T) {
 	for name, c := range map[string]struct {
-		cp                             *lodiav1alpha1.ControlPlane
-		version, coreDNS, konnectivity string
+		cp               *lodiav1alpha1.ControlPlane
+		version, coreDNS string
 	}{
-		"a patch apart":                         {reporting("v1.35.9", "v1.35.9", "v1.35.8", "v1.35.9"), "v1.35.8", "v1.13.1", "v0.35.0"},
-		"a minor apart, the scheduler":          {reporting("v1.36.2", "v1.36.2", "v1.36.2", "v1.35.9"), "v1.35.9", "v1.13.1", "v0.35.0"},
-		"a minor apart, the controller manager": {reporting("v1.36.2", "v1.36.2", "v1.35.8", "v1.36.1"), "v1.35.8", "v1.13.1", "v0.35.0"},
-		"every component at the new minor":      {reporting("v1.36.2", "v1.36.2", "v1.36.2", "v1.36.2"), "v1.36.2", "v1.14.2", "v0.36.0"},
-		"no report":                             {reporting("v1.36.2", "", "", ""), "v1.36.2", "v1.14.2", "v0.36.0"},
+		"a patch apart":                         {reporting("v1.35.9", "v1.35.9", "v1.35.8", "v1.35.9"), "v1.35.8", "v1.13.1"},
+		"a minor apart, the scheduler":          {reporting("v1.36.2", "v1.36.2", "v1.36.2", "v1.35.9"), "v1.35.9", "v1.13.1"},
+		"a minor apart, the controller manager": {reporting("v1.36.2", "v1.36.2", "v1.35.8", "v1.36.1"), "v1.35.8", "v1.13.1"},
+		"every component at the new minor":      {reporting("v1.36.2", "v1.36.2", "v1.36.2", "v1.36.2"), "v1.36.2", "v1.14.2"},
+		"no report":                             {reporting("v1.36.2", "", "", ""), "v1.36.2", "v1.14.2"},
 		"no components": {func() *lodiav1alpha1.ControlPlane {
 			cp := reporting("v1.37.1", "", "", "")
 			cp.Status.Components = nil
 			return cp
-		}(), "v1.37.1", "v1.14.6", "v0.37.0"},
-		"an absent report counts as the target": {reporting("v1.36.2", "v1.36.2", "", "v1.35.8"), "v1.35.8", "v1.13.1", "v0.35.0"},
-		"the target the oldest":                 {reporting("v1.35.8", "v1.35.9", "", "v1.35.9"), "v1.35.8", "v1.13.1", "v0.35.0"},
-		"a newer version outside the table":     {reporting("v1.37.1", "v1.37.1", "v1.37.1", "v1.38.0"), "v1.37.1", "v1.14.6", "v0.37.0"},
+		}(), "v1.37.1", "v1.14.6"},
+		"an absent report counts as the target": {reporting("v1.36.2", "v1.36.2", "", "v1.35.8"), "v1.35.8", "v1.13.1"},
+		"the target the oldest":                 {reporting("v1.35.8", "v1.35.9", "", "v1.35.9"), "v1.35.8", "v1.13.1"},
+		"a newer version outside the table":     {reporting("v1.37.1", "v1.37.1", "v1.37.1", "v1.38.0"), "v1.37.1", "v1.14.6"},
 	} {
+		images, _ := versions.For(c.version)
 		objects := rendered(t, c.cp)
 		var kubeProxy, agent appsv1.DaemonSet
 		var coreDNS appsv1.Deployment
@@ -516,7 +521,7 @@ func TestTheAddonsRenderAtTheOldestOfTheComponents(t *testing.T) {
 		for what, got := range map[string][2]string{
 			"kube-proxy":         {kubeProxy.Spec.Template.Spec.Containers[0].Image, "registry.k8s.io/kube-proxy:" + c.version},
 			"CoreDNS":            {coreDNS.Spec.Template.Spec.Containers[0].Image, "registry.k8s.io/coredns/coredns:" + c.coreDNS},
-			"konnectivity-agent": {agent.Spec.Template.Spec.Containers[0].Image, "registry.k8s.io/kas-network-proxy/proxy-agent:" + c.konnectivity},
+			"konnectivity-agent": {agent.Spec.Template.Spec.Containers[0].Image, images.KonnectivityAgent},
 			"kubeadm-config":     {cluster.KubernetesVersion, c.version},
 		} {
 			if got[0] != got[1] {

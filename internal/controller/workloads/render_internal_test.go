@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -28,6 +29,8 @@ func TestTheRenderIsPinned(t *testing.T) {
 	if !ok {
 		t.Fatal("no images for v1.37.1")
 	}
+	tableTag := ":" + images.KonnectivityServer[strings.LastIndex(images.KonnectivityServer, ":")+1:]
+	const tableTagInGolden = ":$konnectivity"
 	for mode, c := range map[string]struct {
 		endpoint lodiav1alpha1.Endpoint
 		status   lodiav1alpha1.EndpointStatus
@@ -94,7 +97,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 		}
 		path := filepath.Join("testdata", "render", mode+".yaml")
 		if *updateGolden {
-			if err := os.WriteFile(path, rendered.Bytes(), 0o644); err != nil {
+			if err := os.WriteFile(path, bytes.ReplaceAll(rendered.Bytes(), []byte(tableTag), []byte(tableTagInGolden)), 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -102,6 +105,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		want = bytes.ReplaceAll(want, []byte(tableTagInGolden), []byte(tableTag))
 		if !bytes.Equal(rendered.Bytes(), want) {
 			t.Errorf("%s renders other bytes than %s, which would roll every tenant in that mode:\n%s", mode, path, rendered.Bytes())
 		}

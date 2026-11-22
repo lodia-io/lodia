@@ -4,6 +4,7 @@
 package lifecycle
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,8 +12,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilversion "k8s.io/apimachinery/pkg/util/version"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 var (
@@ -22,6 +25,25 @@ var (
 )
 
 const uid = "11111111-2222-3333-4444-555555555555"
+
+var (
+	latest136      = latestOf("1.36")
+	latest137      = latestOf("1.37")
+	afterLatest137 = patchAfter(latest137)
+)
+
+func latestOf(minor string) string {
+	latest, ok := versions.Latest(minor)
+	if !ok {
+		panic("the version table has no minor " + minor)
+	}
+	return latest
+}
+
+func patchAfter(version string) string {
+	v := utilversion.MustParseSemantic(version)
+	return fmt.Sprintf("v%d.%d.%d", v.Major(), v.Minor(), v.Patch()+1)
+}
 
 type world struct {
 	spec, target        string
@@ -264,7 +286,7 @@ func TestDecide(t *testing.T) {
 		{"a patch edit at step Backup moves the target to the current next", world{spec: "v1.37.2", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6"), backupReason: lodiav1alpha1.ReasonCompleted, backupStatus: metav1.ConditionTrue},
 			want{target: "v1.37.2", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: t0, version: "v1.36.6"}},
 		{"an edit to a later minor at step Backup goes through the next minor's latest", world{spec: "v1.37.1", target: "v1.35.10", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.35.10"), backupReason: lodiav1alpha1.ReasonCompleted, backupStatus: metav1.ConditionTrue},
-			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: t0, version: "v1.35.10"}},
+			want{target: latest136, reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepAPIServer, since: t0, version: "v1.35.10"}},
 		{"an edit to an unsupported minor at step Backup stops there", world{spec: "v1.38.0", target: "v1.36.6", step: lodiav1alpha1.UpgradeStepBackup, reports: at("v1.36.6")},
 			want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUnsupported, step: lodiav1alpha1.UpgradeStepBackup, since: t0, version: "v1.36.6"}},
 		{"an edit to an unsupported minor leaves the rollout under way to finish", world{spec: "v1.38.0", target: "v1.37.1", step: lodiav1alpha1.UpgradeStepScheduler, reports: at4("v1.37.1", "v1.37.1", "v1.36.6", "v1.36.6")},
@@ -472,19 +494,19 @@ func TestAChainTakesOneMinorAtATime(t *testing.T) {
 	expect(lodiav1alpha1.UpgradeStepBackup, "v1.35.8")
 	complete(name136)
 	pass(first)
-	expect(lodiav1alpha1.UpgradeStepAPIServer, "v1.36.6")
-	setReports("v1.36.6", "v1.35.8", "v1.35.8", "v1.35.8")
+	expect(lodiav1alpha1.UpgradeStepAPIServer, latest136)
+	setReports(latest136, "v1.35.8", "v1.35.8", "v1.35.8")
 	pass(first)
-	expect(lodiav1alpha1.UpgradeStepControllerManager, "v1.36.6")
-	setReports("v1.36.6", "v1.36.6", "v1.36.6", "v1.35.8")
+	expect(lodiav1alpha1.UpgradeStepControllerManager, latest136)
+	setReports(latest136, latest136, latest136, "v1.35.8")
 	pass(first)
-	expect(lodiav1alpha1.UpgradeStepAddons, "v1.36.6")
-	setReports("v1.36.6", "v1.36.6", "v1.36.6", "v1.36.6")
+	expect(lodiav1alpha1.UpgradeStepAddons, latest136)
+	setReports(latest136, latest136, latest136, latest136)
 	second := first.Add(time.Hour)
 	if d := pass(second); d.createBackup != name137 {
 		t.Fatalf("the second minor step creates %q, want %s", d.createBackup, name137)
 	}
-	expect(lodiav1alpha1.UpgradeStepBackup, "v1.36.6")
+	expect(lodiav1alpha1.UpgradeStepBackup, latest136)
 	if got := cp.Status.Kubernetes.Upgrade.StartedAt; !got.Time.Equal(second) {
 		t.Errorf("the further minor's startedAt is %s, want the new %s", got, second)
 	}

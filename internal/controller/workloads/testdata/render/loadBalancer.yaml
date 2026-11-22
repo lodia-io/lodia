@@ -304,7 +304,7 @@ spec:
         - --proxy-strategies=destHost,default
         - --server-port=0
         - --uds-name=/run/konnectivity/konnectivity-server.socket
-        image: registry.k8s.io/kas-network-proxy/proxy-server:v0.37.0
+        image: registry.k8s.io/kas-network-proxy/proxy-server:$konnectivity
         livenessProbe:
           httpGet:
             path: /healthz

@@ -433,7 +433,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.hostIP
-        image: registry.k8s.io/kas-network-proxy/proxy-agent:v0.35.0
+        image: registry.k8s.io/kas-network-proxy/proxy-agent:$konnectivity
         livenessProbe:
           httpGet:
             path: /healthz
