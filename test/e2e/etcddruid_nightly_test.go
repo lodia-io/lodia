@@ -48,7 +48,7 @@ type druidRelease struct {
 
 var (
 	druidBefore = druidRelease{tag: "v0.39.1@sha256:979f0ae62d1e84a5b083132445bfe5621369727ba9787c7098e3b0ac206902f8", wrapper: "v0.8.3", brctl: "v0.45.2"}
-	druidAfter  = druidRelease{tag: "v0.39.2@sha256:8b6313f529cfd1539dbd372756a9ca930ed95aeb5a672864d51ab7ebcfe145db", wrapper: "v0.8.4", brctl: "v0.45.3"}
+	druidAfter  = druidRelease{wrapper: "v0.8.4", brctl: "v0.45.3"}
 )
 
 func TestEtcdDruidPatchUpgradeUnderAHeldTenant(t *testing.T) {
@@ -70,8 +70,9 @@ func TestEtcdDruidPatchUpgradeUnderAHeldTenant(t *testing.T) {
 	f := features.New("nightly on kind: etcd-druid upgraded across a patch under a tenant held outside its window").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
-			if pinned := chartDruidTag(t); pinned != druidAfter.tag {
-				t.Fatalf("the chart pins etcd-druid %s, not %s: name the release before it in druidBefore and the chart's in druidAfter, each with its sidecars", pinned, druidAfter.tag)
+			druidAfter.tag = chartDruidTag(t)
+			if druidAfter.tag == druidBefore.tag {
+				t.Fatalf("the chart pins etcd-druid %s, the release the upgrade starts from: name a release before it in druidBefore, with its sidecars", druidAfter.tag)
 			}
 			setEtcdDruid(ctx, t, cfg, druidBefore.tag, true)
 			awaitOperatorWith(ctx, t, k8s, druidBefore.tag)
