@@ -36,7 +36,7 @@ The chart, the release workflow that builds, signs, attests and publishes the im
   - every `.github/workflows/nightly*.yml` at the commit has its newest completed scheduled or dispatched run on `main` at that commit concluded `success`: a run in progress on its first attempt is not counted, a re-run in progress counts as its previous attempt, and a dispatched run counts only at the defaults of its inputs, which `nightly-fleet`'s `run-name` states ([e2e-on-a-named-cluster](e2e-on-a-named-cluster.md));
   - `v<version>` and `api/v<version>` are tags at the commit;
   - `Chart.yaml` at the commit has version and `appVersion` `0.0.0-dev`;
-  - `README.md` and `docs/README.md` at the commit name `--version <version>` in their install commands.
+  - `README.md` and `docs/README.md` at the commit name `--version <version>` in their install commands, and `docs/operations.md` in its upgrade command.
 - A release ships a version table: for each Kubernetes minor it supports, the images of kube-apiserver, kube-controller-manager, kube-scheduler, kube-proxy, CoreDNS, konnectivity and etcd, the newest patch, `latest`, which automatic patch updates move to, and the end-of-support date, ahead of which tenants are warned.
   It supports the minors the Kubernetes project maintains, three at any time, about 14 months each ([releases](https://kubernetes.io/releases/)): today 1.35, 1.36 and 1.37, with 1.34 leaving upstream support on 2026-10-27.
   A minor that leaves the table stays renderable for one more release, only as the source of an upgrade ([upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md)).

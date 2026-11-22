@@ -46,7 +46,7 @@ To add or change a case, edit the alert's function in `test/rules/cases_test.go`
 A release is two signed annotated tags at one commit, `v<version>` and `api/v<version>`, which the maintainer cuts; `release.yml` runs on `v<version>` and publishes the images and the chart ([releases-and-support](docs/decisions/releases-and-support.md)).
 `make release-check` reads GitHub with `GITHUB_TOKEN`, else with the signed-in GitHub CLI's.
 
-1. Merge the pull request that names `--version <version>` in the install commands of `README.md` and `docs/README.md`.
+1. Merge the pull request that names `--version <version>` in the install commands of `README.md` and `docs/README.md` and in the upgrade command of `docs/operations.md`.
    It is the last merge before the tag: every nightly must have passed at the commit that gets the tag, and a later merge moves `main` past it.
    Until the release is out, `main`'s docs name a version that does not exist yet.
 2. Run `make release-check TAG=v<version> COMMIT=<commit>`, `<commit>` being that merge.
