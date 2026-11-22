@@ -200,12 +200,12 @@ release-login: ## log in to the registry of IMAGE_REGISTRY as $$GITHUB_ACTOR wit
 release-images: ## build the three images with ko for PLATFORMS, tagged CHART_VERSION, pushed unless KO_PUSH=false, and write the reference of each by its digest to $(IMAGES_ENV); each digest is the one ko printed for the repository of that image, whatever the order of ko's output
 	@[ -n "$(TAG)" ] || { echo "usage: make release-images TAG=vX.Y.Z [KO_PUSH=false]"; exit 1; }
 	mkdir -p $(RELEASE_DIR)
-	rm -f $(CHART_ENV)
+	rm -f $(IMAGES_ENV) $(CHART_ENV)
 	refs="$$(VERSION=$(TAG) KO_DOCKER_REPO=$(IMAGE_REGISTRY) $(KO) build --push=$(KO_PUSH) --base-import-paths --platform=$(PLATFORMS) --tags=$(CHART_VERSION) ./cmd/lodia ./cmd/lodia-signer ./cmd/lodia-tunnel)" && \
 	digest() { printf '%s\n' "$$refs" | awk -v repository="$(IMAGE_REGISTRY)/$$1" '{ at = index($$0, "@"); name = substr($$0, 1, at - 1); sub(/:[^\/]*$$/, "", name); if (name == repository) print substr($$0, at + 1) }'; } && \
 	for entry in LODIA_IMAGE:lodia SIGNER_IMAGE:lodia-signer TUNNEL_IMAGE:lodia-tunnel; do \
 		digest="$$(digest $${entry#*:})"; \
-		[ "$$(printf '%s\n' "$$digest" | grep -c .)" = 1 ] && printf '%s\n' "$$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "ko printed [$$digest] for $(IMAGE_REGISTRY)/$${entry#*:}, want one digest"; exit 1; }; \
+		[ "$$(printf '%s\n' "$$digest" | grep -c .)" = 1 ] && printf '%s\n' "$$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "ko printed [$$digest] for $(IMAGE_REGISTRY)/$${entry#*:}, want one digest" >&2; exit 1; }; \
 		echo "$${entry%:*}=$(IMAGE_REGISTRY)/$${entry#*:}@$$digest"; \
 	done > $(IMAGES_ENV).tmp && mv $(IMAGES_ENV).tmp $(IMAGES_ENV)
 
