@@ -39,7 +39,7 @@ require (
 	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/e2e-framework v0.7.0
 	sigs.k8s.io/gateway-api v1.6.3
-	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730
+	sigs.k8s.io/json v0.0.0-20260909141634-11ed52e25bc5
 	sigs.k8s.io/kind v0.33.0
 	sigs.k8s.io/randfill v1.0.0
 	sigs.k8s.io/yaml v1.6.0
