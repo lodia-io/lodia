@@ -70,4 +70,4 @@ A run that fails:
   The failed tags stay, because the tag ruleset `release-tags` blocks moving and deleting them.
   Delete the failed run's versions from the four packages by hand, with a classic token that has `read:packages` and `delete:packages` ([the endpoint](https://github.com/github/rest-api-description/blob/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.2022-11-28.yaml#L41855-L41859)), so that no unsigned, unreleased chart stays installable.
   A package whose last tagged version GitHub refuses to delete (`You cannot delete the last tagged version of a package. You must delete the package instead.`) is deleted whole, which is every package after a failed first release.
-  Its next push creates it private again, so the next release's run stops at the anonymous pull as the first did: make it public again before that run.
+  Its next push creates it private again, so the next release's run stops at the anonymous pull as the first did: make it public and re-run the job on the same tag.
