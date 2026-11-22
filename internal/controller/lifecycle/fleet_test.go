@@ -27,6 +27,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/lifecycle"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 func fleetTenant(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
@@ -463,6 +464,7 @@ func TestTheQueueGoesByScheduledForNamespaceAndName(t *testing.T) {
 
 func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 	settling := later.Add(-10 * time.Second)
+	latest137, _ := versions.Latest("1.37")
 	for i, c := range []struct {
 		name   string
 		seed   func(t *testing.T, cp *lodiav1alpha1.ControlPlane)
@@ -500,7 +502,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 		{"a cache from before a patch update's grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			autoUpdate(t, cp)
 			reportsOf(t, cp, runningRevision)
-			seedSlot(t, cp, map[string]any{"version": "v1.37.2", "operatorRevision": runningRevision}, true, nil)
+			seedSlot(t, cp, map[string]any{"version": latest137, "operatorRevision": runningRevision}, true, nil)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
 			cp.Status.Target.Version = "v1.37.1"
 			cp.Status.Kubernetes.Upgrade = nil

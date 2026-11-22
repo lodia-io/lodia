@@ -493,11 +493,19 @@ Prerequisites on the management cluster:
 | prometheus-operator and a Prometheus | optional: the chart's ServiceMonitor and PrometheusRule ([what scraping needs](#scraping-the-operator), [what the alerts need](#alerting-on-the-operator)) |
 
 The chart is [`charts/lodia`](../charts/lodia).
-The release workflow that publishes it to `oci://ghcr.io/lodia-io/charts/lodia` with the images is not built yet ([releases-and-support](decisions/releases-and-support.md)); until it is, build the images with ko and install from a checkout, into `lodia-system` or any namespace.
+A release publishes it at `oci://ghcr.io/lodia-io/charts/lodia`, at the release's version without the `v`, and it names the release's three images by digest, so the command below sets no image ([releases-and-support](decisions/releases-and-support.md)).
+[Verify the release](#verifying-a-release) first.
+Helm resolves a chart that no `--version` names to the newest release and skips every pre-release ([tag.go](https://github.com/helm/helm/blob/v4.3.1/pkg/registry/tag.go#L27-L29), [constraints.go](https://github.com/Masterminds/semver/blob/v3.5.0/constraints.go#L521-L526)), so the command names the version:
+
+```sh
+helm install lodia oci://ghcr.io/lodia-io/charts/lodia --version 0.1.0-alpha.1 -n lodia-system --create-namespace
+```
+
+To run a commit that is no release, build the images with ko and install from a checkout, into `lodia-system` or any namespace.
 `VERSION` is the operator's build version, which `.ko.yaml` passes to `cmd/lodia`; ko fails a build of it without `VERSION` ([applyTemplating](https://github.com/google/ko/blob/v0.19.1/pkg/build/gobuild.go#L936-L944)), and the operator refuses to start with an empty one.
 
 ```sh
-VERSION="$(git describe --tags --always --dirty)" KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
+VERSION="$(git describe --tags --match 'v[0-9]*' --always --dirty)" KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
   --base-import-paths --platform=linux/amd64,linux/arm64 ./cmd/lodia ./cmd/lodia-signer ./cmd/lodia-tunnel
 helm dependency build charts/lodia
 helm install lodia charts/lodia -n lodia-system --create-namespace \
@@ -526,7 +534,6 @@ The signer's image reaches the operator as `--signer-image`, and `lodia-tunnel`'
 Lodia reaches a tenant's API server through its in-namespace Service and ignores `HTTPS_PROXY` for that connection, so a site that sets a proxy on every pod needs no exception for it.
 
 Then a `DatastoreClass` with the bucket, and the first `ControlPlane`.
-The first release, in phase 3, brings signed and attested images, and how to verify them ([roadmap](roadmap.md), [releases-and-support](decisions/releases-and-support.md)).
 
 Operator configuration (a file, passed as `--config`, mounted from a ConfigMap; the chart renders it from values).
 Without `--config` the defaults apply.
@@ -554,6 +561,36 @@ The keys below are owed: nothing reads them yet, and the operator refuses to sta
 | `defaults.resources.<component>` | requests and limits per component | from the idle usage measured in phase 1 ([Capacity](operations.md#capacity)) |
 
 Upgrading Lodia: [`operations.md`](operations.md#upgrading-lodia); etcd-druid's CRDs do not upgrade with the chart (above).
+
+### Verifying a release
+
+A release signs the chart, the index of each of its three images and each image the index lists, keyless with cosign, and attests the chart and each index with build provenance.
+`release.yml` runs the commands below on all of them before it publishes the release ([releases-and-support](decisions/releases-and-support.md)).
+The cosign commands need cosign v3 or later: v3 made the Sigstore bundle format and the OCI 1.1 referrer storage the default ([v3.0.0](https://github.com/sigstore/cosign/blob/v3.1.4/CHANGELOG.md?plain=1#L108-L126)), and v2.6.5 still defaults `--new-bundle-format` to false ([verify.go](https://github.com/sigstore/cosign/blob/v2.6.5/cmd/cosign/cli/options/verify.go#L66)).
+The `gh` commands need gh v2.102.0 or later, signed in to GitHub (`gh auth login`), since they fetch the attestations from its API ([verify.go](https://github.com/cli/cli/blob/v2.104.0/pkg/cmd/attestation/verify/verify.go#L82-L83)).
+Before v2.102.0, `--signer-workflow` matched only the start of the signing certificate's identity, so a workflow whose path begins with `release.yml` passed ([release notes](https://github.com/cli/cli/releases/tag/v2.102.0), [v2.101.0](https://github.com/cli/cli/blob/v2.101.0/pkg/cmd/attestation/verify/policy.go#L158-L167)).
+The release's notes list the chart and the three images, `ghcr.io/lodia-io/charts/lodia`, `ghcr.io/lodia-io/lodia`, `ghcr.io/lodia-io/lodia-signer` and `ghcr.io/lodia-io/lodia-tunnel`, each by its digest, and `<digest>` below is the `sha256:` value after the `@` in its reference.
+The signer is `release.yml` at the release's tag: the certificate's identity is `https://github.com/lodia-io/lodia/.github/workflows/release.yml@refs/tags/<tag>`, issued by `https://token.actions.githubusercontent.com` ([the identity](https://github.com/sigstore/fulcio/blob/v1.10.0/config/identity/config.yaml#L213-L259), [the workflow's ref](https://github.com/github/docs/blob/6d56af0c8b62bde11bb3d9df46244fab5f0a00f9/content/actions/concepts/security/openid-connect.md?plain=1#L67-L84), [the issuer](https://github.com/sigstore/fulcio/blob/v1.10.0/config/identity/config.yaml#L169-L175)).
+For the operator's image:
+
+```sh
+cosign verify ghcr.io/lodia-io/lodia@<digest> \
+  --certificate-identity https://github.com/lodia-io/lodia/.github/workflows/release.yml@refs/tags/<tag> \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+`cosign sign --recursive` signs each image that the index lists with the same identity ([flag](https://github.com/sigstore/cosign/blob/v3.1.4/doc/cosign_sign.md?plain=1#L88)), so the command also takes the digest of one of them.
+The attestations verify with the GitHub CLI ([verifying](https://github.com/github/docs/blob/6d56af0c8b62bde11bb3d9df46244fab5f0a00f9/content/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations.md?plain=1#L169-L176)):
+
+```sh
+gh attestation verify oci://ghcr.io/lodia-io/lodia@<digest> \
+  -R lodia-io/lodia --signer-workflow lodia-io/lodia/.github/workflows/release.yml \
+  --source-ref refs/tags/<tag>
+```
+
+`--signer-workflow` pins the workflow file that signed the attestation, as `--certificate-identity` pins the identity for cosign; given without a ref, as here, it accepts the workflow at any ref ([the flag](https://github.com/cli/cli/blob/v2.104.0/pkg/cmd/attestation/verify/verify.go#L263), [what it matches](https://github.com/cli/cli/blob/v2.104.0/pkg/cmd/attestation/verify/policy.go#L46-L52)).
+`--source-ref` pins the ref of the run ([the flag](https://github.com/cli/cli/blob/v2.104.0/pkg/cmd/attestation/verify/verify.go#L267), [the check](https://github.com/cli/cli/blob/v2.104.0/pkg/cmd/attestation/verification/extensions.go#L68-L71)), which makes the attestation the tag's own.
+Run both commands for `lodia-signer`, `lodia-tunnel` and `charts/lodia` as well.
 
 ### Scraping the operator
 
@@ -641,7 +678,7 @@ Each controller records an event for every transition of a condition it writes (
 - [metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md) — `lodia_*` metrics per tenant, built from status at scrape time by the leader; conditions one-hot; an event per transition of a condition; the chart's monitoring off by default.
 - [short-lived-kubeconfigs](decisions/short-lived-kubeconfigs.md) — `KubeconfigRequest` for the requester's own key and name, from a CA of its own; the standing admin credential is a group RBAC governs, not `system:masters`.
 - [e2e-on-a-named-cluster](decisions/e2e-on-a-named-cluster.md) — e2e refuses the current context; conformance nightly.
-- [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR; the three maintained Kubernetes minors.
+- [releases-and-support](decisions/releases-and-support.md) — ko, cosign, attestations, the chart in GHCR, the tag check and Renovate; the three maintained Kubernetes minors.
 - [tenant-clients-speak-http1](decisions/tenant-clients-speak-http1.md) — Lodia's four clients of a tenant speak HTTP/1.1 with no compression and no redirect, a dial and a handshake within `Timeout`, at most as many connections as a pass has reads in flight, and one connection idle between passes.
 - [one-client-for-a-tenant](decisions/one-client-for-a-tenant.md) — every request to a tenant goes through `internal/tenantclient`, by path and into the fields it keeps; the access Secrets' data is read from memory while its `resourceVersion` stays.
 - [who-is-trusted](decisions/who-is-trusted.md) — the management cluster is the platform's and no tenant reaches its API; a tenant's administrator is untrusted inside the tenant; deleting a `ControlPlane` needs a confirmation.

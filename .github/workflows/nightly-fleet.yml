@@ -1,4 +1,5 @@
 name: nightly-fleet
+run-name: nightly-fleet, ${{ inputs.tenants || '300' }} tenants
 
 on:
   schedule:

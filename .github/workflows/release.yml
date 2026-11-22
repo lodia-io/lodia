@@ -1,0 +1,113 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Check the tag
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: go run ./hack/releasecheck tag --commit="$GITHUB_SHA" "$GITHUB_REF_NAME"
+      - name: Log in to the registry
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: make release-login
+      - name: Push the images
+        run: make release-images TAG="$GITHUB_REF_NAME"
+      - name: Package and push the chart
+        run: make release-chart TAG="$GITHUB_REF_NAME" HELM_PUSH=true
+      - name: Pull all four without credentials
+        run: DOCKER_CONFIG="$(mktemp -d)" HELM_REGISTRY_CONFIG="$(mktemp -d)/config.json" make release-pull
+      - name: Sign the images and the chart
+        run: make release-sign
+      - name: Verify the signatures as a user does
+        run: DOCKER_CONFIG="$(mktemp -d)" make release-verify-signatures TAG="$GITHUB_REF_NAME"
+      - name: Name the artifacts by their digests
+        id: refs
+        run: |
+          . work/release/images.env
+          . work/release/chart.env
+          {
+            echo "lodia-name=${LODIA_IMAGE%@*}"
+            echo "lodia-digest=${LODIA_IMAGE#*@}"
+            echo "signer-name=${SIGNER_IMAGE%@*}"
+            echo "signer-digest=${SIGNER_IMAGE#*@}"
+            echo "tunnel-name=${TUNNEL_IMAGE%@*}"
+            echo "tunnel-digest=${TUNNEL_IMAGE#*@}"
+            echo "chart-name=${CHART_IMAGE%@*}"
+            echo "chart-digest=${CHART_IMAGE#*@}"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.refs.outputs.lodia-name }}
+          subject-digest: ${{ steps.refs.outputs.lodia-digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.refs.outputs.signer-name }}
+          subject-digest: ${{ steps.refs.outputs.signer-digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.refs.outputs.tunnel-name }}
+          subject-digest: ${{ steps.refs.outputs.tunnel-digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        env:
+          NODE_OPTIONS: --max-http-header-size=32768
+        with:
+          subject-name: ${{ steps.refs.outputs.chart-name }}
+          subject-digest: ${{ steps.refs.outputs.chart-digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Verify the attestations as a user does
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: DOCKER_CONFIG="$(mktemp -d)" make release-verify-attestations TAG="$GITHUB_REF_NAME"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . work/release/images.env
+          . work/release/chart.env
+          notes="$(printf 'Chart: `oci://ghcr.io/lodia-io/charts/lodia`, version `%s`.\n\nBy digest:\n\n' "${GITHUB_REF_NAME#v}"
+          printf -- '- `%s`\n' "$CHART_IMAGE" "$LODIA_IMAGE" "$SIGNER_IMAGE" "$TUNNEL_IMAGE")"
+          flags=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --notes "$notes" "${flags[@]}"

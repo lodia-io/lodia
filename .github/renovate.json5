@@ -1,0 +1,73 @@
+{
+  extends: ["config:recommended"],
+  ignorePresets: [":ignoreModulesAndTests"],
+  postUpdateOptions: ["gomodTidyAll"],
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^\\.ko\\.yaml$/"],
+      matchStrings: [
+        "defaultBaseImage: (?<depName>[^:@\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^charts/lodia/values\\.yaml$/"],
+      matchStrings: [
+        "(?:^|\\n)etcdDruid:\\n(?:[ ]+.*\\n)*?[ ]+image:\\n[ ]+tag: (?<currentValue>v[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
+      depNameTemplate: "europe-docker.pkg.dev/gardener-project/releases/gardener/etcd-druid",
+      datasourceTemplate: "docker",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^internal/versions/versions\\.go$/"],
+      matchStrings: [
+        "\"1\\.(?<kubeMinor>\\d+)\": \\{\"v[^\"]+\", \"v[^\"]+\", \"(?<currentValue>v[^\"]+)\"",
+      ],
+      depNameTemplate: "registry.k8s.io/kube-apiserver 1.{{{kubeMinor}}}",
+      packageNameTemplate: "registry.k8s.io/kube-apiserver",
+      datasourceTemplate: "docker",
+      versioningTemplate: "regex:^v(?<major>1)\\.(?<minor>{{{kubeMinor}}})\\.(?<patch>\\d+)$",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^internal/versions/versions\\.go$/"],
+      matchStrings: [
+        "\"1\\.(?<kubeMinor>\\d+)\": \\{\"v[^\"]+\", \"(?<currentValue>v[^\"]+)\"",
+      ],
+      depNameTemplate: "registry.k8s.io/kas-network-proxy/proxy-server 1.{{{kubeMinor}}}",
+      packageNameTemplate: "registry.k8s.io/kas-network-proxy/proxy-server",
+      datasourceTemplate: "docker",
+      versioningTemplate: "regex:^v(?<major>0)\\.(?<minor>{{{kubeMinor}}})\\.(?<patch>\\d+)$",
+    },
+  ],
+  packageRules: [
+    {
+      matchPackageNames: [
+        "github.com/gardener/etcd-druid/api",
+        "europe-docker.pkg.dev/gardener-project/releases/charts/gardener/etcd-druid",
+        "europe-docker.pkg.dev/gardener-project/releases/gardener/etcd-druid",
+      ],
+      groupName: "etcd-druid",
+      minimumGroupSize: 3,
+    },
+    {
+      matchManagers: ["gomod"],
+      matchPackageNames: ["k8s.io/*", "sigs.k8s.io/controller-runtime"],
+      groupName: "kubernetes",
+    },
+    {
+      matchManagers: ["gomod"],
+      matchFileNames: ["api/go.mod"],
+      matchPackageNames: ["k8s.io/api", "k8s.io/apimachinery"],
+      enabled: false,
+    },
+    {
+      matchManagers: ["github-actions"],
+      matchDepTypes: ["uses-with", "github-runner"],
+      enabled: false,
+    },
+  ],
+}

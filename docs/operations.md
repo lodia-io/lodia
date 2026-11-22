@@ -944,11 +944,16 @@ The operator's memory:
 
 ## Upgrading Lodia
 
-`helm upgrade`.
+Name the version, since Helm resolves a chart that no `--version` names to the newest release and skips pre-releases, and every release is one for now ([constraints.go](https://github.com/Masterminds/semver/blob/v3.5.0/constraints.go#L521-L526)):
+
+```sh
+helm upgrade lodia oci://ghcr.io/lodia-io/charts/lodia --version 0.1.0-alpha.1 -n lodia-system
+```
+
 The chart upgrades the CRDs first (served versions are only added, never removed, within a major), then the operator.
 A tenant renders with the new release once Lifecycle grants it the operator revision: in its window, `fleet.maxConcurrentRollouts` tenants at a time, each keeping its slot until it has rolled out and stayed `Ready` for the settling time, or at once when its owner edits its spec or sets a new `lodia.io/maintain-requested-at` ([the rules](decisions/upgrades-and-maintenance-windows.md#decision)).
 A release that breaks tenants stops once as many are `MaintenanceFailed` as the limit, and the next release, a rollback included, reaches them at once.
-The release notes list what changes per component.
+The release notes hold the chart's reference, the four digests and GitHub's list of the merged pull requests by their titles, a breaking change marked with `!` ([releases-and-support](decisions/releases-and-support.md)).
 Rolling back the chart is safe while the CRDs did not add a stored version; to the tenants it is one more revision.
 A `ControlPlane` stored with an `extraArgs` flag the new schema refuses keeps that map while it is unchanged, and the next change to the map must drop the flag.
 

@@ -17,14 +17,18 @@ func TestImagesOfASupportedVersion(t *testing.T) {
 	if !ok {
 		t.Fatal("v1.35.8 is not supported")
 	}
+	_, konnectivity, _ := strings.Cut(images.KonnectivityServer, ":")
+	if !strings.HasPrefix(konnectivity, "v0.35.") {
+		t.Errorf("konnectivity %s does not serve Kubernetes 1.35", konnectivity)
+	}
 	want := versions.Images{
 		APIServer:          "registry.k8s.io/kube-apiserver:v1.35.8",
 		ControllerManager:  "registry.k8s.io/kube-controller-manager:v1.35.8",
 		Scheduler:          "registry.k8s.io/kube-scheduler:v1.35.8",
 		KubeProxy:          "registry.k8s.io/kube-proxy:v1.35.8",
 		CoreDNS:            "registry.k8s.io/coredns/coredns:v1.13.1",
-		KonnectivityServer: "registry.k8s.io/kas-network-proxy/proxy-server:v0.35.0",
-		KonnectivityAgent:  "registry.k8s.io/kas-network-proxy/proxy-agent:v0.35.0",
+		KonnectivityServer: "registry.k8s.io/kas-network-proxy/proxy-server:" + konnectivity,
+		KonnectivityAgent:  "registry.k8s.io/kas-network-proxy/proxy-agent:" + konnectivity,
 	}
 	if images != want {
 		t.Errorf("images of v1.35.8:\n got %+v\nwant %+v", images, want)
@@ -102,13 +106,14 @@ func TestNext(t *testing.T) {
 }
 
 func TestStep(t *testing.T) {
+	latest136, _ := versions.Latest("1.36")
 	for _, c := range []struct {
 		spec, target, version, minor string
 		inTable                      bool
 	}{
 		{"v1.37.1", "v1.36.4", "v1.37.1", "1.37", true},
 		{"v1.37.0", "v1.36.6", "v1.37.0", "1.37", true},
-		{"v1.37.1", "v1.35.8", "v1.36.6", "1.36", true},
+		{"v1.37.1", "v1.35.8", latest136, "1.36", true},
 		{"v1.38.0", "v1.37.2", "", "1.38", false},
 	} {
 		version, minor, inTable := versions.Step(c.spec, c.target)

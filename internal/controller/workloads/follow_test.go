@@ -25,6 +25,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/workloads"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 func reports(apiServer string) map[string]any {
@@ -51,8 +52,9 @@ func TestTheControllerManagerAndSchedulerFollowTheAPIServerAMinorApart(t *testin
 	setTargetVersion(t, cp, "v1.37.1")
 	eventuallyImages(t, cp, "v1.37.1", "kube-apiserver")
 	konnectivity := deployment(t, cp, "kube-apiserver").Spec.Template.Spec.InitContainers
-	if i := indexOfContainer(konnectivity, "konnectivity-server"); i < 0 || !strings.HasSuffix(konnectivity[i].Image, ":v0.37.0") {
-		t.Errorf("the API server's init containers are %+v, want konnectivity-server at the target's minor, v0.37.0", konnectivity)
+	images, _ := versions.For("v1.37.1")
+	if i := indexOfContainer(konnectivity, "konnectivity-server"); i < 0 || konnectivity[i].Image != images.KonnectivityServer {
+		t.Errorf("the API server's init containers are %+v, want konnectivity-server at the target's minor, %s", konnectivity, images.KonnectivityServer)
 	}
 	expectImagesAfterAPass(t, cp, "v1.36.4", "kube-controller-manager", "kube-scheduler")
 

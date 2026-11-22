@@ -14,8 +14,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the skeleton (2026-10-24)
 
 - kube-api-linter on `api/`, as `releases-and-support` lists: the header of `.golangci.yml` says the file is identical in every Segla repository, so the linter needs a run of its own, not a line in that file.
-- Nothing bumps what is pinned by digest or commit: the workflow's actions and the base image in `.ko.yaml`; `.github/` has no Renovate or Dependabot configuration.
-  Add one for `github-actions`, `gomod` and the base images, leaving the API module's `k8s.io` floor alone (releases-and-support).
 
 ## From lodia-signer (2026-10-23)
 
@@ -287,3 +285,10 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `context deadline exceeded: the API server reports "v1.37.1"`, while it waited for `v1.33.2`, the image the test had set.
   The rerun of the job passed.
   The cause is not found.
+
+## From the first release (2026-11-22)
+
+- An upgrade e2e from the previous release's chart, once a second release exists.
+- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway, the charts `gateway-helm` and `gateway-crds-helm` and CoreDNS (`test/e2e/gateway_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
+- An attested SBOM: ko pushes an SPDX SBOM beside each image, which `release.yml` neither signs nor attests.
+- etcd-druid's CRDs on a chart upgrade (the item on its chart's `crds/` directory, above) decide what a release that bumps etcd-druid says; the first release only installs.

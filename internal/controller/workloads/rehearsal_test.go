@@ -41,6 +41,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/workloads"
 	"go.lodia.io/lodia/internal/testenv"
+	"go.lodia.io/lodia/internal/versions"
 )
 
 const (
@@ -971,6 +972,7 @@ func TestANewGenerationAfterAFailedVerdictIsRehearsedAtOnce(t *testing.T) {
 
 func TestAChainsSecondMinorIsRehearsedAtTheGenerationTheFirstPassedAt(t *testing.T) {
 	cp := controlPlaneForRehearsal(t)
+	latest136, _ := versions.Latest("1.36")
 	setTargetAt(t, cp, "v1.35.10", "")
 	startRehearsal(t, cp)
 	generation := get(t, cp).Generation
@@ -990,8 +992,8 @@ func TestAChainsSecondMinorIsRehearsedAtTheGenerationTheFirstPassedAt(t *testing
 		})
 		expectNoCopy(t, cp)
 	}
-	passed("v1.36.6")
-	setTargetAt(t, cp, "v1.36.6", "")
+	passed(latest136)
+	setTargetAt(t, cp, latest136, "")
 	applyStatus(t, cp, "test/lifecycle", map[string]any{"kubernetes": map[string]any{"upgrade": map[string]any{"step": string(lodiav1alpha1.UpgradeStepRehearsal), "startedAt": "2026-11-20T01:00:00Z"}}})
 	passed(version)
 	if g := get(t, cp).Generation; g != generation {
