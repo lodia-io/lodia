@@ -56,10 +56,9 @@ A release is two signed annotated tags at one commit, `v<version>` and `api/v<ve
 3. Tag the commit: `git tag -s -m v<version> v<version> <commit>` and `git tag -s -m api/v<version> api/v<version> <commit>`.
 4. Run `make release-check TAG=v<version> COMMIT=<commit>` until it passes, then `git push --atomic origin v<version> api/v<version>`.
 
-The first release stops at the anonymous pull, with the four packages `lodia`, `lodia-signer`, `lodia-tunnel` and `charts/lodia` pushed and private.
-Make each public in its package settings (Danger Zone, Change visibility), then re-run the job on the same tag.
-The chart is reproducible, so the re-run pushes the chart digest the first run pushed ([releases-and-support](docs/decisions/releases-and-support.md)).
-A run that finds any package private stops there again.
+The four packages `lodia`, `lodia-signer`, `lodia-tunnel` and `charts/lodia` take the repository's visibility, public, when a run's push creates them ([releases-and-support](docs/decisions/releases-and-support.md)).
+A run that finds any of them private stops at the anonymous pull: make it public in its package settings (Danger Zone, Change visibility), then re-run the job on the same tag.
+The chart is reproducible, so the re-run pushes the chart digest the first run pushed.
 
 A run that fails:
 
@@ -70,4 +69,4 @@ A run that fails:
   The failed tags stay, because the tag ruleset `release-tags` blocks moving and deleting them.
   Delete the failed run's versions from the four packages by hand, with a classic token that has `read:packages` and `delete:packages` ([the endpoint](https://github.com/github/rest-api-description/blob/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.2022-11-28.yaml#L41855-L41859)), so that no unsigned, unreleased chart stays installable.
   A package whose last tagged version GitHub refuses to delete (`You cannot delete the last tagged version of a package. You must delete the package instead.`) is deleted whole, which is every package after a failed first release.
-  Its next push creates it private again, so the next release's run stops at the anonymous pull as the first did: make it public and re-run the job on the same tag.
+  The next release's push creates it again, public as the repository.
