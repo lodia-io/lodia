@@ -237,12 +237,14 @@ release-chart: ## package the chart as version and appVersion CHART_VERSION into
 	fi
 
 .PHONY: release-render-check
-release-render-check: ## fail unless the default render of CHART, a packaged chart, names LODIA_IMAGE as the operator container's image, SIGNER_IMAGE as --signer-image and TUNNEL_IMAGE as --tunnel-image, all of $(IMAGES_ENV), and no other ghcr.io/lodia-io reference
+release-render-check: ## fail unless the default render of CHART, a packaged chart, has LODIA_IMAGE as the image of the container lodia of the Deployment lodia and SIGNER_IMAGE and TUNNEL_IMAGE as that container's --signer-image and --tunnel-image, all of $(IMAGES_ENV), and no other ghcr.io/lodia-io reference
 	@[ "$(CHART)" != charts/lodia ] || { echo "usage: make release-render-check CHART=<packaged chart>"; exit 1; }
 	. $(IMAGES_ENV) && \
-	want="$$(printf '%s\n' "image: $$LODIA_IMAGE" "- --signer-image=$$SIGNER_IMAGE" "- --tunnel-image=$$TUNNEL_IMAGE" | sort)" && \
-	got="$$(helm template lodia $(CHART) --namespace lodia-system | grep 'ghcr\.io/lodia-io/' | sed 's/^[[:space:]]*//' | sort)"; \
-	[ "$$got" = "$$want" ] || { printf 'the default render of %s has the lines\n%s\nwant\n%s\n' $(CHART) "$$got" "$$want"; exit 1; }
+	render="$$(helm template lodia $(CHART) --namespace lodia-system)" && \
+	want="$$(printf '%s\n' "image: $$LODIA_IMAGE" "--signer-image=$$SIGNER_IMAGE" "--tunnel-image=$$TUNNEL_IMAGE" | sort)" && \
+	got="$$(printf '%s\n' "$$render" | $(YQ) -N 'select(.kind == "Deployment" and .metadata.name == "lodia") | .spec.template.spec.containers[] | select(.name == "lodia") | (("image: " + .image), (.args[] | select(test("^--(signer|tunnel)-image="))))' | sort)" && \
+	references="$$(printf '%s\n' "$$render" | grep -o 'ghcr\.io/lodia-io/' | wc -l | tr -d ' ')" && \
+	{ [ "$$got" = "$$want" ] && [ "$$references" = 3 ] || { printf 'the default render of %s has the lines\n%s\nin the container lodia of the Deployment lodia and %s references to ghcr.io/lodia-io/, want\n%s\nand 3\n' $(CHART) "$$got" "$$references" "$$want"; exit 1; }; }
 
 .PHONY: release-pull
 release-pull: ## pull the three images of $(IMAGES_ENV), every platform of each, and the chart of $(CHART_ENV) into $(RELEASE_DIR)/pull with DOCKER_CONFIG and HELM_REGISTRY_CONFIG both empty, as an anonymous user does, then run release-render-check on the pulled chart
