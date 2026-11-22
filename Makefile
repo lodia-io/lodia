@@ -56,6 +56,11 @@ DASHBOARDS = $(wildcard $(CHART)/files/dashboards/*.json)
 METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true,metrics.rules.enabled=true,metrics.dashboards.enabled=true
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
 DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
+DRUID_SUM = $(CURDIR)/charts/etcd-druid.sha256
+SHA256 = $(shell command -v sha256sum > /dev/null && echo sha256sum || echo shasum -a 256)
+define check-druid-sum
+cd $(1)/charts && $(SHA256) --check --strict $(DRUID_SUM) || { echo "the etcd-druid chart that helm dependency build vendored is not the one charts/etcd-druid.sha256 names"; exit 1; }
+endef
 
 .PHONY: generate
 generate: ## regenerate deepcopy functions and CRDs from api/, the chart's copy of the CRDs, and each controller's ClusterRole from its RBAC markers
@@ -110,8 +115,9 @@ restore-keys: ## the etcd keys a restore's cleanup deletes, against the API serv
 	done
 
 .PHONY: chart
-chart: ## lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding; the metrics Service and ServiceMonitor only once their values are on, rendered as the release check, and the ServiceMonitor scraping that Service alone over https, with the labels it is given; the PrometheusRule only once its value is on, with the labels it is given, holding the rule file with every runbook at the release's tag unless appVersion ends in -dev; the dashboards only once their value is on, a ConfigMap each, holding its file as lodia-<file>, with the labels it is given
+chart: ## check the vendored etcd-druid chart against charts/etcd-druid.sha256, lint and render the chart with image tags, then with image digests; with crds.enabled=false it must still render the policy kubeconfigrequests.lodia.io and its binding; the metrics Service and ServiceMonitor only once their values are on, rendered as the release check, and the ServiceMonitor scraping that Service alone over https, with the labels it is given; the PrometheusRule only once its value is on, with the labels it is given, holding the rule file with every runbook at the release's tag unless appVersion ends in -dev; the dashboards only once their value is on, a ConfigMap each, holding its file as lodia-<file>, with the labels it is given
 	helm dependency build $(CHART)
+	$(call check-druid-sum,$(CHART))
 	helm lint --strict $(CHART)
 	helm template lodia $(CHART) --namespace lodia-system > /dev/null
 	@policies="$$(helm template lodia $(CHART) --namespace lodia-system --set crds.enabled=false | awk '/^---/ {kind = ""} /^kind: / {kind = $$2} /^  name: kubeconfigrequests\.lodia\.io$$/ {print kind}' | sort | tr '\n' ' ')"; \
