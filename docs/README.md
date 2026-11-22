@@ -497,7 +497,7 @@ The release workflow that publishes it to `oci://ghcr.io/lodia-io/charts/lodia` 
 `VERSION` is the operator's build version, which `.ko.yaml` passes to `cmd/lodia`; ko fails a build of it without `VERSION` ([applyTemplating](https://github.com/google/ko/blob/v0.19.1/pkg/build/gobuild.go#L936-L944)), and the operator refuses to start with an empty one.
 
 ```sh
-VERSION="$(git describe --tags --always --dirty)" KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
+VERSION="$(git describe --tags --match 'v[0-9]*' --always --dirty)" KO_DOCKER_REPO=<registry> go run github.com/google/ko@v0.19.1 build \
   --base-import-paths --platform=linux/amd64,linux/arm64 ./cmd/lodia ./cmd/lodia-signer ./cmd/lodia-tunnel
 helm dependency build charts/lodia
 helm install lodia charts/lodia -n lodia-system --create-namespace \
