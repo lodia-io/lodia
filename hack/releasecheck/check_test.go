@@ -32,6 +32,10 @@ func installCommand(version string) string {
 	return "helm install lodia oci://ghcr.io/lodia-io/charts/lodia --version " + version + " \\\n  -n lodia-system --create-namespace\n"
 }
 
+func upgradeCommand(version string) string {
+	return "helm upgrade lodia oci://ghcr.io/lodia-io/charts/lodia --version " + version + " \\\n  -n lodia-system\n"
+}
+
 func goodFiles(version string) map[string]string {
 	return map[string]string{
 		".github/workflows/ci.yml":          "name: ci\n",
@@ -42,6 +46,7 @@ func goodFiles(version string) map[string]string {
 		chartFile:                           "apiVersion: v2\nname: lodia\nversion: 0.0.0-dev\nappVersion: 0.0.0-dev\n",
 		"README.md":                         installCommand(version),
 		"docs/README.md":                    "# Lodia\n\n" + installCommand(version),
+		"docs/operations.md":                "## Upgrading Lodia\n\n" + upgradeCommand(version),
 	}
 }
 
@@ -544,6 +549,19 @@ func TestTheTagCheckRefuses(t *testing.T) {
 			w.files["README.md"] = "helm install lodia chart --version v0.1.0-alpha.1\n"
 		}, want: "README.md at"},
 		{name: "a docs README that is gone", change: func(w *world) { delete(w.files, "docs/README.md") }, want: "docs/README.md"},
+		{name: "an operations doc that does not name the version", change: func(w *world) {
+			w.files["docs/operations.md"] = "## Upgrading Lodia\n\nhelm upgrade lodia oci://ghcr.io/lodia-io/charts/lodia -n lodia-system\n"
+		}, want: "docs/operations.md at"},
+		{name: "an operations doc that does not name the version names the fix", change: func(w *world) {
+			w.files["docs/operations.md"] = "helm upgrade\n"
+		}, want: "does not name `--version 0.1.0-alpha.1`: bump its install and upgrade commands"},
+		{name: "an operations doc that names the previous version", change: func(w *world) {
+			w.files["docs/operations.md"] = upgradeCommand("0.1.0-alpha.0")
+		}, want: "docs/operations.md at"},
+		{name: "an operations doc that names a longer version", change: func(w *world) {
+			w.files["docs/operations.md"] = upgradeCommand("0.1.0-alpha.10")
+		}, want: "docs/operations.md at"},
+		{name: "an operations doc that is gone", change: func(w *world) { delete(w.files, "docs/operations.md") }, want: "docs/operations.md"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -571,6 +589,7 @@ func TestTheTagCheckNamesEveryRuleTheTagBreaks(t *testing.T) {
 	w.nightly(nightlyFleet, done(3, scheduleEvent, "failure", 0))
 	w.files[chartFile] = "apiVersion: v2\nname: lodia\nversion: 0.1.0-alpha.1\nappVersion: 0.1.0-alpha.1\n"
 	w.files["README.md"] = "no install command\n"
+	w.files["docs/operations.md"] = "no upgrade command\n"
 	w.gh.releases = []string{"v0.1.0-alpha.1"}
 	w.offMain = true
 
@@ -589,6 +608,7 @@ func TestTheTagCheckNamesEveryRuleTheTagBreaks(t *testing.T) {
 		"runs/3, the newest run of nightly-fleet.yml",
 		"has version",
 		"README.md at",
+		"docs/operations.md at",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("want the refusal to contain %q, got:\n%v", want, err)

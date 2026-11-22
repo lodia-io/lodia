@@ -26,7 +26,7 @@ const (
 	success   = "success"
 )
 
-var installDocs = []string{"README.md", "docs/README.md"}
+var installDocs = []string{"README.md", "docs/README.md", "docs/operations.md"}
 
 type Run struct {
 	ID         int64
@@ -172,7 +172,7 @@ func requireInstallCommands(ctx context.Context, dir, sha, chartVersion string) 
 			return err
 		}
 		if !install.Match(raw) {
-			problems = append(problems, fmt.Errorf("%s at %s does not name `--version %s`: bump its install commands in the last pull request before the tag", doc, sha, chartVersion))
+			problems = append(problems, fmt.Errorf("%s at %s does not name `--version %s`: bump its install and upgrade commands in the last pull request before the tag", doc, sha, chartVersion))
 		}
 	}
 	return errors.Join(problems...)

@@ -390,7 +390,7 @@ conformance: ## the Kubernetes conformance suite through hydrophone against a te
 COMMIT ?= HEAD
 
 .PHONY: release-check
-release-check: ## refuse TAG before it is pushed, naming every rule it breaks: a semver tag above every published release of its line, COMMIT on origin/main with ci.yml and every nightly green at it, the local tags TAG and api/TAG at COMMIT, the chart at 0.0.0-dev, README.md and docs/README.md naming `--version` of TAG; reads GitHub with $$GITHUB_TOKEN, else with gh's
+release-check: ## refuse TAG before it is pushed, naming every rule it breaks: a semver tag above every published release of its line, COMMIT on origin/main with ci.yml and every nightly green at it, the local tags TAG and api/TAG at COMMIT, the chart at 0.0.0-dev, README.md, docs/README.md and docs/operations.md naming `--version` of TAG; reads GitHub with $$GITHUB_TOKEN, else with gh's
 	@[ -n "$(TAG)" ] || { echo "usage: make release-check TAG=vX.Y.Z [COMMIT=<sha>]"; exit 1; }
 	git fetch --quiet --tags origin main
 	GITHUB_TOKEN="$${GITHUB_TOKEN:-$$(gh auth token)}" go run ./hack/releasecheck tag --commit="$(COMMIT)" "$(TAG)"
