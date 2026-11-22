@@ -7,23 +7,27 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"slices"
 	"strings"
 	"testing"
 
+	"golang.org/x/mod/modfile"
 	"sigs.k8s.io/yaml"
 )
 
 func TestEtcdDruidIsOneVersionInGoModTheChartItsLockAndTheValues(t *testing.T) {
 	versions := map[string]string{}
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		t.Fatal("the test binary carries no build info")
+	raw, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, dep := range info.Deps {
-		if dep.Path == "github.com/gardener/etcd-druid/api" {
-			versions["go.mod"] = dep.Version
+	module, err := modfile.Parse("go.mod", raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, require := range module.Require {
+		if require.Mod.Path == "github.com/gardener/etcd-druid/api" {
+			versions["go.mod"] = require.Mod.Version
 		}
 	}
 	for _, name := range []string{"Chart.yaml", "Chart.lock"} {
