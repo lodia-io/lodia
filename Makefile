@@ -1,8 +1,7 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
-# golangci-lint, helm, promtool and dashboard-linter, which are installed on their own, and ko
-# and hydrophone, which run as `go run github.com/google/ko@<version>` and
-# `go run sigs.k8s.io/hydrophone@<version>`: their dependency graphs would
-# move the operator's own dependencies.
+# golangci-lint, helm, promtool and dashboard-linter, which are installed on their own,
+# and ko, hydrophone and yq, which run as `go run <module>@<version>`:
+# their dependency graphs would move the operator's own dependencies.
 
 ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
@@ -56,6 +55,17 @@ DASHBOARDS = $(wildcard $(CHART)/files/dashboards/*.json)
 METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true,metrics.rules.enabled=true,metrics.dashboards.enabled=true
 GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
 DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
+KO = go run github.com/google/ko@v0.19.1
+YQ = go run github.com/mikefarah/yq/v4@v4.54.1
+IMAGE_REGISTRY = ghcr.io/lodia-io
+CHART_REGISTRY = ghcr.io/lodia-io/charts
+PLATFORMS = linux/amd64,linux/arm64
+KO_PUSH ?= true
+HELM_PUSH ?= false
+RELEASE_DIR ?= work/release
+IMAGES_ENV = $(RELEASE_DIR)/images.env
+CHART_ENV = $(RELEASE_DIR)/chart.env
+CHART_VERSION = $(patsubst v%,%,$(TAG))
 DRUID_SUM = $(CURDIR)/charts/etcd-druid.sha256
 SHA256 = $(shell command -v sha256sum > /dev/null && echo sha256sum || echo shasum -a 256)
 define check-druid-sum
@@ -176,6 +186,62 @@ monitoring: ## lint the collector's golden as promtool lints a scrape, check the
 	for dashboard in $(DASHBOARDS); do dashboard-linter lint --strict $$dashboard || exit 1; done
 	cd test/monitoring && go test -count=1 ./...
 
+.PHONY: release-images
+release-images: ## build the three images with ko for PLATFORMS, tagged CHART_VERSION, pushed unless KO_PUSH=false, and write the reference of each by its digest to $(IMAGES_ENV); each digest is the one ko printed for the repository of that image, whatever the order of ko's output
+	@[ -n "$(TAG)" ] || { echo "usage: make release-images TAG=vX.Y.Z [KO_PUSH=false]"; exit 1; }
+	mkdir -p $(RELEASE_DIR)
+	rm -f $(CHART_ENV)
+	refs="$$(VERSION=$(TAG) KO_DOCKER_REPO=$(IMAGE_REGISTRY) $(KO) build --push=$(KO_PUSH) --base-import-paths --platform=$(PLATFORMS) --tags=$(CHART_VERSION) ./cmd/lodia ./cmd/lodia-signer ./cmd/lodia-tunnel)" && \
+	digest() { printf '%s\n' "$$refs" | awk -v repository="$(IMAGE_REGISTRY)/$$1" '{ at = index($$0, "@"); name = substr($$0, 1, at - 1); sub(/:[^\/]*$$/, "", name); if (name == repository) print substr($$0, at + 1) }'; } && \
+	for entry in LODIA_IMAGE:lodia SIGNER_IMAGE:lodia-signer TUNNEL_IMAGE:lodia-tunnel; do \
+		digest="$$(digest $${entry#*:})"; \
+		[ "$$(printf '%s\n' "$$digest" | grep -c .)" = 1 ] && printf '%s\n' "$$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "ko printed [$$digest] for $(IMAGE_REGISTRY)/$${entry#*:}, want one digest"; exit 1; }; \
+		echo "$${entry%:*}=$(IMAGE_REGISTRY)/$${entry#*:}@$$digest"; \
+	done > $(IMAGES_ENV).tmp && mv $(IMAGES_ENV).tmp $(IMAGES_ENV)
+
+.PHONY: release-chart
+release-chart: ## package the chart as version and appVersion CHART_VERSION into $(RELEASE_DIR)/lodia-CHART_VERSION.tgz, with the digests of $(IMAGES_ENV) in its values.yaml, after checking the vendored etcd-druid chart; its values.yaml must differ from the tree's in the three digest lines alone; HELM_PUSH=true pushes it to oci://$(CHART_REGISTRY) and writes $(CHART_ENV) with its reference by the digest helm push prints
+	@[ -n "$(TAG)" ] || { echo "usage: make release-chart TAG=vX.Y.Z [HELM_PUSH=true]"; exit 1; }
+	@[ -f $(IMAGES_ENV) ] || { echo "$(IMAGES_ENV) is missing: run make release-images first"; exit 1; }
+	rm -rf $(RELEASE_DIR)/chart $(CHART_ENV)
+	mkdir -p $(RELEASE_DIR)/chart
+	cp -R $(CHART) $(RELEASE_DIR)/chart/lodia
+	rm -rf $(RELEASE_DIR)/chart/lodia/charts
+	helm dependency build $(RELEASE_DIR)/chart/lodia
+	$(call check-druid-sum,$(RELEASE_DIR)/chart/lodia)
+	. $(IMAGES_ENV) && values=$(RELEASE_DIR)/chart/lodia/values.yaml && \
+	for entry in image:$${LODIA_IMAGE##*@} signerImage:$${SIGNER_IMAGE##*@} tunnelImage:$${TUNNEL_IMAGE##*@}; do \
+		line="$$($(YQ) ".$${entry%%:*}.digest | line" $$values)" && sed -i.bak "$${line}s|\"\"|\"$${entry#*:}\"|" $$values || exit 1; \
+	done && rm $$values.bak
+	helm package $(RELEASE_DIR)/chart/lodia --version $(CHART_VERSION) --app-version $(CHART_VERSION) --destination $(RELEASE_DIR)
+	. $(IMAGES_ENV) && \
+	want="$$(printf '<   digest: ""\n>   digest: "%s"\n' "$${LODIA_IMAGE##*@}" "$${SIGNER_IMAGE##*@}" "$${TUNNEL_IMAGE##*@}" | sort)" && \
+	got="$$(tar -xzOf $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz lodia/values.yaml | diff $(CHART)/values.yaml - | grep '^[<>]' | sort)"; \
+	[ "$$got" = "$$want" ] || { printf 'the packaged values.yaml differs from %s/values.yaml in\n%s\nwant\n%s\n' $(CHART) "$$got" "$$want"; exit 1; }
+	@if [ "$(HELM_PUSH)" = true ]; then \
+		out="$$(helm push $(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz oci://$(CHART_REGISTRY))" && printf '%s\n' "$$out" && \
+		pushed="$$(printf '%s\n' "$$out" | sed -n 's/^Pushed: //p')" && digest="$$(printf '%s\n' "$$out" | sed -n 's/^Digest: //p')" && \
+		[ "$$pushed" = $(CHART_REGISTRY)/lodia:$(CHART_VERSION) ] && [ "$$(printf '%s\n' "$$digest" | grep -c .)" = 1 ] && printf '%s\n' "$$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "helm push printed pushed [$$pushed] and digest [$$digest], want $(CHART_REGISTRY)/lodia:$(CHART_VERSION) and one digest"; exit 1; }; \
+		echo "CHART_IMAGE=$(CHART_REGISTRY)/lodia@$$digest" > $(CHART_ENV); \
+	fi
+
+.PHONY: release-render-check
+release-render-check: ## fail unless the default render of CHART, a packaged chart, names exactly the three references of $(IMAGES_ENV), as the images of the operator, the signer and the tunnel
+	@[ "$(CHART)" != charts/lodia ] || { echo "usage: make release-render-check CHART=<packaged chart>"; exit 1; }
+	. $(IMAGES_ENV) && \
+	want="$$(printf '%s\n' "$$LODIA_IMAGE" "$$SIGNER_IMAGE" "$$TUNNEL_IMAGE" | sort)" && \
+	got="$$(helm template lodia $(CHART) --namespace lodia-system | grep -o 'ghcr\.io/lodia-io/[^"[:space:]]*' | sort)"; \
+	[ "$$got" = "$$want" ] || { printf 'the default render of %s names\n%s\nwant\n%s\n' $(CHART) "$$got" "$$want"; exit 1; }
+
+# RELEASE_DIR of its own, so that verify never leaves the digests of an image it did not push where a release's release-chart reads them.
+.PHONY: verify-release
+verify-release: TAG = v0.0.0-verify
+verify-release: RELEASE_DIR = work/verify-release
+verify-release: ## the release's images built with no push, its chart packaged with their digests and the render check of that chart
+	$(MAKE) --no-print-directory release-images TAG=$(TAG) KO_PUSH=false RELEASE_DIR=$(RELEASE_DIR)
+	$(MAKE) --no-print-directory release-chart TAG=$(TAG) RELEASE_DIR=$(RELEASE_DIR)
+	$(MAKE) --no-print-directory release-render-check CHART=$(RELEASE_DIR)/lodia-$(CHART_VERSION).tgz RELEASE_DIR=$(RELEASE_DIR)
+
 .PHONY: verify
 verify: ## the check that says a change is done
 	@before="$$(cat $(GENERATED) | cksum)"; $(MAKE) --no-print-directory generate || exit 1; \
@@ -183,7 +249,7 @@ verify: ## the check that says a change is done
 	go mod tidy -diff
 	cd api && go mod tidy -diff
 	cd test/monitoring && go mod tidy -diff
-	$(MAKE) --no-print-directory chart lint monitoring test restore-keys
+	$(MAKE) --no-print-directory chart verify-release lint monitoring test restore-keys
 
 .PHONY: e2e
 e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards
