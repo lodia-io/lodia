@@ -38,7 +38,7 @@ the same change.
   ClusterRole in `charts/lodia/files/rbac/` from the `+kubebuilder:rbac`
   markers in its package; commit the result.
 - `make verify` — the one check whose exit code says a change is done: generated files current, the three modules tidy (`.`, `api/`, which is `go.lodia.io/lodia/api`, and `test/monitoring/`), the chart linted and rendered, the release's images built for two platforms with no push and its chart packaged with their digests and rendered, golangci-lint, the metrics' golden and the alert rules checked by promtool, the rules' promtool tests, the dashboards linted by dashboard-linter, the metric names they and the rules read checked against what Lodia serves, unit and envtest tests, and the etcd keys a restore's cleanup deletes against each minor Lodia runs (`make restore-keys`); `helm`, golangci-lint, promtool and dashboard-linter are installed on their own.
-  CI runs it on every pull request.
+  CI's `verify` job runs it on every pull request, and `npx --yes --package renovate@44.257.9 -- renovate-config-validator --strict` beside it; `make verify` does not validate `.github/renovate.json5`, so run that command when the file changes.
 - `make e2e` — the suite in `test/e2e` against `E2E_KUBECONFIG`, or against a
   kind cluster of its own that it deletes afterwards; it refuses any other
   cluster (`docs/decisions/e2e-on-a-named-cluster.md`).
