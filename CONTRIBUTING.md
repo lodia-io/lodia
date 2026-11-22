@@ -58,6 +58,7 @@ A release is two signed annotated tags at one commit, `v<version>` and `api/v<ve
 
 The first release stops at the anonymous pull, with the four packages `lodia`, `lodia-signer`, `lodia-tunnel` and `charts/lodia` pushed and private.
 Make each public in its package settings (Danger Zone, Change visibility), then re-run the job on the same tag.
+The chart is reproducible, so the re-run pushes the chart digest the first run pushed ([releases-and-support](docs/decisions/releases-and-support.md)).
 A run that finds any package private stops there again.
 
 A run that fails:
@@ -65,5 +66,8 @@ A run that fails:
 - The tag check refused it on what GitHub says, a `ci.yml` run or a nightly that is not green: re-run the job once that is green, since the run pushed nothing.
   A refusal on the commit's content never reaches the workflow, because `make release-check` refuses it before the push.
 - Any other failure: fix it on `main` and cut the next pre-release the same way, `v0.1.0-alpha.2` after `v0.1.0-alpha.1`.
+  Its docs pull request also moves the version in the status line of `README.md` and in the first release's entry of `docs/roadmap.md`, which still name the failed tag and which nothing checks.
   The failed tags stay, because the tag ruleset `release-tags` blocks moving and deleting them.
-  Delete the failed run's versions from the four packages by hand, with a token that has `delete:packages` ([the endpoint](https://github.com/github/rest-api-description/blob/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.2022-11-28.yaml#L41855-L41859)), so that no unsigned, unreleased chart stays installable.
+  Delete the failed run's versions from the four packages by hand, with a classic token that has `read:packages` and `delete:packages` ([the endpoint](https://github.com/github/rest-api-description/blob/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.2022-11-28.yaml#L41855-L41859)), so that no unsigned, unreleased chart stays installable.
+  A package whose last tagged version GitHub refuses to delete (`You cannot delete the last tagged version of a package. You must delete the package instead.`) is deleted whole, which is every package after a failed first release.
+  Its next push creates it private again, so the next release's run stops at the anonymous pull as the first did: make it public again before that run.

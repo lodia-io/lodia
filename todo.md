@@ -291,5 +291,4 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - An upgrade e2e from the previous release's chart, once a second release exists.
 - Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), and for the e2e's kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`).
 - An attested SBOM: ko pushes an SPDX SBOM beside each image, which `release.yml` neither signs nor attests.
-- A reproducible chart: its digest changes on every packaging, so a re-run republishes it under a new digest, which nothing signed before refers to.
 - etcd-druid's CRDs on a chart upgrade (the item on its chart's `crds/` directory, above) decide what a release that bumps etcd-druid says; the first release only installs.
