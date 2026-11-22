@@ -40,3 +40,30 @@ To add or change a case, edit the alert's function in `test/rules/cases_test.go`
 - [Conventional commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `chore:`.
 - Every commit is signed off: its `Signed-off-by` line certifies the [Developer Certificate of Origin](https://developercertificate.org/).
   `git commit -s` adds the line; the DCO check on a pull request refuses a commit without one.
+
+## Releasing
+
+A release is two signed annotated tags at one commit, `v<version>` and `api/v<version>`, which the maintainer cuts; `release.yml` runs on `v<version>` and publishes the images and the chart ([releases-and-support](docs/decisions/releases-and-support.md)).
+`make release-check` reads GitHub with `GITHUB_TOKEN`, else with the signed-in GitHub CLI's.
+
+1. Merge the pull request that names `--version <version>` in the install commands of `README.md` and `docs/README.md`.
+   It is the last merge before the tag: every nightly must have passed at the commit that gets the tag, and a later merge moves `main` past it.
+   Until the release is out, `main`'s docs name a version that does not exist yet.
+2. Run `make release-check TAG=v<version> COMMIT=<commit>`, `<commit>` being that merge.
+   It names every rule that is not met, each missing nightly among them with the command that dispatches it, `gh workflow run <file> --ref main`.
+   Dispatch them and wait for them, about two hours.
+   Once `main` has moved past the commit, a dispatch runs at the new head: re-run a red nightly of the commit with `gh run rerun <id>` instead.
+3. Tag the commit: `git tag -s -m v<version> v<version> <commit>` and `git tag -s -m api/v<version> api/v<version> <commit>`.
+4. Run `make release-check TAG=v<version> COMMIT=<commit>` until it passes, then `git push --atomic origin v<version> api/v<version>`.
+
+The first release stops at the anonymous pull, with the four packages `lodia`, `lodia-signer`, `lodia-tunnel` and `charts/lodia` pushed and private.
+Make each public in its package settings (Danger Zone, Change visibility), then re-run the job on the same tag.
+A run that finds any package private stops there again.
+
+A run that fails:
+
+- The tag check refused it on what GitHub says, a `ci.yml` run or a nightly that is not green: re-run the job once that is green, since the run pushed nothing.
+  A refusal on the commit's content never reaches the workflow, because `make release-check` refuses it before the push.
+- Any other failure: fix it on `main` and cut the next pre-release the same way, `v0.1.0-alpha.2` after `v0.1.0-alpha.1`.
+  The failed tags stay, because the tag ruleset `release-tags` blocks moving and deleting them.
+  Delete the failed run's versions from the four packages by hand, with a token that has `delete:packages` ([the endpoint](https://github.com/github/rest-api-description/blob/c9c95fe34ced05fe076001f5c55704742bc8e7f8/descriptions/api.github.com/api.github.com.2022-11-28.yaml#L41855-L41859)), so that no unsigned, unreleased chart stays installable.
