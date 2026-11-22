@@ -161,7 +161,8 @@ func nightliesAt(ctx context.Context, dir, sha string) ([]nightly, error) {
 }
 
 // An input of workflow_dispatch is part of a run's title at the defaults only
-// if the run-name states it with its default.
+// if the run-name states it with its default, and a boolean or a number is not:
+// || turns its false or 0 into the default.
 func parseNightly(file string, raw []byte) (nightly, error) {
 	var workflow struct {
 		Name    string `json:"name"`
@@ -181,13 +182,16 @@ func parseNightly(file string, raw []byte) (nightly, error) {
 		stated[m[1]] = m[2]
 	}
 	inputs := dispatchInputs(on)
-	var unstated []error
+	var refused []error
 	for _, name := range slices.Sorted(maps.Keys(inputs)) {
-		if got, ok := stated[name]; !ok || got != inputs[name] {
-			unstated = append(unstated, fmt.Errorf("the input %s of workflow_dispatch is not stated in the run-name as `${{ inputs.%s || '%s' }}`, so the title of a run at the defaults is not known", name, name, inputs[name]))
+		switch got, ok := stated[name]; {
+		case inputs[name].kind == "boolean" || inputs[name].kind == "number":
+			refused = append(refused, fmt.Errorf("the input %s of workflow_dispatch is of type %s, whose false or 0 the || in the run-name turns into the default, so a run at it would count as a run at the defaults", name, inputs[name].kind))
+		case !ok || got != inputs[name].def:
+			refused = append(refused, fmt.Errorf("the input %s of workflow_dispatch is not stated in the run-name as `${{ inputs.%s || '%s' }}`, so the title of a run at the defaults is not known", name, name, inputs[name].def))
 		}
 	}
-	if err := errors.Join(unstated...); err != nil {
+	if err := errors.Join(refused...); err != nil {
 		return nightly{}, err
 	}
 	title := workflow.Name
@@ -203,17 +207,23 @@ func parseNightly(file string, raw []byte) (nightly, error) {
 	return nightly{file: file, title: title}, nil
 }
 
-func dispatchInputs(on any) map[string]string {
+type input struct {
+	kind, def string
+}
+
+func dispatchInputs(on any) map[string]input {
 	events, _ := on.(map[string]any)
 	dispatch, _ := events["workflow_dispatch"].(map[string]any)
 	declared, _ := dispatch["inputs"].(map[string]any)
-	inputs := map[string]string{}
+	inputs := map[string]input{}
 	for name, spec := range declared {
 		fields, _ := spec.(map[string]any)
-		inputs[name] = ""
+		var in input
+		in.kind, _ = fields["type"].(string)
 		if fields["default"] != nil {
-			inputs[name] = fmt.Sprint(fields["default"])
+			in.def = fmt.Sprint(fields["default"])
 		}
+		inputs[name] = in
 	}
 	return inputs
 }
