@@ -200,6 +200,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.Spec.Endpoint.Gateway != nil {
 		read = append(read, lodiav1alpha1.ConditionRoutesReady)
 	}
+	if cp.Spec.Endpoint.LoadBalancer != nil {
+		read = append(read, lodiav1alpha1.ConditionLoadBalancerReady)
+	}
 	if err := live.Components(ctx, r.Reader, cp, read...); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -244,7 +247,8 @@ type outcome struct {
 // reconcile publishes the endpoint before it waits on anything or says what it
 // does not build, since PKI and Health need it, and a published endpoint stays
 // on every path: an apply without it would remove it. In gateway mode it also
-// reports RoutesReady, and in loadBalancer mode LoadBalancerReady.
+// reports RoutesReady, and in loadBalancer mode LoadBalancerReady, at the
+// generation it describes when a held pass leaves the Service as stored.
 func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*outcome, error) {
 	svc := service(cp)
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, svc); err != nil || held != nil {
@@ -253,7 +257,8 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 		}
 		return &outcome{endpoint: published(cp), condition: *held, routes: keptRoutes(cp, *held), balancer: balancerOf(cp, *held), requeueAfter: requeueAfter}, nil
 	}
-	if err := r.apply(ctx, cp, svc); err != nil {
+	applied, err := r.apply(ctx, cp, svc)
+	if err != nil {
 		out, err := refused(published(cp), svc, err)
 		if out != nil {
 			out.routes = keptRoutes(cp, out.condition)
@@ -264,6 +269,9 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	switch {
 	case cp.Spec.Endpoint.LoadBalancer != nil:
 		endpoint, balancer := loadBalancer(cp, svc)
+		if kept := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady); kept != nil && !applied {
+			balancer.ObservedGeneration = kept.ObservedGeneration
+		}
 		var waiting *metav1.Condition
 		if endpoint == nil {
 			waiting = new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for an address of the load balancer of Service "+svc.Name+", which LoadBalancerReady says"))
@@ -613,7 +621,7 @@ func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.Control
 		return &outcome{endpoint: endpoint, condition: *held, requeueAfter: requeueAfter}, nil
 	}
 	for _, obj := range objects {
-		if err := r.apply(ctx, cp, obj); err != nil {
+		if _, err := r.apply(ctx, cp, obj); err != nil {
 			return refused(endpoint, obj, err)
 		}
 	}
@@ -1217,25 +1225,26 @@ func (r *Reconciler) deletePodDisruptionBudgets(ctx context.Context, cp *lodiav1
 	return nil
 }
 
-// apply writes obj and fills it with the object the API server stores. A held
-// pass writes only a missing object, and fills obj with a stored one as it is.
-func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) error {
+// apply writes obj, fills it with the object the API server stores, and says
+// whether it wrote. A held pass writes only a missing object, and fills obj
+// with a stored one as it is.
+func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) (bool, error) {
 	if r.held(cp) {
 		if stored, err := r.stored(ctx, cp, obj); err != nil || stored {
-			return err
+			return false, err
 		}
 	}
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 	if err != nil {
-		return err
+		return false, err
 	}
 	delete(content, "status")
 	dropNulls(content)
 	applied := &unstructured.Unstructured{Object: content}
 	if err := r.Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-		return fmt.Errorf("apply %s %s: %w", applied.GetKind(), applied.GetName(), err)
+		return false, fmt.Errorf("apply %s %s: %w", applied.GetKind(), applied.GetName(), err)
 	}
-	return runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, obj)
+	return true, runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, obj)
 }
 
 // stored fills obj with the object stored under its name and says whether

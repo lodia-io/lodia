@@ -208,6 +208,42 @@ func TestARestartBetweenTheServiceAndTheStatusLeavesThePassToTheNext(t *testing.
 	}
 }
 
+func TestAHeldPassLeavesLoadBalancerReadyAtTheGenerationItDescribes(t *testing.T) {
+	cp := running(t, atLBAddress)
+	testenv.Eventually(t, func() error {
+		return expectBalancer(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, of+" reports endpoint.loadBalancer.host "+lbAddress)
+	})
+	described := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady).ObservedGeneration
+	pause(t, cp)
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.Endpoint.LoadBalancer.SourceRanges = []lodiav1alpha1.CIDR{"198.51.100.0/24"}
+	})
+	lagging := unpaused(func(_ client.ObjectKey, obj client.Object) {
+		if cached, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
+			meta.RemoveStatusCondition(&cached.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
+		}
+	})
+	passOf(t, operatorAt(lagging, next), cp)
+	if svc := getService(t, cp); len(svc.Spec.LoadBalancerSourceRanges) != 0 {
+		t.Fatalf("a held pass applied the source ranges %v", svc.Spec.LoadBalancerSourceRanges)
+	}
+	fresh := get(t, cp)
+	if b := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady); b == nil || b.Reason != lodiav1alpha1.ReasonReady || b.ObservedGeneration != described {
+		t.Errorf("a held pass at generation %d that left the Service as stored wrote LoadBalancerReady %+v, want Ready at generation %d", fresh.Generation, b, described)
+	}
+
+	if err := k8s.Delete(t.Context(), getService(t, cp)); err != nil {
+		t.Fatal(err)
+	}
+	passOf(t, operatorAt(lagging, next), cp)
+	if svc := getService(t, cp); !slices.Equal(svc.Spec.LoadBalancerSourceRanges, []string{"198.51.100.0/24"}) {
+		t.Fatalf("a held pass wrote the missing Service with the source ranges %v", svc.Spec.LoadBalancerSourceRanges)
+	}
+	if err := expectBalancer(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForLoadBalancer, of+" reports no address yet"); err != nil {
+		t.Errorf("a held pass that wrote the missing Service: %v", err)
+	}
+}
+
 func TestLoadBalancerReadyOnTheEdgesOfAPass(t *testing.T) {
 	cp := running(t, atLBAddress)
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})

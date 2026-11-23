@@ -332,7 +332,7 @@ func (r *Reconciler) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 				fmt.Sprintf("hostname %s is held by TLSRoute %s/%s on Gateway %s/%s; Workloads writes no route for it until that one is gone", hostname, other.Namespace, other.Name, gw.Namespace, gw.Name)}, nil
 		}
 	}
-	err = r.apply(ctx, cp, route)
+	_, err = r.apply(ctx, cp, route)
 	// A route left at the version it was read at is nothing new for the cache.
 	if err == nil && route.ResourceVersion == stored.ResourceVersion {
 		return nil, nil
