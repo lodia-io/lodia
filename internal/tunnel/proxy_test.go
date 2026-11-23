@@ -85,17 +85,13 @@ func TestProxyAndServeCarryARequestAndItsEcho(t *testing.T) {
 
 func TestHalfCloseCrossesTheTunnelFromTheClient(t *testing.T) {
 	f := startTunnel(t, func(c *net.TCPConn) {
-		got, err := io.ReadAll(c)
-		if err != nil {
+		if _, err := io.Copy(c, c); err != nil {
 			return
 		}
-		_, _ = c.Write(append([]byte("got "), got...))
+		_, _ = c.Write([]byte("done"))
 	})
 	c := dialTCP(t, f.proxy.Listen)
-	if err := c.SetDeadline(time.Now().Add(waitFor)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.Write([]byte("request")); err != nil {
+	if err := roundTrip(c); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.CloseWrite(); err != nil {
@@ -105,7 +101,7 @@ func TestHalfCloseCrossesTheTunnelFromTheClient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "got request" {
+	if string(got) != "done" {
 		t.Fatalf("read %q", got)
 	}
 }
@@ -1113,6 +1109,12 @@ func TestProxyWithoutCertificatesSplicesAsItIsAtOnce(t *testing.T) {
 
 func TestPlainProxyCarriesAHalfCloseAndRemembersTheAddressOfItsFirstByte(t *testing.T) {
 	upstream := startPlainUpstream(t, func(c *net.TCPConn) {
+		if _, err := io.ReadFull(c, make([]byte, len("request."))); err != nil {
+			return
+		}
+		if _, err := c.Write([]byte("ok")); err != nil {
+			return
+		}
 		got, err := io.ReadAll(c)
 		if err != nil {
 			return
@@ -1136,6 +1138,15 @@ func TestPlainProxyCarriesAHalfCloseAndRemembersTheAddressOfItsFirstByte(t *test
 	if f.answered.Load() != nil {
 		t.Fatal("remembered an address before any byte came from it")
 	}
+	if _, err := c.Write([]byte(".")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.ReadFull(c, make([]byte, len("ok"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write([]byte("more")); err != nil {
+		t.Fatal(err)
+	}
 	if err := c.CloseWrite(); err != nil {
 		t.Fatal(err)
 	}
@@ -1143,7 +1154,7 @@ func TestPlainProxyCarriesAHalfCloseAndRemembersTheAddressOfItsFirstByte(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != "got request" {
+	if string(got) != "got more" {
 		t.Fatalf("read %q", got)
 	}
 	if a := f.answered.Load(); a == nil || *a != netip.MustParseAddr("127.0.0.1") {
@@ -1174,9 +1185,7 @@ func TestPlainProxyForgetsAnAddressThatEndsBeforeItsFirstByteOnlyWhileThePodWait
 			reset(t, c)
 			return
 		}
-		if got, err := io.ReadAll(c); err == nil && len(got) > 0 {
-			_, _ = c.Write(got)
-		}
+		echo(c)
 	})
 	f := startPlainProxy(t, upstream.addr, nil)
 	ended := func() bool {
@@ -1189,15 +1198,11 @@ func TestPlainProxyForgetsAnAddressThatEndsBeforeItsFirstByteOnlyWhileThePodWait
 	if err := c.SetDeadline(time.Now().Add(waitFor)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Write([]byte("hello")); err != nil {
+	if err := roundTrip(c); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.CloseWrite(); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := io.ReadAll(c); err != nil || string(got) != "hello" {
-		t.Fatalf("read %q, %v", got, err)
-	}
+	_ = c.Close()
+	eventually(t, "the connection to end", ended)
 	remembered := f.answered.Load()
 	if remembered == nil {
 		t.Fatal("remembered nothing after an answer")
@@ -1286,6 +1291,72 @@ func TestAnIdlePodDoesNotFailAnAddressThatAnswersButOneThatResetsAsItAccepts(t *
 	}
 	if a := f.failed.Load(); a == nil || *a != *remembered {
 		t.Fatalf("stepping past %v, want %v", a, *remembered)
+	}
+}
+
+func TestAPodThatGivesUpOnASilentUpstreamFreesItsSlot(t *testing.T) {
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	upstream := startPlainUpstream(t, func(c *net.TCPConn) { <-hold })
+	f := startPlainProxy(t, upstream.addr, nil)
+	total := func() int {
+		f.limits.mu.Lock()
+		defer f.limits.mu.Unlock()
+		return f.limits.total
+	}
+
+	for range 5 {
+		c := dialTCP(t, f.Listen)
+		if _, err := c.Write([]byte("client hello")); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		_ = c.Close()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for total() != 0 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := total(); got != 0 {
+		t.Fatalf("%d connections still held 3 s after their pods closed", got)
+	}
+	if f.answered.Load() != nil || f.failed.Load() != nil {
+		t.Fatalf("pods that gave up remembered %v and failed %v", f.answered.Load(), f.failed.Load())
+	}
+}
+
+func TestAPodThatGivesUpOnASilentUpstreamFreesItsSlotAndItsSessionThroughTheTunnel(t *testing.T) {
+	for name, end := range map[string]func(*net.TCPConn){
+		"closes": func(c *net.TCPConn) { _ = c.Close() },
+		"resets": func(c *net.TCPConn) { reset(t, c) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			hold := make(chan struct{})
+			t.Cleanup(func() { close(hold) })
+			upstream := startPlainUpstream(t, func(*net.TCPConn) { <-hold })
+			f := startTunnelTo(t, upstream.addr)
+
+			var pods []*net.TCPConn
+			for range 5 {
+				c := dialTCP(t, f.proxy.Listen)
+				if _, err := c.Write([]byte("client hello")); err != nil {
+					t.Fatal(err)
+				}
+				pods = append(pods, c)
+			}
+			eventually(t, "the upstream to accept each", func() bool { return upstream.accepted.Load() == 5 })
+			for _, c := range pods {
+				end(c)
+			}
+			eventually(t, "every slot of the proxy and session of the server to free", func() bool {
+				f.proxy.limits.mu.Lock()
+				defer f.proxy.limits.mu.Unlock()
+				return f.proxy.limits.total == 0 && f.server.sessions.Load() == 0
+			})
+			if n, m := f.proxy.logs.count("connection failed"), f.server.logs.count("session failed"); n+m != 0 {
+				t.Fatalf("pods that gave up logged %d failures by the proxy and %d by the server:\n%s\n%s", n, m, f.proxy.logs, f.server.logs)
+			}
+		})
 	}
 }
 

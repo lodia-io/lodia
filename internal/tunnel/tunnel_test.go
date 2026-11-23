@@ -224,6 +224,7 @@ type fakeConn struct {
 	net.Conn
 	read          func(p []byte) (int, error)
 	writeErr      error
+	okBytes       int64
 	closeWriteErr error
 	written       atomic.Int64
 	closes        atomic.Int64
@@ -233,7 +234,7 @@ type fakeConn struct {
 func (c *fakeConn) Read(p []byte) (int, error) { return c.read(p) }
 
 func (c *fakeConn) Write(p []byte) (int, error) {
-	if c.writeErr != nil {
+	if c.writeErr != nil && c.written.Load() >= c.okBytes {
 		return 0, c.writeErr
 	}
 	c.written.Add(int64(len(p)))
@@ -271,7 +272,8 @@ func TestASpliceCopiesThroughPooledBuffers(t *testing.T) {
 			return copy(p, "payload"), nil
 		}
 	}
-	a, b := &fakeConn{read: source()}, &fakeConn{read: source()}
+	a, b := &fakeConn{}, &fakeConn{read: source()}
+	a.read = afterAnswer(a, source())
 	if err := splice(context.Background(), discardLog(), a, b); err != nil {
 		t.Fatal(err)
 	}
@@ -378,9 +380,35 @@ func blockedUntil(release <-chan struct{}) func([]byte) (int, error) {
 func afterHalfClose(c *fakeConn, read func(p []byte) (int, error)) func(p []byte) (int, error) {
 	return func(p []byte) (int, error) {
 		for c.closeWrite.Load() == 0 {
+			if c.closes.Load() != 0 {
+				return 0, net.ErrClosed
+			}
 			time.Sleep(time.Millisecond)
 		}
 		return read(p)
+	}
+}
+
+func afterAnswer(c *fakeConn, read func(p []byte) (int, error)) func(p []byte) (int, error) {
+	return func(p []byte) (int, error) {
+		for c.written.Load() == 0 {
+			if c.closes.Load() != 0 {
+				return 0, net.ErrClosed
+			}
+			time.Sleep(time.Millisecond)
+		}
+		return read(p)
+	}
+}
+
+func oneByteThen(read func(p []byte) (int, error)) func(p []byte) (int, error) {
+	sent := false
+	return func(p []byte) (int, error) {
+		if sent {
+			return read(p)
+		}
+		sent = true
+		return copy(p, "a"), nil
 	}
 }
 
@@ -391,17 +419,21 @@ type spliceScenario struct {
 
 var afterACleanEnd = map[string]spliceScenario{
 	"the downstream ended, a read of the upstream": {false, func(err error, _ <-chan struct{}) (*fakeConn, *fakeConn) {
-		up := &fakeConn{}
-		up.read = afterHalfClose(up, failWith(err))
-		return &fakeConn{read: cleanEOF}, up
+		down, up := &fakeConn{}, &fakeConn{}
+		down.read = afterAnswer(down, cleanEOF)
+		up.read = oneByteThen(afterHalfClose(up, failWith(err)))
+		return down, up
 	}},
 	"the downstream ended, a write to the downstream": {true, func(err error, _ <-chan struct{}) (*fakeConn, *fakeConn) {
-		up := &fakeConn{}
-		up.read = afterHalfClose(up, sendOnce("late"))
-		return &fakeConn{read: cleanEOF, writeErr: err}, up
+		down, up := &fakeConn{writeErr: err, okBytes: 1}, &fakeConn{}
+		down.read = afterAnswer(down, cleanEOF)
+		up.read = oneByteThen(afterHalfClose(up, sendOnce("late")))
+		return down, up
 	}},
 	"the downstream ended, the half-close of the upstream": {false, func(err error, release <-chan struct{}) (*fakeConn, *fakeConn) {
-		return &fakeConn{read: cleanEOF}, &fakeConn{read: blockedUntil(release), closeWriteErr: err}
+		down := &fakeConn{}
+		down.read = afterAnswer(down, cleanEOF)
+		return down, &fakeConn{read: oneByteThen(blockedUntil(release)), closeWriteErr: err}
 	}},
 	"the upstream ended, a read of the downstream": {true, func(err error, _ <-chan struct{}) (*fakeConn, *fakeConn) {
 		down := &fakeConn{}
@@ -505,4 +537,26 @@ func TestASpliceReportsTheTeardownOfTheUpstreamLegBeforeAnyCleanEnd(t *testing.T
 func TestASpliceReportsAnUnrelatedErrorOfEitherLegBeforeOrAfterACleanEnd(t *testing.T) {
 	eachSplice(t, beforeAnyEnd, nil, unrelatedErrors(), requireFailure)
 	eachSplice(t, afterACleanEnd, nil, unrelatedErrors(), requireFailure)
+}
+
+func TestASpliceClosesBothAtOnceWhenTheDownstreamEndsBeforeTheUpstreamsFirstByte(t *testing.T) {
+	for name, read := range map[string]func(p []byte) (int, error){
+		"having sent nothing": cleanEOF,
+		"having sent a byte":  oneByteThen(cleanEOF),
+	} {
+		t.Run(name, func(t *testing.T) {
+			release := make(chan struct{})
+			downstream, upstream := &fakeConn{read: read}, &fakeConn{read: blockedUntil(release)}
+			done := make(chan error, 1)
+			go func() { done <- splice(context.Background(), discardLog(), downstream, upstream) }()
+			eventually(t, "both sides closed", func() bool { return downstream.closes.Load() == 1 && upstream.closes.Load() == 1 })
+			close(release)
+			if err := <-done; err != nil {
+				t.Fatalf("splice returned %v, want no failure", err)
+			}
+			if n := upstream.closeWrite.Load(); n != 0 {
+				t.Fatalf("the downstream's end was passed on as a half-close %d times", n)
+			}
+		})
+	}
 }
