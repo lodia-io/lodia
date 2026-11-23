@@ -48,7 +48,7 @@ The bounded reads of a tenant, Health's, Tenant's and PKI's, and the chart's pol
 - A compromised control plane pod reaches the management network, since its egress is not denied yet (`todo.md`).
 - The issuers of a tenant's JWT authenticators, which its administrator may name, are fetched through the tenant's nodes, never from the management network ([structured-authentication](structured-authentication.md)).
 - The confirmation stops a wrong selector or a prune, not a person who annotates first: a management cluster administrator can also weaken the policies ([no-admission-webhooks](no-admission-webhooks.md#consequences)).
-- A Helm uninstall meets the CRD's confirmation once at most: with `crds.keep=false` its first run is refused there and a second one is not, and with `crds.keep=true` it removes the policies ([the chart](../README.md#installation)).
+- A Helm uninstall keeps every CRD and every object of theirs, and deletes the policies: until the chart is installed again nothing refuses a delete ([the chart](../README.md#installation)).
 - Item 10 of the [review checklist](../review-checklist.md) checks every change against it.
 
 ## Code

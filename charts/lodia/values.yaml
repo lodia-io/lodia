@@ -15,7 +15,6 @@ tunnelImage:
 
 crds:
   enabled: true
-  keep: true
 
 etcdDruid:
   enabled: true

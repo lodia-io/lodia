@@ -119,7 +119,7 @@ kubectl delete customresourcedefinition controlplanes.lodia.io
 ```
 
 No other CRD is guarded, and nothing clears the annotation.
-A Helm uninstall deletes the CRD or keeps it: [what the gate does then](README.md#installation).
+No uninstall or upgrade of the chart deletes a CRD ([the chart](README.md#installation)).
 
 ### Deleting a namespace that holds tenants
 
