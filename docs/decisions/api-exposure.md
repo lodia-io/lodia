@@ -152,7 +152,7 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 
 - Agents share the passthrough listener on 443: the konnectivity agent sends its `--proxy-server-host` as SNI ([hard way, spike c](https://github.com/lodia-io/lodia/blob/005734e/docs/hard-way.md#c-spike-does-the-konnectivity-agent-send-sni)).
   Go sends no SNI for an IP address ([`hostnameInSNI`](https://github.com/golang/go/blob/go1.26.10/src/crypto/tls/handshake_client.go#L1305-L1315)), so agents dial `konnectivity.<cp>` by name.
-- `apiserver-proxy` runs on every node of a tenant whose pods do not dial an IP `host`; its scope is exactly one address and one listener, and it is in the inventory like every other in-tenant object.
+- `apiserver-proxy` runs on every node of a `gateway` tenant and of a `loadBalancer` tenant whose `host` is not an IP address; its scope is exactly one address and one listener, and it is in the inventory like every other in-tenant object.
 - The tunnel adds a second TLS session to every in-cluster API connection, not to kubelets or users; the phase 2 gate measures the overhead.
 - A `ControlPlane` keeps its advertise address for life, and two whose hostnames collide stop the younger one's routes, not the Gateway.
 - `spec.endpoint` does not change after creation in `v1alpha1` but for a load balancer's `annotations` and `sourceRanges`; moving between modes, or to another `loadBalancer.host`, changes the address in every kubeconfig and node.
