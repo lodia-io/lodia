@@ -128,12 +128,13 @@ func TestKubeProxyServesItsHealthOnTheAddressGiven(t *testing.T) {
 		cp := &lodiav1alpha1.ControlPlane{
 			ObjectMeta: metav1.ObjectMeta{Name: "dev"},
 			Spec: lodiav1alpha1.ControlPlaneSpec{
-				Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-				Addons:  &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{HealthzBindAddress: address}},
+				Endpoint: lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "203.0.113.10"}},
+				Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+				Addons:   &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{HealthzBindAddress: address}},
 			},
 			Status: lodiav1alpha1.ControlPlaneStatus{
 				Target:   &lodiav1alpha1.Target{Version: "v1.35.8"},
-				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
 			},
 		}
 		v, waiting, err := newValues(cp, nil)
@@ -565,10 +566,13 @@ func reporting(target, apiServer, controllerManager, scheduler string) *lodiav1a
 	}
 	return &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
-		Spec:       lodiav1alpha1.ControlPlaneSpec{Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Endpoint: lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "203.0.113.10"}},
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+		},
 		Status: lodiav1alpha1.ControlPlaneStatus{
 			Target:     &lodiav1alpha1.Target{Version: target},
-			Endpoint:   &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+			Endpoint:   &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
 			Components: &lodiav1alpha1.ComponentsStatus{APIServer: component(apiServer), ControllerManager: component(controllerManager), Scheduler: component(scheduler)},
 		},
 	}
