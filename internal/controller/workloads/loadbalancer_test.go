@@ -290,6 +290,36 @@ func TestAHeldPassKeepsARefusalOfAServiceItDidNotApply(t *testing.T) {
 	}
 }
 
+func TestAHeldPassAfterTheServiceIsReleasedReportsItsLoadBalancer(t *testing.T) {
+	cp := running(t, atLBAddress)
+	testenv.Eventually(t, func() error {
+		return expectBalancer(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, of+" reports endpoint.loadBalancer.host "+lbAddress)
+	})
+	pause(t, cp)
+	setOwners := func(refs []metav1.OwnerReference) {
+		testenv.Eventually(t, func() error {
+			svc := getService(t, cp)
+			svc.OwnerReferences = refs
+			return k8s.Update(t.Context(), svc)
+		})
+	}
+	setOwners([]metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "someone", UID: types.UID("0f1e2d3c-4b5a-4968-8776-5a4b3c2d1e0f"), Controller: new(true)}})
+	passOf(t, operatorAt(unpaused(), revision), cp)
+	elsewhere := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
+	if elsewhere == nil || elsewhere.Reason != lodiav1alpha1.ReasonObjectsControlledElsewhere {
+		t.Fatalf("LoadBalancerReady is %+v, want ObjectsControlledElsewhere", elsewhere)
+	}
+	setOwners(nil)
+	passOf(t, operatorAt(unpaused(), next), cp)
+	if svc := getService(t, cp); len(svc.OwnerReferences) != 0 {
+		t.Fatalf("the held pass wrote the Service: owners %v", svc.OwnerReferences)
+	}
+	held := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
+	if held.Status != metav1.ConditionTrue || held.Reason != lodiav1alpha1.ReasonReady || held.ObservedGeneration != elsewhere.ObservedGeneration {
+		t.Errorf("a held pass after the Service was released wrote LoadBalancerReady %+v, want the stored Service's Ready at generation %d", held, elsewhere.ObservedGeneration)
+	}
+}
+
 func TestAHeldPassLeavesLoadBalancerReadyAtTheGenerationItDescribes(t *testing.T) {
 	cp := running(t, atLBAddress)
 	testenv.Eventually(t, func() error {

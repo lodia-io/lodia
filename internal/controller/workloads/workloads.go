@@ -270,10 +270,9 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	case cp.Spec.Endpoint.LoadBalancer != nil:
 		endpoint, balancer := loadBalancer(cp, svc)
 		if kept := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady); kept != nil && !applied {
-			switch kept.Reason {
-			case lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere:
+			if kept.Reason == lodiav1alpha1.ReasonRefused {
 				balancer = *kept.DeepCopy()
-			default:
+			} else {
 				balancer.ObservedGeneration = kept.ObservedGeneration
 			}
 		}
