@@ -819,13 +819,21 @@ func cached(obj client.Object) client.Object {
 	}
 }
 
-// published is the endpoint of a pass that learns nothing of the address: the
-// one endpoint.loadBalancer.host names, or else the one published.
+// published is the endpoint of a pass that learns nothing of the address: in
+// loadBalancer mode the one at endpoint.loadBalancer.host, or else at the host
+// published, built again since the rest follows from the spec; in the other
+// modes the one published.
 func published(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.EndpointStatus {
-	if lb := cp.Spec.Endpoint.LoadBalancer; lb != nil && lb.Host != "" {
+	lb := cp.Spec.Endpoint.LoadBalancer
+	switch {
+	case lb == nil:
+		return cp.Status.Endpoint
+	case lb.Host != "":
 		return atHost(cp, string(lb.Host))
+	case cp.Status.Endpoint != nil:
+		return atHost(cp, cp.Status.Endpoint.APIServer.Host)
 	}
-	return cp.Status.Endpoint
+	return nil
 }
 
 // atHost is a load balancer's endpoint at host: the tenant's pods dial host

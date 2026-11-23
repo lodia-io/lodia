@@ -175,6 +175,56 @@ func TestADiscoveredAddressStaysThroughWhatTheLoadBalancerReportsUntilAnotherRep
 	}
 }
 
+func TestAKeptDiscoveredAddressIsRebuiltInTheSpecsShapeOnEveryPass(t *testing.T) {
+	cp := running(t)
+	want := lodiav1alpha1.EndpointStatus{
+		APIServer:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 443},
+		Konnectivity: lodiav1alpha1.HostPort{Host: lbAddress, Port: 8132},
+		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
+	}
+	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+		t.Fatalf("status.endpoint is %+v, want %+v", e, want)
+	}
+	pause(t, cp)
+	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
+		"apiServer":    map[string]any{"host": lbAddress, "port": int64(443)},
+		"konnectivity": map[string]any{"host": lbAddress, "port": int64(443)},
+		"inCluster":    map[string]any{"host": lbAddress, "port": int64(6443)},
+	}})
+	for exit, funcs := range map[string]interceptor.Funcs{
+		"a pass": {},
+		"held": {Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if svc, ok := obj.(*corev1.Service); ok {
+				svc.OwnerReferences = []metav1.OwnerReference{foreignController()}
+			}
+			return nil
+		}},
+		"refused": {Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if kindOf(t, obj) == "Service" {
+				return apierrors.NewForbidden(corev1.Resource("services"), lodiav1alpha1.APIServerServiceName(cp.Name), errors.New("denied by a policy"))
+			}
+			return c.Apply(ctx, obj, opts...)
+		}},
+	} {
+		t.Run(exit, func(t *testing.T) {
+			var applied *lodiav1alpha1.ControlPlane
+			r := operatorAt(applying(t, interceptor.NewClient(unpaused(), funcs), &applied), revision)
+			if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil && !apistatus.Refused(err) {
+				t.Fatal(err)
+			}
+			if applied == nil {
+				t.Fatal("the pass applied no status")
+			}
+			if e := applied.Status.Endpoint; e == nil || *e != want {
+				t.Errorf("over a stored endpoint of another shape at the host the load balancer reports, the pass applied %+v, want %+v", e, want)
+			}
+		})
+	}
+}
+
 func TestARestartBetweenTheServiceAndTheStatusLeavesThePassToTheNext(t *testing.T) {
 	cp := controlPlane(t, loadBalancer(), atLBAddress)
 	setTarget(t, cp)
