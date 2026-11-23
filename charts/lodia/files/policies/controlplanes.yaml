@@ -40,7 +40,11 @@ spec:
         apiVersions: ["*"]
         operations: [DELETE]
         resources: [customresourcedefinitions]
-        resourceNames: [controlplanes.lodia.io]
+  # Not resourceNames: each item of a collection's delete reaches admission
+  # with an empty name, which resourceNames never matches.
+  matchConditions:
+    - name: controlplanes-crd
+      expression: oldObject.metadata.name == 'controlplanes.lodia.io'
   validations:
     - expression: oldObject.metadata.?annotations['lodia.io/deletion-confirmed'].orValue('') == 'true'
       messageExpression: >-

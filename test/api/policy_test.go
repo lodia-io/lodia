@@ -600,6 +600,19 @@ func TestTheControlPlaneCRDIsDeletedOnlyOnceConfirmed(t *testing.T) {
 			t.Fatalf("want admitted, got %v", err)
 		}
 	})
+
+	t.Run("a collection's delete", func(t *testing.T) {
+		annotate(t, nil)
+		collection := func(name string) error {
+			return k8s.DeleteAllOf(ctx, &apiextensionsv1.CustomResourceDefinition{}, client.DryRunAll, client.MatchingFields{"metadata.name": name})
+		}
+		if err := collection(crdName); !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), message) {
+			t.Fatalf("want Forbidden with %q, got %v", message, err)
+		}
+		if err := collection(otherCRD); err != nil {
+			t.Fatalf("want the collection of %s admitted, got %v", otherCRD, err)
+		}
+	})
 }
 
 func TestTheNamespacePolicyOfOperationsRefusesTheDeletionOfATenantNamespaceUnlessConfirmed(t *testing.T) {
