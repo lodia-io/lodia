@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -163,6 +164,13 @@ func (f *dialFixture) resetting() func(ctx context.Context) (conn, error) {
 	return f.net.serving(func(c net.Conn) { _ = c.Close() })
 }
 
+func (f *dialFixture) closingAfter(wait time.Duration) func(ctx context.Context) (conn, error) {
+	return f.net.serving(func(c net.Conn) {
+		time.Sleep(wait)
+		_ = c.Close()
+	})
+}
+
 func (f *dialFixture) stalling() func(ctx context.Context) (conn, error) {
 	return f.net.serving(func(c net.Conn) {
 		defer func() { _ = c.Close() }()
@@ -182,6 +190,20 @@ func (f *dialFixture) dial(t *testing.T) (time.Duration, error) {
 		_, _ = upstream.Read(make([]byte, 1))
 	}
 	return took, nil
+}
+
+func (f *dialFixture) answers(t *testing.T) bool {
+	t.Helper()
+	upstream, err := f.dialUpstream(context.Background())
+	if err != nil {
+		return false
+	}
+	defer func() { _ = upstream.Close() }()
+	if f.tunneled() {
+		return true
+	}
+	n, _ := upstream.Read(make([]byte, 1))
+	return n > 0
 }
 
 func (f *dialFixture) mustDial(t *testing.T) time.Duration {
@@ -549,6 +571,231 @@ func TestConnectionsThatAnswerAndFailAtOnceRememberOnlyAnAddressThatAnswered(t *
 		watcher.Wait()
 		if got := f.lastAnswered(); got != live1 && got != live2 {
 			t.Fatalf("remembered %v, want an address that answered", got)
+		}
+	})
+}
+
+func TestARememberedAddressThatStartsToResetIsLeftForOneThatAnswers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newDialFixture(t, false, live1, live2)
+		defer f.net.closeAll()
+		f.net.set(live1, f.answering())
+		f.net.set(live2, f.answering())
+		f.mustDial(t)
+		if got := f.lastAnswered(); got != live1 {
+			t.Fatalf("remembered %v, want %v", got, live1)
+		}
+
+		f.net.set(live1, f.resetting())
+		for i := range 5 {
+			f.net.forget()
+			upstream, err := f.dialUpstream(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			n, _ := upstream.Read(make([]byte, 1))
+			_ = upstream.Close()
+			if n == 0 && i > 0 {
+				t.Fatalf("connection %d: attempts %v, the remembered %v still first and it sent nothing", i, f.net.attempts(), f.lastAnswered())
+			}
+		}
+	})
+}
+
+func TestARememberedTunnelThatStartsToStallIsLeftForOneThatAnswers(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newDialFixture(t, true, live1, live2)
+		defer f.net.closeAll()
+		f.net.set(live1, f.answering())
+		f.net.set(live2, f.answering())
+		f.mustDial(t)
+
+		f.net.set(live1, f.stalling())
+		for i := range 3 {
+			f.net.forget()
+			if _, err := f.dial(t); err != nil && i > 0 {
+				t.Fatalf("connection %d: attempts %v, failed with %v, the remembered %v still first", i, f.net.attempts(), err, f.lastAnswered())
+			}
+		}
+	})
+}
+
+func TestEachAddressThatFailsAfterItsConnectIsSteppedPastByTheNextConnection(t *testing.T) {
+	eachMode(t, func(t *testing.T, tunnel bool) {
+		f := newDialFixture(t, tunnel, dead1, dead2, live1)
+		defer f.net.closeAll()
+		failing := f.resetting()
+		if tunnel {
+			failing = f.stalling()
+		}
+		f.net.set(dead1, failing)
+		f.net.set(dead2, failing)
+		f.net.set(live1, f.answering())
+
+		for i, want := range []struct {
+			addr     netip.Addr
+			answered bool
+		}{{dead1, false}, {dead2, false}, {live1, true}, {live1, true}} {
+			f.net.forget()
+			if got := f.answers(t); got != want.answered {
+				t.Fatalf("connection %d answered %t, want %t", i, got, want.answered)
+			}
+			requireAttempts(t, f, want.addr)
+		}
+	})
+}
+
+func TestAFailureAfterTheConnectNeverUndoesANewerAnswer(t *testing.T) {
+	for name, newer := range map[string]netip.Addr{"from another address": live2, "from the same address": live1} {
+		t.Run(name, func(t *testing.T) {
+			eachMode(t, func(t *testing.T, tunnel bool) {
+				f := newDialFixture(t, tunnel, live1)
+				defer f.net.closeAll()
+				f.net.set(live1, f.answering())
+				f.net.set(live2, f.answering())
+				f.mustDial(t)
+
+				f.net.set(live1, f.closingAfter(time.Second))
+				var failing sync.WaitGroup
+				failing.Go(func() {
+					if f.answers(t) {
+						t.Error("a connection to an address that closes before it answers answered")
+					}
+				})
+				time.Sleep(time.Second / 2)
+				f.net.set(live1, f.answering())
+				f.addrs.Store(&[]netip.Addr{newer})
+				f.mustDial(t)
+				failing.Wait()
+				if got := f.lastAnswered(); got != newer {
+					t.Fatalf("remembered %v after an older connection failed, want %v", got, newer)
+				}
+			})
+		})
+	}
+}
+
+func TestAFailureAtAnotherAddressLeavesTheRememberedOne(t *testing.T) {
+	eachMode(t, func(t *testing.T, tunnel bool) {
+		f := newDialFixture(t, tunnel, live1)
+		defer f.net.closeAll()
+		f.net.set(live1, f.answering())
+		f.net.set(dead1, f.resetting())
+		f.mustDial(t)
+		remembered := f.answered.Load()
+
+		f.addrs.Store(&[]netip.Addr{dead1})
+		if f.answers(t) {
+			t.Fatal("a connection to an address that resets answered")
+		}
+		if f.answered.Load() != remembered {
+			t.Fatalf("remembered %v after another address failed, want %v", f.lastAnswered(), live1)
+		}
+		f.addrs.Store(&[]netip.Addr{dead1, live1})
+		f.net.forget()
+		f.mustDial(t)
+		requireAttempts(t, f, live1)
+	})
+}
+
+func TestAConnectionThatEndsAfterItsFirstByteFailsNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newDialFixture(t, false, live1, live2)
+		defer f.net.closeAll()
+		f.net.set(live1, f.answering())
+		f.mustDial(t)
+
+		upstream, err := f.dialUpstream(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, err := io.ReadAll(upstream); err != nil || string(got) != "k" {
+			t.Fatalf("read %q, %v", got, err)
+		}
+		if got := f.lastAnswered(); got != live1 {
+			t.Fatalf("remembered %v once the connection ended, want %v", got, live1)
+		}
+		if f.failed.Load() != nil {
+			t.Fatalf("stepping past %v, which answered", *f.failed.Load())
+		}
+	})
+}
+
+func TestConnectionsThatAnswerAndFailAfterTheirConnectAtOnce(t *testing.T) {
+	eachMode(t, func(t *testing.T, tunnel bool) {
+		f := newDialFixture(t, tunnel, live1, live2, dead1, dead2)
+		defer f.net.closeAll()
+		answering, failing := f.answeringAfter(100*time.Millisecond), f.closingAfter(100*time.Millisecond)
+		var turns atomic.Int64
+		f.net.set(live1, f.answering())
+		f.net.set(live2, func(ctx context.Context) (conn, error) {
+			if turns.Add(1)%2 == 0 {
+				return failing(ctx)
+			}
+			return answering(ctx)
+		})
+		f.net.set(dead1, failing)
+		f.net.set(dead2, refused)
+
+		stop := make(chan struct{})
+		var watcher sync.WaitGroup
+		watcher.Go(func() {
+			for {
+				if a := f.answered.Load(); a != nil && *a != live1 && *a != live2 {
+					t.Errorf("remembered %v, which never answered", *a)
+					return
+				}
+				if a := f.failed.Load(); a != nil && *a != live2 && *a != dead1 {
+					t.Errorf("stepping past %v, which never failed after its connect", *a)
+					return
+				}
+				select {
+				case <-stop:
+					return
+				case <-time.After(10 * time.Millisecond):
+				}
+			}
+		})
+		orders := [][]netip.Addr{{live2, dead1, live1, dead2}, {dead1, live2, dead2, live1}, {live1, live2, dead1, dead2}, {dead2, dead1, live2, live1}}
+		var answered atomic.Int64
+		var dials sync.WaitGroup
+		for i := range 60 {
+			dials.Go(func() {
+				time.Sleep(time.Duration(i%9) * 50 * time.Millisecond)
+				f.addrs.Store(&orders[i%len(orders)])
+				if f.answers(t) {
+					answered.Add(1)
+				} else if tunnel {
+					t.Errorf("dial %d failed with an answering address in reach", i)
+				}
+			})
+		}
+		dials.Wait()
+		close(stop)
+		watcher.Wait()
+		if answered.Load() == 0 {
+			t.Fatal("no connection answered")
+		}
+	})
+}
+
+func TestAHandshakeThatFailsClosesItsConnection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		f := newDialFixture(t, true, dead1, live1)
+		defer f.net.closeAll()
+		closed := make(chan struct{})
+		f.net.set(dead1, f.net.serving(func(c net.Conn) {
+			go func() { _, _ = c.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n")) }()
+			_, _ = io.Copy(io.Discard, c)
+			close(closed)
+		}))
+		f.net.set(live1, f.answering())
+		f.mustDial(t)
+		requireAttempts(t, f, dead1, live1)
+		select {
+		case <-closed:
+		case <-time.After(time.Minute):
+			t.Fatal("the connection whose handshake failed is still open")
 		}
 	})
 }

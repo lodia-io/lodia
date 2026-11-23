@@ -1167,6 +1167,71 @@ func TestPlainProxyDoesNotRememberAnAddressThatAcceptsAndResets(t *testing.T) {
 	}
 }
 
+func TestPlainProxyForgetsAnAddressThatEndsBeforeItsFirstByteOnlyWhileThePodWaits(t *testing.T) {
+	var resetting atomic.Bool
+	upstream := startPlainUpstream(t, func(c *net.TCPConn) {
+		if resetting.Load() {
+			reset(t, c)
+			return
+		}
+		if got, err := io.ReadAll(c); err == nil && len(got) > 0 {
+			_, _ = c.Write(got)
+		}
+	})
+	f := startPlainProxy(t, upstream.addr, nil)
+	ended := func() bool {
+		f.limits.mu.Lock()
+		defer f.limits.mu.Unlock()
+		return f.limits.total == 0
+	}
+
+	c := dialTCP(t, f.Listen)
+	if err := c.SetDeadline(time.Now().Add(waitFor)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := io.ReadAll(c); err != nil || string(got) != "hello" {
+		t.Fatalf("read %q, %v", got, err)
+	}
+	remembered := f.answered.Load()
+	if remembered == nil {
+		t.Fatal("remembered nothing after an answer")
+	}
+
+	for name, end := range map[string]func(*net.TCPConn){
+		"closes": func(c *net.TCPConn) { _ = c.Close() },
+		"resets": func(c *net.TCPConn) { reset(t, c) },
+	} {
+		accepted := upstream.accepted.Load()
+		c := dialTCP(t, f.Listen)
+		eventually(t, "the upstream to accept", func() bool { return upstream.accepted.Load() > accepted })
+		end(c)
+		eventually(t, "the connection to end", ended)
+		if f.answered.Load() != remembered || f.failed.Load() != nil {
+			t.Fatalf("a pod that %s its side before the upstream's first byte failed %v", name, *remembered)
+		}
+	}
+
+	resetting.Store(true)
+	c = dialTCP(t, f.Listen)
+	if _, err := c.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	requireClosed(t, c)
+	eventually(t, "the connection to end", ended)
+	if a := f.answered.Load(); a != nil {
+		t.Fatalf("still remembered %v, which reset before its first byte while the pod waited", *a)
+	}
+	if a := f.failed.Load(); a == nil || *a != *remembered {
+		t.Fatalf("stepping past %v, want %v", a, *remembered)
+	}
+}
+
 type tlsUpstream struct {
 	addr     string
 	cert     atomic.Pointer[tls.Certificate]

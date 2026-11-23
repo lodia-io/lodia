@@ -79,9 +79,13 @@ Without it, anyone who reaches the Gateway could hold the sidecar's sessions and
 **How `proxy` dials.**
 A client's TLS handshake has 10 seconds ([cache.go](https://github.com/kubernetes/client-go/blob/v0.37.1/transport/cache.go#L149)), and its clock runs while `proxy` dials, since `proxy` accepts at once: a dial has 6 seconds in all, and a TCP connect to one address at most 2, or what is left of the 6.
 `proxy` starts with the address that last answered, while its lookup still lists it, and moves on to the next when an attempt fails.
-An address has answered when the outer handshake is done, or, without the tunnel, when its first byte arrives from it: one that accepts and resets is not remembered.
-So an address that dies costs each connection begun before the first success 2 seconds, on each node, and every later connection nothing.
-The outer handshake runs within what is left of the 6 seconds, not within the 2: a tunnel that is slow and up is not cut and dialed again, and an address that accepts a connection and never answers holds it for what is left.
+An address has answered when the outer handshake is done, or, without the tunnel, when its first byte arrives from it.
+It has failed when, after its connect, the outer handshake fails, or, without the tunnel, it ends the connection before that byte while the pod's side is still open; a pod that ends its own side first fails nothing.
+A failure forgets the address if it is still the answer the connection began with, so that a newer answer stands, and later connections take the lookup's addresses from the one after it, since the connection that met it cannot always move on: without the tunnel the pod's bytes are already on their way to it, and a stalled handshake holds what is left of the 6 seconds.
+So an address that stops accepting costs each connection that dials it before another answers 2 seconds, on each node, and every later connection nothing; one that accepts and then fails costs the connections that meet it before that failure, and the next starts past it.
+A failed connect forgets nothing: if the remembered address stops accepting with two more silent addresses ahead of the next live one, every connection ends at 6 seconds while the lookup lists it.
+Without the tunnel `proxy` does not see an address that accepts and never answers: the pod's own handshake gives up first, which fails nothing.
+The outer handshake runs within what is left of the 6 seconds, not within the 2, so a tunnel that is slow and up is not cut and dialed again.
 Three silent addresses ahead of the first live one use all 6 seconds, the connection ends and no address is remembered.
 Racing the addresses a quarter of a second apart ([RFC 8305 §5](https://www.rfc-editor.org/rfc/rfc8305#section-5)) would cut the 2 seconds and lift that limit, and is left out until a measurement asks for it.
 

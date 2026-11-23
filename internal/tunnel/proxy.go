@@ -57,6 +57,7 @@ type Proxy struct {
 	port     uint16
 	addrs    atomic.Pointer[[]netip.Addr]
 	answered atomic.Pointer[netip.Addr]
+	failed   atomic.Pointer[netip.Addr]
 	sessions tls.ClientSessionCache
 	pair     *source[tls.Certificate]
 	ca       *source[x509.CertPool]
@@ -229,17 +230,20 @@ func (p *Proxy) forward(ctx context.Context, client *net.TCPConn) {
 		p.dialLog.Do(func() { p.Log.WarnContext(ctx, "upstream dial failed", "upstream", p.host, "error", err) })
 		return
 	}
-	if err := splice(ctx, p.Log, client, upstream); err != nil {
+	var downstream conn = client
+	if plain, ok := upstream.(*answering); ok {
+		downstream = plain.pod(client)
+	}
+	if err := splice(ctx, p.Log, downstream, upstream); err != nil {
 		p.spliceLog.Do(func() {
 			p.Log.WarnContext(ctx, "connection failed", "client", client.RemoteAddr().String(), "error", err)
 		})
 	}
 }
 
-// dialUpstream tries the upstream's addresses within DialTimeout, the one that
-// last answered first while the lookup still lists it, and moves on when an
-// attempt fails. DialTimeout stays under the 10 s of a client's TLS handshake,
-// which runs while this dials.
+// dialUpstream tries the upstream's addresses in turn, as order ranks them,
+// within DialTimeout, and moves on when an attempt fails. DialTimeout stays
+// under the 10 s of a client's TLS handshake, which runs while this dials.
 func (p *Proxy) dialUpstream(ctx context.Context) (conn, error) {
 	addrs := p.addrs.Load()
 	if addrs == nil || len(*addrs) == 0 {
@@ -248,9 +252,10 @@ func (p *Proxy) dialUpstream(ctx context.Context) (conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, p.DialTimeout)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
+	last := p.answered.Load()
 	var errs []error
-	for _, addr := range p.answeredFirst(*addrs) {
-		upstream, err := p.dialAddr(ctx, addr)
+	for _, addr := range order(*addrs, last, p.failed.Load()) {
+		upstream, err := p.dialAddr(ctx, addr, last)
 		if err == nil {
 			return upstream, nil
 		}
@@ -262,15 +267,20 @@ func (p *Proxy) dialUpstream(ctx context.Context) (conn, error) {
 	return nil, errors.Join(errs...)
 }
 
-func (p *Proxy) answeredFirst(addrs []netip.Addr) []netip.Addr {
-	last := p.answered.Load()
-	if last == nil || !slices.Contains(addrs, *last) {
-		return addrs
+// order is the address that last answered, while the lookup lists it, then the
+// lookup's addresses from the one after the address that last failed after its
+// connect: a connection spliced to it cannot move on, so the next starts past it.
+func order(addrs []netip.Addr, answered, failed *netip.Addr) []netip.Addr {
+	start := 0
+	if failed != nil {
+		start = slices.Index(addrs, *failed) + 1
 	}
-	ordered := make([]netip.Addr, 1, len(addrs))
-	ordered[0] = *last
-	for _, addr := range addrs {
-		if addr != *last {
+	ordered := make([]netip.Addr, 0, len(addrs))
+	if answered != nil && slices.Contains(addrs, *answered) {
+		ordered = append(ordered, *answered)
+	}
+	for i := range addrs {
+		if addr := addrs[(start+i)%len(addrs)]; answered == nil || addr != *answered {
 			ordered = append(ordered, addr)
 		}
 	}
@@ -278,10 +288,11 @@ func (p *Proxy) answeredFirst(addrs []netip.Addr) []netip.Addr {
 }
 
 // dialAddr remembers addr once it has answered: the outer handshake is done, or
-// without the tunnel its first byte has arrived, so an address that accepts and
-// resets is not remembered. The handshake runs within what is left of the total,
-// not within the attempt, so that a slow tunnel that is up is not dialed again.
-func (p *Proxy) dialAddr(ctx context.Context, addr netip.Addr) (conn, error) {
+// without the tunnel its first byte has arrived. It fails addr on a handshake's
+// error, or without the tunnel when the upstream ends before that byte. The
+// handshake runs within what is left of the total, not within the attempt, so
+// that a slow tunnel that is up is not dialed again.
+func (p *Proxy) dialAddr(ctx context.Context, addr netip.Addr, last *netip.Addr) (conn, error) {
 	attempt, cancel := context.WithTimeout(ctx, p.AttemptTimeout)
 	upstream, err := p.connect(attempt, netip.AddrPortFrom(addr, p.port))
 	cancel()
@@ -289,15 +300,30 @@ func (p *Proxy) dialAddr(ctx context.Context, addr netip.Addr) (conn, error) {
 		return nil, err
 	}
 	if !p.tunneled() {
-		return &answering{conn: upstream, answered: func() { p.answered.Store(&addr) }}, nil
+		return &answering{
+			conn:     upstream,
+			answered: func() { p.answered.Store(&addr) },
+			failed:   func() { p.fail(addr, last) },
+		}, nil
 	}
 	session := tls.Client(upstream, p.tlsConfig())
 	if err := session.HandshakeContext(ctx); err != nil {
 		_ = upstream.Close()
+		p.fail(addr, last)
 		return nil, err
 	}
 	p.answered.Store(&addr)
 	return session, nil
+}
+
+// fail starts later dials after addr, and forgets addr if it is last, the
+// address remembered when the dial began, and still remembered: a newer answer
+// is never undone.
+func (p *Proxy) fail(addr netip.Addr, last *netip.Addr) {
+	if last != nil && *last == addr {
+		p.answered.CompareAndSwap(last, nil)
+	}
+	p.failed.Store(&addr)
 }
 
 func connectTCP(ctx context.Context, addr netip.AddrPort) (conn, error) {
@@ -308,16 +334,41 @@ func connectTCP(ctx context.Context, addr netip.AddrPort) (conn, error) {
 	return upstream.(*net.TCPConn), nil
 }
 
+// answering is an upstream without the tunnel. It has answered with its first
+// byte, and has failed if it ends before one while its pod's side is open: a pod
+// that ended its side may be what ended it.
 type answering struct {
 	conn
 	once     sync.Once
 	answered func()
+	failed   func()
+	podEnded atomic.Bool
 }
 
 func (a *answering) Read(b []byte) (int, error) {
 	n, err := a.conn.Read(b)
-	if n > 0 {
+	switch {
+	case n > 0:
 		a.once.Do(a.answered)
+	case err != nil && !a.podEnded.Load():
+		a.once.Do(a.failed)
+	}
+	return n, err
+}
+
+func (a *answering) pod(c conn) conn {
+	return &podSide{conn: c, ended: &a.podEnded}
+}
+
+type podSide struct {
+	conn
+	ended *atomic.Bool
+}
+
+func (s *podSide) Read(b []byte) (int, error) {
+	n, err := s.conn.Read(b)
+	if err != nil {
+		s.ended.Store(true)
 	}
 	return n, err
 }
