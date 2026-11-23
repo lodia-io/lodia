@@ -304,7 +304,7 @@ func controlPlaneForRehearsal(t *testing.T) *lodiav1alpha1.ControlPlane {
 	applyStatus(t, cp, "test/endpoint", map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": lbAddress, "port": int64(443)},
 		"konnectivity": map[string]any{"host": lbAddress, "port": int64(8132)},
-		"inCluster":    map[string]any{"host": lbAddress, "port": int64(6443)},
+		"inCluster":    map[string]any{"host": "240.0.0.1", "port": int64(6443)},
 	}})
 	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
 	writeKubeconfig(t, cp)
