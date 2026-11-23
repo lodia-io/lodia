@@ -268,8 +268,9 @@ func (p *Proxy) dialUpstream(ctx context.Context) (conn, error) {
 }
 
 // order is the address that last answered, while the lookup lists it, then the
-// lookup's addresses from the one after the address that last failed after its
-// connect: a connection spliced to it cannot move on, so the next starts past it.
+// lookup's addresses from the one after the address that last failed: the
+// connection that met it may have no way or time left to move on, so the next
+// starts past it.
 func order(addrs []netip.Addr, answered, failed *netip.Addr) []netip.Addr {
 	start := 0
 	if failed != nil {
@@ -288,15 +289,16 @@ func order(addrs []netip.Addr, answered, failed *netip.Addr) []netip.Addr {
 }
 
 // dialAddr remembers addr once it has answered: the outer handshake is done, or
-// without the tunnel its first byte has arrived. It fails addr on a handshake's
-// error, or without the tunnel when the upstream ends before that byte. The
-// handshake runs within what is left of the total, not within the attempt, so
-// that a slow tunnel that is up is not dialed again.
+// without the tunnel its first byte has arrived. It fails addr on a failed
+// connect, a handshake's error, or without the tunnel when the upstream ends
+// before that byte. The handshake runs within what is left of the total, not
+// within the attempt, so that a slow tunnel that is up is not dialed again.
 func (p *Proxy) dialAddr(ctx context.Context, addr netip.Addr, last *netip.Addr) (conn, error) {
 	attempt, cancel := context.WithTimeout(ctx, p.AttemptTimeout)
 	upstream, err := p.connect(attempt, netip.AddrPortFrom(addr, p.port))
 	cancel()
 	if err != nil {
+		p.fail(addr, last)
 		return nil, err
 	}
 	if !p.tunneled() {

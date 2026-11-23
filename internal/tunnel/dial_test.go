@@ -294,7 +294,7 @@ func TestADialAfterTheFirstSuccessMakesOneAttemptWhileTheAddressIsListed(t *test
 
 func TestARefreshThatDropsTheAnsweringAddressCostsOneMoreRound(t *testing.T) {
 	eachMode(t, func(t *testing.T, tunnel bool) {
-		f := newDialFixture(t, tunnel, dead1, live1)
+		f := newDialFixture(t, tunnel, live1, dead1)
 		defer f.net.closeAll()
 		f.net.set(dead1, silent)
 		f.net.set(live1, f.answering())
@@ -721,7 +721,7 @@ func TestAConnectionThatEndsAfterItsFirstByteFailsNothing(t *testing.T) {
 	})
 }
 
-func TestConnectionsThatAnswerAndFailAfterTheirConnectAtOnce(t *testing.T) {
+func TestConnectionsThatAnswerAndFailAtOnceStepPastOnlyAnAddressThatFailed(t *testing.T) {
 	eachMode(t, func(t *testing.T, tunnel bool) {
 		f := newDialFixture(t, tunnel, live1, live2, dead1, dead2)
 		defer f.net.closeAll()
@@ -745,8 +745,8 @@ func TestConnectionsThatAnswerAndFailAfterTheirConnectAtOnce(t *testing.T) {
 					t.Errorf("remembered %v, which never answered", *a)
 					return
 				}
-				if a := f.failed.Load(); a != nil && *a != live2 && *a != dead1 {
-					t.Errorf("stepping past %v, which never failed after its connect", *a)
+				if a := f.failed.Load(); a != nil && *a == live1 {
+					t.Errorf("stepping past %v, which never failed", *a)
 					return
 				}
 				select {
@@ -797,5 +797,61 @@ func TestAHandshakeThatFailsClosesItsConnection(t *testing.T) {
 		case <-time.After(time.Minute):
 			t.Fatal("the connection whose handshake failed is still open")
 		}
+	})
+}
+
+func TestARememberedAddressThatGoesSilentWithTwoMoreSilentAheadEndsOnlyTheFirstConnection(t *testing.T) {
+	eachMode(t, func(t *testing.T, tunnel bool) {
+		f := newDialFixture(t, tunnel, live1)
+		defer f.net.closeAll()
+		f.net.set(live1, f.answering())
+		f.net.set(live2, f.answering())
+		f.net.set(dead1, silent)
+		f.net.set(dead2, silent)
+		f.mustDial(t)
+
+		f.net.set(live1, silent)
+		f.addrs.Store(&[]netip.Addr{dead1, dead2, live2, live1})
+		f.net.forget()
+		took, err := f.dial(t)
+		if err == nil {
+			t.Fatal("dialed past three silent addresses")
+		}
+		requireTook(t, took, f.DialTimeout)
+		requireAttempts(t, f, live1, dead1, dead2)
+
+		f.net.forget()
+		requireTook(t, f.mustDial(t), 0)
+		requireAttempts(t, f, live2)
+		f.net.forget()
+		requireTook(t, f.mustDial(t), 0)
+		requireAttempts(t, f, live2)
+	})
+}
+
+func TestConnectionsBehindThreeSilentAddressesStartPastThoseTheEarlierOnesFailed(t *testing.T) {
+	eachMode(t, func(t *testing.T, tunnel bool) {
+		f := newDialFixture(t, tunnel, dead1, dead2, dead3, live1)
+		defer f.net.closeAll()
+		for _, a := range []netip.Addr{dead1, dead2, dead3} {
+			f.net.set(a, silent)
+		}
+		f.net.set(live1, f.answering())
+
+		var first sync.WaitGroup
+		first.Go(func() {
+			took, err := f.dial(t)
+			if err == nil || took != f.DialTimeout {
+				t.Errorf("the first connection took %s and returned %v, want the total and an error", took, err)
+			}
+		})
+		time.Sleep(f.AttemptTimeout + time.Second/2)
+		if took := f.mustDial(t); took != 2*f.AttemptTimeout {
+			t.Fatalf("a connection begun after the first silent address failed took %s, want %s", took, 2*f.AttemptTimeout)
+		}
+		first.Wait()
+		f.net.forget()
+		requireTook(t, f.mustDial(t), 0)
+		requireAttempts(t, f, live1)
 	})
 }
