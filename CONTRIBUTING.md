@@ -22,7 +22,7 @@ The tests of Lodia's calls to etcd run etcd's release binary at `versions.EtcdVe
 A test binary that `go test`'s timeout or a SIGKILL ended skips its cleanup: on Linux the kernel ends its etcd with it.
 On macOS the etcd stays on its port and its `etcd-*` directory stays in `$TMPDIR`: `ps -eo pid,ppid,command | grep -- '--data-dir.*/etcd-'` lists them, a leftover's parent is process 1 and its directory is `lsof -a -p <pid> -d cwd`, `kill` it and remove the directory.
 
-CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-upgrade` and `make e2e-maintenance` on every pull request, and every night `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway`, `make e2e-hold`, `make e2e-upgrade-ha`, and `make e2e-ha`, `make e2e-upgrade` and `make e2e-maintenance` with their nightly tests.
+CI runs `make verify`, `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-loadbalancer`, `make e2e-upgrade` and `make e2e-maintenance` on every pull request, and every night `make conformance`, `make e2e-gateway-g6`, `make conformance-gateway`, `make e2e-hold`, `make e2e-upgrade-ha`, and `make e2e-ha`, `make e2e-upgrade` and `make e2e-maintenance` with their nightly tests.
 
 `test/rules/lodia_test.yaml`, promtool's cases of the alert rules, is generated and never edited by hand.
 To add or change a case, edit the alert's function in `test/rules/cases_test.go`, run `go test ./test/rules/ -update` and commit the file it rewrites.
