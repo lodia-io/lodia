@@ -27,6 +27,8 @@ Installation is in [`README.md`](README.md#installation).
 | Change a `DatastoreClass` | edit it; [what the class refuses and what an edit rolls](README.md#a-tenant-namespace); the edit reaches each tenant's `Etcd` in its window, within the fleet limit, or at once on `lodia.io/maintain-requested-at`, and `Progressing` says when; the storage fields, the reclaim policy, the credentials' `secretRef` and the region roll nothing ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md#consequences)) |
 | Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the new keys reach every tenant on the class at once, and the class edit, which rolls nothing, reaches each `Etcd` in its window; the keys that name the store ([which](api/controlplane.md#backup)) stay as they were, since a `Backup` taken meanwhile fails on a change of them; an application credential of another Swift project, or keys of another tenant of the store, are a store move that no `Backup` sees ([the two cases](api/controlplane.md#backup)), so make that change while no `Backup` is in progress, and start the next one only once that tenant's sidecar has uploaded with the new keys, as below, since a `Backup`'s full snapshot then goes to the store its copy reads; revoke the old keys only once every tenant's sidecar has uploaded with the new ones, since the kubelet updates its files some time after `<cp>-etcd-backup` changes ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)): in the `backup-restore` container of a `<cp>-etcd` pod, `Updated the snapstore object with new credentials` is followed by `Successfully saved delta snapshot` or `Successfully saved full snapshot` ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/snapshotter/snapshotter.go#L313-L326), [the copy](README.md#a-tenant-namespace)) |
 | Keep tenants off each other's hostnames on a shared Gateway | bind each `ControlPlane`'s hostnames to its namespace with [a policy](#hostnames-on-a-shared-gateway) |
+| Give a tenant an address known in advance | reserve it with the provider, name it in `spec.endpoint.loadBalancer.host` and ask the load balancer for it in `annotations`: [a recipe per provider](#an-address-known-in-advance); for a name, [make the record first](#a-name) |
+| Narrow who may connect to a tenant's load balancer | edit `endpoint.loadBalancer.sourceRanges`, which a living tenant takes, and keep [the management cluster among them](#who-may-connect) |
 | Delete a cluster | delete the `ControlPlane` ([what deletion does](README.md#deletion)); `kubectl get pvc -L lodia.io/control-plane-uid` shows whose each claim is; a lifecycle rule of the bucket expires old prefixes, but never `<prefix>/<namespace UID>/backups/<Backup UID>` while that `Backup` exists: a restore of an emptied copy fails its seal check |
 
 ### Hostnames on a shared Gateway
@@ -83,7 +85,7 @@ data:
   zone: k8s.example.com
 ```
 
-It checks creation alone: `endpoint` is immutable, and a refused update would also refuse the removal of a finalizer.
+It checks creation alone: `endpoint.gateway` is immutable, and a refused update would also refuse the removal of a finalizer.
 
 ### Access as a person
 
@@ -156,27 +158,136 @@ These reports, kept in the Gateway API repository at v1.6.3, each the newest of 
 
 Lodia's gates run on Envoy Gateway v1.9.3 ([the gate](../test/e2e/README.md#the-gateway-gate)).
 
-### What a tenant's cluster must allow
-
-- **Pod Security:** `kube-system` has to admit `apiserver-proxy`, whose `hostNetwork` and `NET_ADMIN` the Baseline level forbids ([pod-security-standards](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/security/pod-security-standards.md#baseline)), so a namespace label enforcing `baseline` or `restricted` there stops in-cluster API access.
-- **NetworkPolicy:** a tenant's egress policies must allow pods the advertise address and 6443, `240.0.0.1:6443` by default, which is what connections to the `kubernetes` Service resolve to ([api-exposure](decisions/api-exposure.md)).
-- **Windows and virtual-kubelet nodes:** they run no `apiserver-proxy`, so a pod there gets no in-cluster API path through `kubernetes.default`.
-- **HTTP egress proxies:** `apiserver-proxy` dials the tunnel directly, so a node that reaches the Gateway only through an HTTP proxy gets no in-cluster API path; support for that is undecided.
-
 ### Audit
 
 Requests through the tunnel reach the API server from `127.0.0.1`, since the sidecar dials it on loopback, and external requests from the Gateway's address, so audit `sourceIPs` and the request log carry no client address ([request.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/audit/request.go#L55-L59)).
 In gateway mode requests are attributed by identity: a bound ServiceAccount token carries its pod and node into the user's extra fields, which the audit event records ([util.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/serviceaccount/util.go#L40-L47)).
-Where audit must rest on the source address, use `loadBalancer` mode.
+Where audit must rest on the source address, use `loadBalancer` mode with an IP `host`: wherever `apiserver-proxy` runs, a pod's request is a new connection from its node and carries no pod address.
+
+## The platform under the load balancer mode
+
+What `endpoint.loadBalancer` asks of the platform, beyond the [prerequisites](README.md#installation).
+The Service carries the spec's `class`, `annotations` and `sourceRanges` as they are: the annotation that asks a provider for an address is the platform's to write ([api-exposure](decisions/api-exposure.md)).
+Name a `host` when the tenant's address must be known before its load balancer exists or must outlive it; without one the tenant takes the address its load balancer reports and follows it ([the field](api/controlplane.md#status)).
+
+### An address known in advance
+
+An IP `host` is an address the platform reserved and asks its load balancer for in `annotations`.
+The endpoint, the certificates and the kubeconfigs exist from the first pass, and the API servers start while the load balancer is still being made ([example](api/examples/controlplane-loadbalancer-ip.yaml)).
+The tenant's pods dial the address directly, so no proxy runs on its nodes.
+Each recipe goes under `spec.endpoint.loadBalancer`.
+
+**GKE**, ingress-gce v1.43.4:
+
+```yaml
+host: 203.0.113.10
+class: networking.gke.io/l4-regional-external
+annotations:
+  networking.gke.io/load-balancer-ip-addresses: edge
+```
+
+- The class selects the controller of regional external load balancers ([gce_annotations.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/annotations/gce_annotations.go#L48-L50)), the one that reads the annotation ([hold.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/address/hold.go#L38-L53)).
+- `edge` is the name of an address reserved in the cluster's region, and `host` is the IP address it holds.
+  A name the controller does not find is skipped and the load balancer takes another address, which Lodia reports as `AddressMismatch` ([l4_static_address.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/annotations/l4_static_address.go#L60-L99)).
+
+**AWS**, AWS Load Balancer Controller v3.6.3:
+
+```yaml
+host: 198.51.100.20
+class: service.k8s.aws/nlb
+annotations:
+  service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+  service.beta.kubernetes.io/aws-load-balancer-subnets: subnet-0a1b2c3d
+  service.beta.kubernetes.io/aws-load-balancer-eip-allocations: eipalloc-0a1b2c3d4e5f6a7b8
+```
+
+- The class hands the Service to the controller ([nlb.md](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.3/docs/guide/service/nlb.md?plain=1#L41)), and the NLB is `internal` unless the scheme says `internet-facing` ([nlb.md](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.3/docs/guide/service/nlb.md?plain=1#L6-L11)).
+- The controller refuses allocations on an internal NLB, and a count of them that differs from the subnets' ([model_build_load_balancer.go](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.3/pkg/service/model_build_load_balancer.go#L328-L336)).
+  Each subnet is in a zone of its own ([annotations.md](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.3/docs/guide/service/annotations.md?plain=1#L139)), so the one allocation that an IP `host` names is an NLB in one subnet and one zone.
+  For every zone, name a DNS name ([a name](#a-name)) and leave the allocations out.
+- An NLB reports a host name and no IP address ([service_controller.go](https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v3.6.3/controllers/service/service_controller.go#L252-L266)), so `LoadBalancerReady` reads `Unverified`: nothing compares `host` with the NLB, and the allocation's address is yours to check.
+
+**Azure**, cloud-provider-azure v1.37.5, whose annotation is [`azure-load-balancer-ipv4`](https://github.com/kubernetes-sigs/cloud-provider-azure/blob/v1.37.5/pkg/consts/consts.go#L214-L219):
+
+```yaml
+host: 203.0.113.30
+annotations:
+  service.beta.kubernetes.io/azure-load-balancer-ipv4: 203.0.113.30
+```
+
+- The address must belong to a public IP resource in the cluster's resource group, or in the one that `service.beta.kubernetes.io/azure-load-balancer-resource-group` names ([azure_loadbalancer.go](https://github.com/kubernetes-sigs/cloud-provider-azure/blob/v1.37.5/pkg/provider/azure_loadbalancer.go#L4298-L4307)).
+  An address not found there fails the Service's reconcile ([azure_loadbalancer.go](https://github.com/kubernetes-sigs/cloud-provider-azure/blob/v1.37.5/pkg/provider/azure_loadbalancer.go#L1379-L1390)), so the Service gets no address and `LoadBalancerReady` reads `WaitingForLoadBalancer`.
+
+**MetalLB**, v0.16.2:
+
+```yaml
+host: 203.0.113.40
+annotations:
+  metallb.io/loadBalancerIPs: 203.0.113.40
+```
+
+- An address that MetalLB does not own, or that another Service holds, is not assigned: the Service gets a warning event and no address, `WaitingForLoadBalancer` ([usage](https://github.com/metallb/metallb/blob/v0.16.2/website/content/usage/_index.md?plain=1#L16-L35)).
+
+### A name
+
+A name `host` is a record the platform keeps pointing at the load balancer, which may report one address, several or a host name, and be made again ([example](api/examples/controlplane-loadbalancer-name.yaml)).
+The tenant is built at the name from the first pass, and its pods reach it through `apiserver-proxy` on every node ([what that asks](#the-nodes-proxy)).
+
+- By hand, an A record at an address that a recipe above asks the load balancer for, or a CNAME to the host name the load balancer reports.
+- With external-dns, the annotation `external-dns.kubernetes.io/hostname: <host>` in `annotations`, which makes it write an A or a CNAME record for the Service's address or host name ([annotations.md](https://github.com/kubernetes-sigs/external-dns/blob/v0.24.0/docs/annotations/annotations.md?plain=1#L106-L120)).
+  The name must match external-dns's domain filter ([annotations.md](https://github.com/kubernetes-sigs/external-dns/blob/v0.24.0/docs/annotations/annotations.md?plain=1#L95)), and releases before v0.22.0 read the annotation as `external-dns.alpha.kubernetes.io/hostname` ([annotations.md](https://github.com/kubernetes-sigs/external-dns/blob/v0.24.0/docs/annotations/annotations.md?plain=1#L35-L36)).
+
+Health asks for the name from the tenant's first pass.
+Until it resolves, `Reachable` reads `ExternalProbeFailed` and `Ready` waits, and a resolver that was told that the name does not exist remembers it for the zone's negative TTL, the lower of the SOA's `MINIMUM` and its own TTL ([RFC 2308 §5](https://www.rfc-editor.org/rfc/rfc2308#section-5)).
+So create the record before the `ControlPlane`, at a reserved address.
+external-dns writes it only after the load balancer has an address, so with it keep the zone's negative TTL low.
+
+### When the load balancer does not take the address
+
+`LoadBalancerReady` reads `AddressMismatch` when `host` is an IP address, the Service reports IP addresses, and `host` is not among them; the message names both.
+The tenant is built at `host` and nothing moves; `Ready` waits on `LoadBalancerReady`, and Health's probe, which goes to `host`, fails until the load balancer holds it.
+Look at the annotation that asks for `host` (missing, misspelt, or not read by the controller that serves the Service's `class`) and at the address itself (not reserved where the provider looks, or held by another load balancer).
+A platform that translates a public address into its load balancer's private one reports an address that no IP `host` can name: use a DNS name ([the field](api/controlplane.md#spec)).
+
+Repair it in place: edit `endpoint.loadBalancer.annotations`, which with `sourceRanges` is what a living tenant's `endpoint` still lets change.
+Nothing else moves, and `LoadBalancerReady` turns True once the Service reports `host`.
+Whether a provider moves a live load balancer to another address is its own: MetalLB does ([service.go](https://github.com/metallb/metallb/blob/v0.16.2/controller/service.go#L143-L156)).
+
+### Who may connect
+
+`sourceRanges` become the Service's `loadBalancerSourceRanges`, which restrict who may reach its load balancer, 443 and 8132 alike, where the provider supports them ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/core/v1/types.go#L6376-L6382)); a living tenant takes a change.
+Everything that connects must be inside them: the tenant's nodes (the kubelets, `kubeadm join`, `apiserver-proxy` and the konnectivity agents), the people and automation that hold a kubeconfig, the pods when `host` is an IP address, and Lodia's Health.
+
+Health dials the public endpoint from the management cluster.
+There kube-proxy captures traffic to an IP address that a LoadBalancer Service reports in `VIP` mode and delivers it without leaving the node ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/serviceport.go#L222-L235)), and lets it through only from the Service's source ranges ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1169-L1196)): the management cluster's pod range must be among them, or the probe is dropped and `Reachable` reads `ExternalProbeFailed`.
+A probe that leaves the cluster, to a load balancer that reports a host name or an address in `Proxy` mode, arrives from the cluster's egress address, which must be among them too ([what the probe proves](README.md#health)).
+
+## The node's proxy
+
+`apiserver-proxy` is how a tenant's pods reach their API wherever they do not dial an IP address: in `gateway` mode, and in `loadBalancer` mode unless `endpoint.loadBalancer.host` is an IP address ([api-exposure](decisions/api-exposure.md)).
+
+### What a tenant's cluster must allow
+
+An IP `host` is the way out of all of it but the NetworkPolicy: the pods dial the load balancer directly and no proxy runs.
+
+- **Pod Security:** `kube-system` has to admit `apiserver-proxy`, whose `hostNetwork` and `NET_ADMIN` the Baseline level forbids ([pod-security-standards](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/security/pod-security-standards.md#baseline)), so a namespace label enforcing `baseline` or `restricted` there stops in-cluster API access.
+- **NetworkPolicy:** a tenant's egress policies must allow pods the advertise address and 6443, `240.0.0.1:6443` by default, which is what connections to the `kubernetes` Service resolve to ([api-exposure](decisions/api-exposure.md)); with an IP `host`, `host` and 443.
+- **Windows and virtual-kubelet nodes:** they run no `apiserver-proxy`, so a pod there gets no in-cluster API path through `kubernetes.default`.
+- **HTTP egress proxies:** `apiserver-proxy` dials the tunnel in `gateway` mode and the load balancer otherwise, directly, so a node that reaches either only through an HTTP proxy gets no in-cluster API path; support for that is undecided.
+- **IPv6:** a tenant whose first service range is IPv6 names the advertise address, from a /48 its platform drew ([the field](api/controlplane.md#spec)).
+- **Connections:** a node's proxy carries at most 1000 connections and 128 from one source address, which for every host-network client of the node is the node's own; it closes the connection that is over a cap.
+- **The proxy's pod:** each change of the `lodia-tunnel` image rolls the DaemonSet and ends the connections through it, and on a fresh node a CNI that reaches the API through the `kubernetes` Service waits for the proxy's pod.
 
 ### Platform matrix
 
-The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` and the tunnel:
+The in-cluster path, `kubernetes` to the advertise address, `240.0.0.1:6443` by default, through `apiserver-proxy`, and in `gateway` mode through the tunnel:
 
 | platform | how it was checked | result |
 |---|---|---|
 | kindnet and kube-proxy, Envoy Gateway v1.9.3, Kubernetes v1.37.0 | `TestGatewayGate`, every pull request ([the gate](../test/e2e/README.md#the-gateway-gate)) | passes |
 | Cilium v1.20.4, `kubeProxyReplacement=true`, tunnel routing, no kube-proxy (`addons.kubeProxy.enabled: false`), Kubernetes v1.37.0, kernel 6.12.54-linuxkit | once by hand on kind, repeated by no CI job: `helm upgrade --install cilium oci://quay.io/cilium/charts/cilium --version 1.20.4 --set kubeProxyReplacement=true,k8sServiceHost=<api host>,k8sServicePort=443,dnsPolicy=Default,ipam.mode=kubernetes,operator.replicas=1`; `dnsPolicy=Default` lets the agent resolve the API hostname before CoreDNS runs | socket load balancing on, `cilium-dbg service list` holds `10.32.0.1:443 => 240.0.0.1:6443` (`10.32.0.1` the tenant's `kubernetes` ClusterIP), and a pod's loop to `https://kubernetes.default` answered 600 new-connection and 600 reused-connection requests in a minute, none failed |
+
+Both rows ran in `gateway` mode; `TestLoadBalancerGate` runs the path without the tunnel, in `loadBalancer` mode, on every pull request ([the gate](../test/e2e/README.md#the-loadbalancer-gate)).
 
 ## What breaks, and how it shows
 
@@ -211,6 +322,9 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `ControllersLeading=False`, `AwaitingRelease` or `SourceExists` | a restored `ControlPlane` waits for `spec.restoreFrom.release: Released`, the message listing what will act outside the cluster then, or for its source `ControlPlane` to be deleted |
 | `APIServerReady=False`, `Unavailable` | a component without a ready replica, named in the message: its pods' events and logs |
 | `APIServerReady=False`, `AuthenticationInvalid` | `apiServer.authentication.jwt` renders a file that fails the validation of kube-apiserver of the minor the operator links, 1.37 today, which the message names with the first errors: an expression that does not compile, `duration()` of an int among them, which 1.35 and 1.36 accept, a `certificateAuthority` that does not parse, the ServiceAccount issuer as an issuer, `claims.email` without `claims.email_verified`. The message ends with what the API server serves. With `the API server serves its last valid configuration`, the file it reads is this `ControlPlane`'s, lists JWT authenticators and passes for the ServiceAccount issuer the API server runs with, and their tokens still log in; during a hold it can fail for the issuer the pass renders, after a move of the load balancer's address onto an issuer's URL, and the grant then writes it without them. With `the API server serves no JWT authenticator`, the file has none, or Workloads wrote it without them, during a hold only at the grant, as after a move of the ServiceAccount issuer onto an issuer's URL, a predecessor's file left behind or a hand edit of the ConfigMap; tokens of the issuers then stop logging in until the field is fixed. `Ready` is False meanwhile, so Lifecycle grants no new operator revision in the maintenance window until the field is fixed, also when the issuer that made it refused moves back during a hold. A status write lost when the operator is stopped between a pass's writes and its status apply leaves the condition that pass would have replaced until a pass that is not held gets past its waits to the render, which can be the grant: `Ready` True at the older generation while that pass wrote the file without JWT authenticators. Every other change of the generation is applied; fix the field, and the next pass writes it |
+| `LoadBalancerReady=False`, `WaitingForLoadBalancer` | the Service `<cp>-kube-apiserver` reports no address: its events, from the load balancer's controller, say why, and an address its annotation names that the provider cannot give it is one cause ([recipes](#an-address-known-in-advance)); with `endpoint.loadBalancer.host` the tenant is built meanwhile, without it `APIServerReady` reads `WaitingForEndpoint` |
+| `LoadBalancerReady=False`, `AddressMismatch` | `host` is an IP address that the load balancer does not report: [the repair](#when-the-load-balancer-does-not-take-the-address) |
+| `LoadBalancerReady=True`, `Unverified` | nothing is broken: `host` is an IP address and the load balancer reports only host names, so the two cannot be compared |
 | `ControllersLeading=False`, `ControllerManagerNotLeading` or `SchedulerNotLeading` | the component's pods and logs; its leader Lease inside the tenant, `kube-system/kube-controller-manager` or `kube-system/kube-scheduler`, names the last holder |
 | `CAValidityAcceptable=False`, `CAExpiring` | a CA expires within a year; the message names it and when; a [CA rotation](#forced-ca-rotation) mends it, from phase 3 |
 | `CertificatesReady=False`, `CAExpired` | a CA is past its `NotAfter`, and every certificate it signed with it; nothing is issued under it until a [CA rotation](#forced-ca-rotation), from phase 3 |
@@ -223,7 +337,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `ControllerManagerHeld=True`, `NodesSilent`; in the tenant, the Lease `kube-system/kube-controller-manager` held by `lodia` | most nodes cannot reach the API, so Health holds the controller manager; the [nodes cut off](#nodes-cut-off-from-the-control-plane) runbook |
 | `ControllerManagerHeld=False`, `HoldBlocked` | nodes are silent but another component holds the controller manager's lease, named in the message, for example a platform's own watchdog; run one of the two, not both; or the API server refused the write that would take it, which the message names |
 | `ControllerManagerHeld=False`, `TooManyNodes` | the tenant has more Nodes, or more Leases of `kube-node-lease`, than `health.maxNodes`, or a list of them went on past the pages that many fill and one more, or held a page of more items than its limit, or a Node of more than 64 conditions, or a string of a field longer than its bound ([capacity](#capacity)), a `continue` token of more than 4,096 bytes among them, or a response listing them was over 8 MiB, which the message names; Lodia counts none of its nodes, holds no controller manager there and ends a hold at once, and `status.nodes.truncated` is true when it is the Nodes that stopped. A tenant's administrator creates both kinds of object freely: have the surplus deleted, or raise `health.maxNodes` ([settings](README.md#installation)) |
-| `Reachable=False`, `ExternalProbeFailed`, nodes fine | the path the message names: `api:` the public endpoint, its Gateway listener, route status and certificate SANs; `tunnel:` the route `<cp>-tunnel`, the sidecar's `<cp>-tunnel-serving` and the tunnel's client certificate; `konnectivity:` the route `<cp>-konnectivity` and `<cp>-konnectivity-server`'s SANs |
+| `Reachable=False`, `ExternalProbeFailed`, nodes fine | in `gateway` mode the path the message names: `api:` the public endpoint, its Gateway listener, route status and certificate SANs; `tunnel:` the route `<cp>-tunnel`, the sidecar's `<cp>-tunnel-serving` and the tunnel's client certificate; `konnectivity:` the route `<cp>-konnectivity` and `<cp>-konnectivity-server`'s SANs; in `loadBalancer` mode the message is the endpoint's URL, and the causes are whether its name resolves yet ([a name](#a-name)), `LoadBalancerReady`, and the source ranges, which must hold the management cluster ([who may connect](#who-may-connect)) |
 | `Reachable=False`, `InternalProbeFailed` | the API server does not answer `/readyz` on its in-namespace Service `<cp>-kube-apiserver`, or the operator cannot reach it; `APIServerReady`, the Deployment `<cp>-kube-apiserver` and the Service's endpoints say which |
 | Many tenants turn `Reachable=False` slowly behind one Gateway | a Gateway that does not answer costs a Health worker the 5-second timeout for each tenant, per pass, so a round over `N` tenants takes `N`/20 seconds on the 100 workers of `controllers.health.workers` and the third failed probe comes that much later; tenants on other Gateways wait behind them, as they did behind a hung public probe |
 | `Reachable=False`, `WaitingForCertificates`, naming `<cp>-tunnel-client` | PKI has not issued it yet, or another owner keeps it ([the name](README.md#a-tenant-namespace)); Tenant delivering it to nodes is a separate path |
@@ -239,7 +353,7 @@ The in-cluster path, `kubernetes` to `240.0.0.1:6443` through `apiserver-proxy` 
 | `Progressing=False`, `TimeZoneUnsupported` | `spec.maintenance.window.timeZone` is not in the operator's zone database; an IANA name such as `Europe/Berlin` |
 | `Progressing=True`, `LatestGenerationNotObserved` for more than a few seconds | the first condition the message names has not taken the change up: its reason, which describes the generation it names, when it is False; otherwise what its controller waits on ([independent-controllers](decisions/independent-controllers.md)), which `Ready` names when that is not True; its controller's log (`controller="<name>"`) only when that is True at the new generation |
 | Nothing changes after editing `spec` | `metadata.generation` against `status.observedGeneration`; `spec.paused`; the operator's leader and its logs |
-| A `Warning` event regarding a `ControlPlane`, a `Backup` or a `KubeconfigRequest` | each transition of a condition, a new status or reason, is an event regarding its object for the API server's `--event-ttl`, an hour by default ([options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/apiserver/options/options.go#L129)), from `lodia.io/<controller>`, with the condition type as `action`, the new reason as `reason` and the message as `note` ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)); the condition says what holds now. A failure is `Warning` whatever it replaces: `Failed`, `MaintenanceFailed`, `RestoreFailed`, `BackupFailed`, `ProgressDeadlineExceeded`, `SealLost`, `HoldBlocked`, `RequestInvalid`, `PolicyNotEnforced`. A refusal (`Unsupported`, `<Capability>Unsupported`, `Refused`, `ObjectsControlledElsewhere`, `SecretsControlledElsewhere`, `SecretsExist`, every `<Kind>NotFound`, `DatastoreClassAmbiguous`, `VolumesExist`, `BackupIncompatible`, `CAPredatesControlPlane`, `RouteNotAccepted`, `HostnameConflict`, `TooManyNodes`, `AuthenticationInvalid`) or a loss (`QuorumLost`, `Unavailable`, `ControllerManagerNotLeading`, `SchedulerNotLeading`, `NodesSilent`, `ExternalProbeFailed`, `InternalProbeFailed`, `CAMissing`, `CAExpired`, `SecretUnreadable`, `CAExpiring`) is `Warning` when it replaces True, or a reason that is neither a first pass (`Reconciling`, `LatestGenerationNotObserved`), a wait (`WaitingFor*`, `Provisioning`, `Restoring`, `RolloutPending`, `Deleting`, `Applying`, `Binding`, `Issuing`, `AwaitingRelease`, `SourceExists`) nor another of these, and `Normal` otherwise, so a tenant's way up and a held restore record no `Warning`; on a running tenant `Issuing` (a lost kubelet signer, a Secret write that keeps failing) and `Applying` (an inventory that cannot be read) count as waits too, so the refusal or loss after them is `Normal`, and the condition and the alerts carry it. A restore's release records one: `APIServerReady` `Unavailable` over True, while the controller manager that has just started has no ready replica. A formed etcd whose `Etcd` is deleted or whose Secrets are missing reads `Provisioning`, a wait, so that loss and a `QuorumLost` after it are `Normal`, carried by `DatastoreReady` and `LodiaControlPlaneNotReady` |
+| A `Warning` event regarding a `ControlPlane`, a `Backup` or a `KubeconfigRequest` | each transition of a condition, a new status or reason, is an event regarding its object for the API server's `--event-ttl`, an hour by default ([options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/apiserver/options/options.go#L129)), from `lodia.io/<controller>`, with the condition type as `action`, the new reason as `reason` and the message as `note` ([metrics-are-part-of-the-api](decisions/metrics-are-part-of-the-api.md)); the condition says what holds now. A failure is `Warning` whatever it replaces: `Failed`, `MaintenanceFailed`, `RestoreFailed`, `BackupFailed`, `ProgressDeadlineExceeded`, `SealLost`, `HoldBlocked`, `RequestInvalid`, `PolicyNotEnforced`. A refusal (`Unsupported`, `<Capability>Unsupported`, `Refused`, `ObjectsControlledElsewhere`, `SecretsControlledElsewhere`, `SecretsExist`, every `<Kind>NotFound`, `DatastoreClassAmbiguous`, `VolumesExist`, `BackupIncompatible`, `CAPredatesControlPlane`, `RouteNotAccepted`, `HostnameConflict`, `TooManyNodes`, `AuthenticationInvalid`, `AddressMismatch`) or a loss (`QuorumLost`, `Unavailable`, `ControllerManagerNotLeading`, `SchedulerNotLeading`, `NodesSilent`, `ExternalProbeFailed`, `InternalProbeFailed`, `CAMissing`, `CAExpired`, `SecretUnreadable`, `CAExpiring`) is `Warning` when it replaces True, or a reason that is neither a first pass (`Reconciling`, `LatestGenerationNotObserved`), a wait (`WaitingFor*`, `Provisioning`, `Restoring`, `RolloutPending`, `Deleting`, `Applying`, `Binding`, `Issuing`, `AwaitingRelease`, `SourceExists`) nor another of these, and `Normal` otherwise, so a tenant's way up and a held restore record no `Warning`; on a running tenant `Issuing` (a lost kubelet signer, a Secret write that keeps failing) and `Applying` (an inventory that cannot be read) count as waits too, so the refusal or loss after them is `Normal`, and the condition and the alerts carry it. A restore's release records one: `APIServerReady` `Unavailable` over True, while the controller manager that has just started has no ready replica. A formed etcd whose `Etcd` is deleted or whose Secrets are missing reads `Provisioning`, a wait, so that loss and a `QuorumLost` after it are `Normal`, carried by `DatastoreReady` and `LodiaControlPlaneNotReady` |
 
 ## Runbooks
 
@@ -300,6 +414,13 @@ kubectl -n team-a get secret <cp>-admin-kubeconfig -o jsonpath='{.data.kubeconfi
 kubectl -n team-a port-forward service/<cp>-kube-apiserver 6443:443 &
 kubectl --kubeconfig admin.kubeconfig --server https://127.0.0.1:6443 --tls-server-name <hostnames.apiServer> get namespaces
 ```
+
+A new `ControlPlane` that names its source's `endpoint.loadBalancer.host` keeps the tenant's address through the restore.
+It is built while the source exists, and the source holds the host: a provider gives an address to one load balancer, and a name leads where its record points.
+With an IP address, `LoadBalancerReady` reads `WaitingForLoadBalancer` or `AddressMismatch`; with a name, `Reachable` reads `ExternalProbeFailed`, since the name still leads to the source and its other CA.
+None of the three fires [`LodiaControlPlaneNotReady`](#lodiacontrolplanenotready) while the hold lasts.
+The admin kubeconfig's server is `host`, so until the source's load balancer is gone it reaches the source, not the new `ControlPlane`: take steps 3 to 11 through the port-forward above, with `--tls-server-name <host>`.
+Once the source is gone, the provider can give the address to the new load balancer, as MetalLB does when another Service is deleted ([service.go](https://github.com/metallb/metallb/blob/v0.16.2/controller/service.go#L175-L184)), or you move the record to it, and `LoadBalancerReady` and `Reachable` turn True.
 
 With the new `ControlPlane`'s admin kubeconfig:
 
