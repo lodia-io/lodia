@@ -144,8 +144,8 @@ Gate (a feature of the last stage adds its check here with its design):
 - e2e: a minor upgrade of a tenant that sets a feature gate the next minor removed stops at its rehearsal with the reason, its API server untouched, and a tenant without one steps as it does today; the minor upgrade's gate checks both.
 - e2e, every night: etcd-druid upgraded across a patch under a held tenant serves each request of the Datastore controller once and reports its revision once; a one-member tenant whose volume is deleted after a delta snapshot comes back with the key that delta holds.
 - e2e: a tenant whose JWT authenticator maps claims by CEL to groups, `uid` and `extra` and validates the user accepts a token of its issuer as that user, and an edit of the issuer applies without a restart of the API server.
-- envtest: deleting a `ControlPlane` without the confirmation is refused; the Cluster API provider's e2e still deletes its cluster.
-  `TestAControlPlaneIsDeletedOnlyOnceConfirmed` checks the refusal, and [`TestPhase1Gate`](../test/e2e/README.md) on kind.
+- envtest: deleting a `ControlPlane`, or the CRD that holds them, without the confirmation is refused; the Cluster API provider's e2e still deletes its cluster.
+  `TestAControlPlaneIsDeletedOnlyOnceConfirmed` and `TestTheControlPlaneCRDIsDeletedOnlyOnceConfirmed` check the refusals, and [`TestPhase1Gate`](../test/e2e/README.md) on kind.
 - e2e: the gates pass with egress denied and the `restricted` security context on every control plane pod, and a control plane pod that dials the management network is refused.
 - e2e: a Cluster API `Cluster` whose control plane is Lodia's provider reaches `ControlPlaneInitialized`, and a `MachineDeployment` of Cluster API's Docker machines joins it through the kubeadm bootstrap provider.
 - e2e: start and complete a CA rotation while two nodes stay `Ready` and a workload keeps calling the API with a ServiceAccount token; the same for the ServiceAccount key and the encryption key; once the client CA rotation completes, an admin kubeconfig of the old client CA no longer works.

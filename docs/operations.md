@@ -31,6 +31,7 @@ Installation is in [`README.md`](README.md#installation).
 | Give a tenant an address known in advance | reserve it with the provider, name it in `spec.endpoint.loadBalancer.host` and ask the load balancer for it in `annotations`: [a recipe per provider](#an-address-known-in-advance); for a name, [make the record first](#a-name) |
 | Narrow who may connect to a tenant's load balancer | edit `endpoint.loadBalancer.sourceRanges`, which a living tenant takes, and keep [the management cluster among them](#who-may-connect) |
 | Delete a cluster | confirm the `ControlPlane`, then delete it ([steps](#delete-a-cluster), [what deletion does](README.md#deletion)); `kubectl get pvc -L lodia.io/control-plane-uid` shows whose each claim is; a lifecycle rule of the bucket expires old prefixes, but never `<prefix>/<namespace UID>/backups/<Backup UID>` while that `Backup` exists: a restore of an emptied copy fails its seal check |
+| Delete the `ControlPlane` CRD, which deletes every `ControlPlane` | confirm the CRD, then delete it ([steps](#deleting-the-controlplane-crd)) |
 
 ### Hostnames on a shared Gateway
 
@@ -90,14 +91,15 @@ It checks creation alone: `endpoint.gateway` is immutable, and a refused update 
 
 ### Delete a cluster
 
-The API server admits a delete of a `ControlPlane` only while it carries the annotation `lodia.io/deletion-confirmed: "true"`, or while its namespace is being deleted ([who-is-trusted](decisions/who-is-trusted.md)):
+The API server admits a delete of a `ControlPlane` only while it carries the annotation `lodia.io/deletion-confirmed: "true"`, or while its namespace is being deleted ([who-is-trusted](decisions/who-is-trusted.md)); [the CRD](#deleting-the-controlplane-crd) has a confirmation of its own:
 
 ```sh
-kubectl -n team-a annotate controlplane prod-eu lodia.io/deletion-confirmed=true
+kubectl -n team-a annotate controlplane prod-eu --overwrite lodia.io/deletion-confirmed=true
 kubectl -n team-a delete controlplane prod-eu
 ```
 
 Without it the delete answers `Forbidden`, with the `annotate` command in its message.
+`--overwrite` lets it replace a value the annotation holds already, which `kubectl annotate` refuses without it ([annotate.go](https://github.com/kubernetes/kubectl/blob/v0.37.1/pkg/cmd/annotate/annotate.go#L395-L403)).
 Any other value, `--dry-run=server` and each object of a deleted collection are refused alike, since the API server admits a collection's objects one by one ([store.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go#L1353)).
 One set when the `ControlPlane` is created confirms every delete of it, since nothing clears it.
 
@@ -105,6 +107,19 @@ The garbage collector's delete of a `ControlPlane` whose owner is gone is refuse
 The `ControlPlane` stays, and the garbage collector retries for as long as it does: the kube-controller-manager logs `error syncing item` and requeues it ([garbagecollector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/garbagecollector/garbagecollector.go#L354-L368)), after a delay that doubles from 5 ms to 1000 s ([default_rate_limiters.go](https://github.com/kubernetes/client-go/blob/v0.37.1/util/workqueue/default_rate_limiters.go#L50-L56)).
 It records no event: the one it records is `OwnerRefInvalidNamespace` ([graph_builder.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/garbagecollector/graph_builder.go#L534)).
 A new annotation wakes nothing in it, since only a deletion that has begun does ([graph_builder.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/garbagecollector/graph_builder.go#L667-L681)), so a confirmed `ControlPlane` goes at its next retry, within 1000 seconds.
+
+### Deleting the ControlPlane CRD
+
+Deleting the CustomResourceDefinition `controlplanes.lodia.io` deletes every `ControlPlane`, none of them confirmed: the API server's finalizer of a CRD deletes its objects straight from storage, with no admission ([crd_finalizer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/finalizer/crd_finalizer.go#L182-L184), [#L220](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/finalizer/crd_finalizer.go#L220)).
+The policy `controlplanes-crd.lodia.io` refuses the delete of that CRD unless it carries the same annotation, which stands for every `ControlPlane`'s own:
+
+```sh
+kubectl annotate customresourcedefinition controlplanes.lodia.io --overwrite lodia.io/deletion-confirmed=true
+kubectl delete customresourcedefinition controlplanes.lodia.io
+```
+
+No other CRD is guarded, and nothing clears the annotation.
+A Helm uninstall deletes the CRD or keeps it: [what the gate does then](README.md#installation).
 
 ### Deleting a namespace that holds tenants
 
@@ -128,7 +143,7 @@ spec:
   - expression: "oldObject.metadata.?annotations['lodia.io/deletion-confirmed'].orValue('') == 'true'"
     messageExpression: >-
       'namespace ' + oldObject.metadata.name + ' holds tenants: kubectl annotate namespace ' +
-      oldObject.metadata.name + ' lodia.io/deletion-confirmed=true'
+      oldObject.metadata.name + ' --overwrite lodia.io/deletion-confirmed=true'
     reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

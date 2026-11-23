@@ -1,7 +1,7 @@
 # Lodia runs no admission webhooks: validation and defaults live in the CRD schema, and the requester's check in an admission policy
 
 Decided 2026-10-25.
-The schema rules, the defaults, the controllers' conditions and the chart's admission policies for `KubeconfigRequest`s and for the delete of a `ControlPlane` are built; the tenant write lock is not, and phase 3 does not build it ([roadmap](../roadmap.md)).
+The schema rules, the defaults, the controllers' conditions and the chart's admission policies for `KubeconfigRequest`s and for the delete of a `ControlPlane` and of its CRD are built; the tenant write lock is not, and phase 3 does not build it ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -9,7 +9,7 @@ The schema rules, the defaults, the controllers' conditions and the chart's admi
 - Defaults are schema defaults.
 - What a schema cannot check (a `DatastoreClass` that does not exist, a Gateway that lacks a listener) is reported as a condition on the object with a reason, not rejected at admission.
 - What a schema cannot see, the requester, is checked in the management cluster by an admission policy the API server evaluates, shipped with the chart: the `ValidatingAdmissionPolicy` `kubeconfigrequests.lodia.io` ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
-  So is the confirmation of a delete, which no object holds: `controlplanes.lodia.io` ([who-is-trusted](who-is-trusted.md)).
+  So is the delete itself, which a schema cannot see since `object` is null on `DELETE` ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/api/admissionregistration/v1/types.go#L318)): `controlplanes.lodia.io` and `controlplanes-crd.lodia.io` read the confirmation, an annotation, from the stored object ([who-is-trusted](who-is-trusted.md)).
 - Inside a tenant cluster, a write lock (for migration or maintenance) is a `ValidatingAdmissionPolicy` the Tenant controller applies, not a webhook that calls back into the operator.
 - `v1alpha1` is the only served and stored version; a later version is added only with a schema that converts with `strategy: None`, or with a conversion webhook as a deliberate, separately decided exception.
 

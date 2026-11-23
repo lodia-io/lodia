@@ -7,11 +7,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,9 +21,11 @@ import (
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -97,14 +101,14 @@ func TestKubeconfigRequestPolicy(t *testing.T) {
 		return obj
 	}
 
-	for _, obj := range policy(t, "kubeconfigrequests.yaml", lodiav1alpha1.KubeconfigRequestPolicy) {
+	for _, obj := range policies(t, "kubeconfigrequests.yaml", lodiav1alpha1.KubeconfigRequestPolicy) {
 		if err := k8s.Create(ctx, obj); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
 		ctx := context.Background()
-		for _, obj := range policy(t, "kubeconfigrequests.yaml", lodiav1alpha1.KubeconfigRequestPolicy) {
+		for _, obj := range policies(t, "kubeconfigrequests.yaml", lodiav1alpha1.KubeconfigRequestPolicy) {
 			if err := k8s.Delete(ctx, obj); err != nil {
 				t.Error(err)
 			}
@@ -168,7 +172,7 @@ func TestKubeconfigRequestPolicy(t *testing.T) {
 	}
 }
 
-func policy(t *testing.T, file, want string) []*unstructured.Unstructured {
+func policies(t *testing.T, file string, names ...string) []*unstructured.Unstructured {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "charts", "lodia", "files", "policies", file))
 	if err != nil {
@@ -184,17 +188,28 @@ func policy(t *testing.T, file, want string) []*unstructured.Unstructured {
 		if err != nil {
 			t.Fatal(err)
 		}
-		obj := decode(t, string(doc))
-		if obj.GetName() != want {
-			t.Fatalf("the %s is %s, want %s", obj.GetKind(), obj.GetName(), want)
+		out = append(out, decode(t, string(doc)))
+	}
+	if len(out) != 2*len(names) {
+		t.Fatalf("want a policy and its binding for each of %v, got %d objects", names, len(out))
+	}
+	for i, name := range names {
+		policy, binding := out[2*i], out[2*i+1]
+		if policy.GetKind() != "ValidatingAdmissionPolicy" || policy.GetName() != name {
+			t.Fatalf("object %d is the %s %s, want the ValidatingAdmissionPolicy %s", 2*i, policy.GetKind(), policy.GetName(), name)
 		}
-		out = append(out, obj)
-	}
-	if len(out) != 2 {
-		t.Fatalf("want a policy and its binding, got %d objects", len(out))
-	}
-	if name, _, _ := unstructured.NestedString(out[1].Object, "spec", "policyName"); name != want {
-		t.Fatalf("the binding names the policy %s", name)
+		if failure, _, _ := unstructured.NestedString(policy.Object, "spec", "failurePolicy"); failure != "Fail" {
+			t.Fatalf("the policy %s has failurePolicy %q, want Fail", name, failure)
+		}
+		if binding.GetKind() != "ValidatingAdmissionPolicyBinding" || binding.GetName() != name {
+			t.Fatalf("object %d is the %s %s, want the ValidatingAdmissionPolicyBinding %s", 2*i+1, binding.GetKind(), binding.GetName(), name)
+		}
+		if bound, _, _ := unstructured.NestedString(binding.Object, "spec", "policyName"); bound != name {
+			t.Fatalf("the binding %s names the policy %s", name, bound)
+		}
+		if actions, _, _ := unstructured.NestedStringSlice(binding.Object, "spec", "validationActions"); !slices.Equal(actions, []string{"Deny"}) {
+			t.Fatalf("the binding %s has validationActions %v, want [Deny]", name, actions)
+		}
 	}
 	return out
 }
@@ -318,6 +333,11 @@ func recipe(t *testing.T, heading string) []*unstructured.Unstructured {
 	return out
 }
 
+const (
+	controlPlanePolicy    = "controlplanes.lodia.io"
+	controlPlaneCRDPolicy = "controlplanes-crd.lodia.io"
+)
+
 func TestAControlPlaneIsDeletedOnlyOnceConfirmed(t *testing.T) {
 	needsEnvtest(t)
 	const live, ending, collection = "deletion-live", "deletion-ending", "deletion-collection"
@@ -331,7 +351,7 @@ func TestAControlPlaneIsDeletedOnlyOnceConfirmed(t *testing.T) {
 		return obj
 	}
 	message := func(obj *unstructured.Unstructured) string {
-		return "ControlPlane " + obj.GetNamespace() + "/" + obj.GetName() + " is deleted only once confirmed: kubectl annotate controlplane " + obj.GetName() + " --namespace " + obj.GetNamespace() + " " + confirmed + "=true"
+		return "ControlPlane " + obj.GetNamespace() + "/" + obj.GetName() + " is deleted only once confirmed: kubectl annotate controlplane " + obj.GetName() + " --namespace " + obj.GetNamespace() + " --overwrite " + confirmed + "=true"
 	}
 	refused := func(t *testing.T, err error, obj *unstructured.Unstructured) {
 		t.Helper()
@@ -355,14 +375,14 @@ func TestAControlPlaneIsDeletedOnlyOnceConfirmed(t *testing.T) {
 	if err := k8s.Create(ctx, probe); err != nil {
 		t.Fatal(err)
 	}
-	for _, obj := range policy(t, "controlplanes.yaml", "controlplanes.lodia.io") {
+	for _, obj := range policies(t, "controlplanes.yaml", controlPlanePolicy, controlPlaneCRDPolicy) {
 		if err := k8s.Create(ctx, obj); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
 		ctx := context.Background()
-		for _, obj := range policy(t, "controlplanes.yaml", "controlplanes.lodia.io") {
+		for _, obj := range policies(t, "controlplanes.yaml", controlPlanePolicy, controlPlaneCRDPolicy) {
 			if err := k8s.Delete(ctx, obj); err != nil {
 				t.Error(err)
 			}
@@ -392,6 +412,7 @@ func TestAControlPlaneIsDeletedOnlyOnceConfirmed(t *testing.T) {
 		admitted           bool
 	}{
 		{name: "no annotation"},
+		{name: "other annotations", annotations: map[string]string{"example.com/other": "x"}},
 		{name: "false", annotations: map[string]string{confirmed: "false"}},
 		{name: "True", annotations: map[string]string{confirmed: "True"}},
 		{name: "an empty value", annotations: map[string]string{confirmed: ""}},
@@ -496,6 +517,91 @@ func TestAControlPlaneIsDeletedOnlyOnceConfirmed(t *testing.T) {
 	})
 }
 
+func TestTheControlPlaneCRDIsDeletedOnlyOnceConfirmed(t *testing.T) {
+	needsEnvtest(t)
+	ctx := context.Background()
+	const crdName, otherCRD, otherAnnotation = "controlplanes.lodia.io", "kubeconfigrequests.lodia.io", "example.com/other"
+	confirmed := lodiav1alpha1.DeletionConfirmedAnnotation
+	crd := func(name string) *apiextensionsv1.CustomResourceDefinition {
+		return &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	}
+	annotate := func(t *testing.T, annotations map[string]string) {
+		t.Helper()
+		set := map[string]*string{confirmed: nil, otherAnnotation: nil}
+		for key, value := range annotations {
+			set[key] = &value
+		}
+		patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": set}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := k8s.Patch(ctx, crd(crdName), client.RawPatch(types.MergePatchType, patch)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dryRun := func(name string) error {
+		return k8s.Delete(ctx, crd(name), client.DryRunAll)
+	}
+	message := "CustomResourceDefinition " + crdName + " is deleted only once confirmed, and deleting it deletes every ControlPlane: kubectl annotate customresourcedefinition " + crdName + " --overwrite " + confirmed + "=true"
+
+	for _, obj := range policies(t, "controlplanes.yaml", controlPlanePolicy, controlPlaneCRDPolicy) {
+		if err := k8s.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		annotate(t, nil)
+		for _, obj := range policies(t, "controlplanes.yaml", controlPlanePolicy, controlPlaneCRDPolicy) {
+			if err := k8s.Delete(ctx, obj); err != nil {
+				t.Error(err)
+			}
+		}
+		err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+			return dryRun(crdName) == nil, nil
+		})
+		if err != nil {
+			t.Errorf("the CRD is still refused after the policy was deleted: %v", err)
+		}
+	})
+	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
+		return apierrors.IsForbidden(dryRun(crdName)), nil
+	})
+	if err != nil {
+		t.Fatalf("the policy never refused a delete of the CRD: %v", err)
+	}
+
+	for _, c := range []struct {
+		name        string
+		annotations map[string]string
+		admitted    bool
+	}{
+		{name: "no annotation"},
+		{name: "other annotations", annotations: map[string]string{otherAnnotation: "x"}},
+		{name: "false", annotations: map[string]string{confirmed: "false"}},
+		{name: "True", annotations: map[string]string{confirmed: "True"}},
+		{name: "an empty value", annotations: map[string]string{confirmed: ""}},
+		{name: "true", annotations: map[string]string{confirmed: "true"}, admitted: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			annotate(t, c.annotations)
+			err := dryRun(crdName)
+			switch {
+			case c.admitted && err != nil:
+				t.Fatalf("want admitted, got %v", err)
+			case !c.admitted && (!apierrors.IsForbidden(err) || !strings.Contains(err.Error(), message)):
+				t.Fatalf("want Forbidden with %q, got %v", message, err)
+			}
+		})
+	}
+
+	t.Run("another CRD", func(t *testing.T) {
+		annotate(t, nil)
+		if err := dryRun(otherCRD); err != nil {
+			t.Fatalf("want admitted, got %v", err)
+		}
+	})
+}
+
 func TestTheNamespacePolicyOfOperationsRefusesTheDeletionOfATenantNamespaceUnlessConfirmed(t *testing.T) {
 	needsEnvtest(t)
 	ctx := context.Background()
@@ -506,7 +612,7 @@ func TestTheNamespacePolicyOfOperationsRefusesTheDeletionOfATenantNamespaceUnles
 		return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels, Annotations: annotations}}
 	}
 	message := func(name string) string {
-		return "namespace " + name + " holds tenants: kubectl annotate namespace " + name + " " + confirmed + "=true"
+		return "namespace " + name + " holds tenants: kubectl annotate namespace " + name + " --overwrite " + confirmed + "=true"
 	}
 	probe := namespace("recipe-probe", map[string]string{tenant: "probe"}, nil)
 	if err := k8s.Create(ctx, probe); err != nil {

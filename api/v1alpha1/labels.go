@@ -81,9 +81,10 @@ const (
 	MaintainRequestedAtAnnotation = "lodia.io/maintain-requested-at"
 
 	// DeletionConfirmedAnnotation "true", set by the platform on a
-	// ControlPlane, confirms its deletion: the chart's admission policy
-	// controlplanes.lodia.io refuses a delete of one without it, and no
-	// controller of Lodia reads or writes it.
+	// ControlPlane or on the CustomResourceDefinition controlplanes.lodia.io,
+	// confirms its deletion: the chart's admission policies
+	// controlplanes.lodia.io and controlplanes-crd.lodia.io refuse a delete of
+	// either without it, and no controller of Lodia reads or writes it.
 	DeletionConfirmedAnnotation = "lodia.io/deletion-confirmed"
 
 	// OperatorRevisionAnnotation, written by Workloads on its Deployments and

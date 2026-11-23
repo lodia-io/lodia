@@ -206,7 +206,7 @@ func TestPhase1Gate(t *testing.T) {
 		}).
 		Assess("deleting the ControlPlane without its confirmation is refused and the tenant stays Ready", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			err := k8s.Delete(ctx, &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: gateTenant}})
-			want := "kubectl annotate controlplane " + controlPlane + " --namespace " + gateTenant + " " + lodiav1alpha1.DeletionConfirmedAnnotation + "=true"
+			want := "kubectl annotate controlplane " + controlPlane + " --namespace " + gateTenant + " --overwrite " + lodiav1alpha1.DeletionConfirmedAnnotation + "=true"
 			if !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), want) {
 				t.Fatalf("the delete answered %v, want Forbidden with %q", err, want)
 			}
