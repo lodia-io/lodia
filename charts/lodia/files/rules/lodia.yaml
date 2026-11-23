@@ -20,7 +20,7 @@ groups:
             and on (namespace, controlplane) time() - lodia_controlplane_condition_last_transition_timestamp_seconds{type="Ready"} < 3600
           )
           unless on (namespace, controlplane) (
-            lodia_controlplane_condition_reason{type="Ready",reason="HostnameConflict"}
+            lodia_controlplane_condition_reason{type="Ready",reason=~"HostnameConflict|WaitingForLoadBalancer|AddressMismatch|ExternalProbeFailed"}
             and on (namespace, controlplane) lodia_controlplane_condition_reason{type="ControllersLeading",reason=~"AwaitingRelease|SourceExists"}
           )
           unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Progressing",reason="Paused"}

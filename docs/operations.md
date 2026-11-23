@@ -425,11 +425,11 @@ Otherwise no replica leads: nothing is reconciled, and tenants keep running ([op
 
 ### LodiaControlPlaneNotReady
 
-Critical, after 10 minutes of `Ready` not True, but while it reads `Deleting`, which [`LodiaControlPlaneDeletionStuck`](#lodiacontrolplanedeletionstuck) watches, `Restoring` within an hour of `Ready`'s `lastTransitionTime`, a restore its owner asked for, or while a restored `ControlPlane` is held for its release: `AwaitingRelease`, `SourceExists`, or `HostnameConflict` while `ControllersLeading` reads one of the two, a held restore in `gateway` mode whose source keeps the hostnames ([replace a cluster](#replace-a-cluster-from-a-backup)).
+Critical, after 10 minutes of `Ready` not True, but while it reads `Deleting`, which [`LodiaControlPlaneDeletionStuck`](#lodiacontrolplanedeletionstuck) watches, `Restoring` within an hour of `Ready`'s `lastTransitionTime`, a restore its owner asked for, or while a restored `ControlPlane` is held for its release: `AwaitingRelease`, `SourceExists`, or, while `ControllersLeading` reads one of the two, `HostnameConflict`, a held restore in `gateway` mode whose source keeps the hostnames, and `WaitingForLoadBalancer`, `AddressMismatch` or `ExternalProbeFailed`, a held restore whose `endpoint.loadBalancer.host` its source still holds ([replace a cluster](#replace-a-cluster-from-a-backup)).
 A restore reads `Restoring` until it is recorded, after the cleanup and a full snapshot of the cleaned data ([reasons](api/controlplane.md#conditions-and-their-reasons)), so one that never ends fires 70 minutes after `Ready` turned False.
 A restore fires on `WaitingForBackup`, which PKI also reads for a failed `Backup`.
 In `gateway` mode, a restore whose source keeps the hostnames reads `HostnameConflict` from its start, since `RoutesReady` comes first in `Ready`, while `ControllersLeading` reads `WaitingForAccess` until `AccessReady` is True, so it fires unless its hold is written within 10 minutes.
-A held restore whose certificates, etcd or endpoint fail reads that failure in `Ready`, and fires.
+A held restore whose certificates, etcd or endpoint fail with any other reason reads that failure in `Ready`, and fires.
 `Ready`'s reason and message name the first input that is not True: its row in [what breaks](#what-breaks-and-how-it-shows).
 A hibernated tenant joins the exceptions with hibernation, in phase 3.
 

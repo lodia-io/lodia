@@ -208,6 +208,7 @@ var (
 	readyFrom = map[string]string{
 		"CAExpired": "CertificatesReady", "WaitingForBackup": "CertificatesReady",
 		"Restoring": "DatastoreReady", "Unavailable": "APIServerReady", "HostnameConflict": "RoutesReady",
+		"WaitingForLoadBalancer": "LoadBalancerReady", "AddressMismatch": "LoadBalancerReady", "ExternalProbeFailed": "Reachable",
 	}
 	statuses = []string{"True", "False", "Unknown"}
 )

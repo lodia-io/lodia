@@ -62,14 +62,10 @@ func (r *Reconciler) gateway(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 
 func gatewayEndpoint(cp *lodiav1alpha1.ControlPlane, port int32) *lodiav1alpha1.EndpointStatus {
 	hostnames := cp.Spec.Endpoint.Gateway.Hostnames
-	advertise := lodiav1alpha1.DefaultAdvertiseAddress
-	if a := cp.Spec.APIServer; a != nil && a.AdvertiseAddress != "" {
-		advertise = a.AdvertiseAddress
-	}
 	return &lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: string(hostnames.APIServer), Port: port},
 		Konnectivity: lodiav1alpha1.HostPort{Host: string(hostnames.Konnectivity), Port: port},
-		InCluster:    lodiav1alpha1.HostPort{Host: advertise, Port: kubernetesPort},
+		InCluster:    lodiav1alpha1.HostPort{Host: cp.Spec.AdvertiseAddress(), Port: kubernetesPort},
 		Tunnel:       &lodiav1alpha1.HostPort{Host: string(hostnames.Tunnel), Port: port},
 	}
 }

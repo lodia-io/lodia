@@ -96,10 +96,9 @@ const (
 
 // APIServerReady.
 const (
-	ReasonUnavailable                     = "Unavailable"
-	ReasonProgressDeadlineExceeded        = "ProgressDeadlineExceeded"
-	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
-	ReasonAuthenticationInvalid           = "AuthenticationInvalid"
+	ReasonUnavailable              = "Unavailable"
+	ReasonProgressDeadlineExceeded = "ProgressDeadlineExceeded"
+	ReasonAuthenticationInvalid    = "AuthenticationInvalid"
 )
 
 // RoutesReady: Accepted, True, when every route of the ControlPlane is
@@ -231,28 +230,27 @@ const (
 // True, or has a reason that is neither a first pass, a wait nor another of
 // these (docs/decisions/metrics-are-part-of-the-api.md).
 var WarningReasons = map[string]WarningGroup{
-	ReasonUnsupported:                     WarningRefusal,
-	ReasonLoadBalancerHostnameUnsupported: WarningRefusal,
-	ReasonGatewayUnsupported:              WarningRefusal,
-	ReasonTimeZoneUnsupported:             WarningRefusal,
-	ReasonRefused:                         WarningRefusal,
-	ReasonObjectsControlledElsewhere:      WarningRefusal,
-	ReasonSecretsControlledElsewhere:      WarningRefusal,
-	ReasonSecretsExist:                    WarningRefusal,
-	ReasonDatastoreClassNotFound:          WarningRefusal,
-	ReasonBackupNotFound:                  WarningRefusal,
-	ReasonGatewayNotFound:                 WarningRefusal,
-	ReasonControlPlaneNotFound:            WarningRefusal,
-	ReasonSecretNotFound:                  WarningRefusal,
-	ReasonDatastoreClassAmbiguous:         WarningRefusal,
-	ReasonVolumesExist:                    WarningRefusal,
-	ReasonBackupIncompatible:              WarningRefusal,
-	ReasonCAPredatesControlPlane:          WarningRefusal,
-	ReasonRouteNotAccepted:                WarningRefusal,
-	ReasonHostnameConflict:                WarningRefusal,
-	ReasonTooManyNodes:                    WarningRefusal,
-	ReasonAuthenticationInvalid:           WarningRefusal,
-	ReasonAddressMismatch:                 WarningRefusal,
+	ReasonUnsupported:                WarningRefusal,
+	ReasonGatewayUnsupported:         WarningRefusal,
+	ReasonTimeZoneUnsupported:        WarningRefusal,
+	ReasonRefused:                    WarningRefusal,
+	ReasonObjectsControlledElsewhere: WarningRefusal,
+	ReasonSecretsControlledElsewhere: WarningRefusal,
+	ReasonSecretsExist:               WarningRefusal,
+	ReasonDatastoreClassNotFound:     WarningRefusal,
+	ReasonBackupNotFound:             WarningRefusal,
+	ReasonGatewayNotFound:            WarningRefusal,
+	ReasonControlPlaneNotFound:       WarningRefusal,
+	ReasonSecretNotFound:             WarningRefusal,
+	ReasonDatastoreClassAmbiguous:    WarningRefusal,
+	ReasonVolumesExist:               WarningRefusal,
+	ReasonBackupIncompatible:         WarningRefusal,
+	ReasonCAPredatesControlPlane:     WarningRefusal,
+	ReasonRouteNotAccepted:           WarningRefusal,
+	ReasonHostnameConflict:           WarningRefusal,
+	ReasonTooManyNodes:               WarningRefusal,
+	ReasonAuthenticationInvalid:      WarningRefusal,
+	ReasonAddressMismatch:            WarningRefusal,
 
 	ReasonFailed:                   WarningFailure,
 	ReasonMaintenanceFailed:        WarningFailure,

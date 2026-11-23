@@ -5,6 +5,7 @@
 package workloads
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"maps"
 	"net"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strconv"
@@ -205,9 +207,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		first := statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)
 		var routes *metav1.Condition
 		if cp.Spec.Endpoint.Gateway != nil {
-			routes = asRoutes(first)
+			routes = as(lodiav1alpha1.ConditionRoutesReady, first)
 		}
-		if err := r.applyStatus(ctx, cp, cp.Status.Endpoint, cp.Status.Components, first, routes); err != nil {
+		if err := r.applyStatus(ctx, cp, published(cp), cp.Status.Components, first, routes, balancerOf(cp, first)); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -219,7 +221,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if readErr != nil {
 		return ctrl.Result{}, errors.Join(err, readErr)
 	}
-	if statusErr := r.applyStatus(ctx, cp, out.endpoint, components, out.condition, out.routes); statusErr != nil || err != nil {
+	if statusErr := r.applyStatus(ctx, cp, out.endpoint, components, out.condition, out.routes, out.balancer); statusErr != nil || err != nil {
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	requeueAfter := out.requeueAfter
@@ -235,38 +237,48 @@ type outcome struct {
 	endpoint     *lodiav1alpha1.EndpointStatus
 	condition    metav1.Condition
 	routes       *metav1.Condition
+	balancer     *metav1.Condition
 	requeueAfter time.Duration
 }
 
 // reconcile publishes the endpoint before it waits on anything or says what it
-// does not build, since PKI and Health need it. In gateway mode it also
-// reports RoutesReady, and a published endpoint stays on every path: an apply
-// without it would remove it.
+// does not build, since PKI and Health need it, and a published endpoint stays
+// on every path: an apply without it would remove it. In gateway mode it also
+// reports RoutesReady, and in loadBalancer mode LoadBalancerReady.
 func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*outcome, error) {
 	svc := service(cp)
 	if held, requeueAfter, err := r.controlledElsewhere(ctx, cp, svc); err != nil || held != nil {
 		if err != nil {
 			return nil, err
 		}
-		var endpoint *lodiav1alpha1.EndpointStatus
-		if cp.Spec.Endpoint.Gateway != nil {
-			endpoint = cp.Status.Endpoint
-		}
-		return &outcome{endpoint: endpoint, condition: *held, routes: keptRoutes(cp, *held), requeueAfter: requeueAfter}, nil
+		return &outcome{endpoint: published(cp), condition: *held, routes: keptRoutes(cp, *held), balancer: balancerOf(cp, *held), requeueAfter: requeueAfter}, nil
 	}
 	if err := r.apply(ctx, cp, svc); err != nil {
-		out, err := refused(cp.Status.Endpoint, svc, err)
+		out, err := refused(published(cp), svc, err)
 		if out != nil {
 			out.routes = keptRoutes(cp, out.condition)
+			out.balancer = balancerOf(cp, out.condition)
 		}
 		return out, err
 	}
-	if cp.Spec.Endpoint.Gateway == nil {
-		endpoint, waiting, requeueAfter, err := r.endpoint(ctx, cp, svc)
+	switch {
+	case cp.Spec.Endpoint.LoadBalancer != nil:
+		endpoint, balancer := loadBalancer(cp, svc)
+		var waiting *metav1.Condition
+		if endpoint == nil {
+			waiting = new(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for an address of the load balancer of Service "+svc.Name+", which LoadBalancerReady says"))
+		}
+		out, err := r.rollout(ctx, cp, endpoint, waiting, 0)
+		if out != nil {
+			out.balancer = &balancer
+		}
+		return out, err
+	case cp.Spec.Endpoint.NodePort != nil:
+		endpoint, waiting, err := r.nodePortEndpoint(ctx, cp, svc)
 		if err != nil {
 			return nil, err
 		}
-		return r.rollout(ctx, cp, endpoint, waiting, requeueAfter)
+		return r.rollout(ctx, cp, endpoint, waiting, time.Minute)
 	}
 	endpoint, waiting, routes, routesErr := r.gateway(ctx, cp)
 	if routes == nil {
@@ -799,50 +811,133 @@ func cached(obj client.Object) client.Object {
 	}
 }
 
-// A node port endpoint keeps the address it was published with while any node
-// still reports it as an InternalIP, Ready or not: the serving certificate,
-// the kubeconfigs, the ServiceAccount issuer and every joined kubelet name it.
-// A new one is the first Ready node's by name. No event reports a node, so it
-// is checked again every minute.
-func (r *Reconciler) endpoint(ctx context.Context, cp *lodiav1alpha1.ControlPlane, svc *corev1.Service) (*lodiav1alpha1.EndpointStatus, *metav1.Condition, time.Duration, error) {
-	if cp.Spec.Endpoint.NodePort != nil {
-		published := ""
-		if e := cp.Status.Endpoint; e != nil {
-			published = e.APIServer.Host
-		}
-		host, err := r.nodeAddress(ctx, published)
-		if err != nil {
-			return nil, nil, 0, err
-		}
-		if host == "" {
-			waiting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "no Ready node of the management cluster has an InternalIP")
-			return nil, &waiting, time.Minute, nil
-		}
-		return &lodiav1alpha1.EndpointStatus{
-			APIServer:    lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, kubernetesPort)},
-			Konnectivity: lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, konnectivityPort)},
-			InCluster:    lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, kubernetesPort)},
-		}, nil, time.Minute, nil
+// published is the endpoint of a pass that learns nothing of the address: the
+// one endpoint.loadBalancer.host names, or else the one published.
+func published(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.EndpointStatus {
+	if lb := cp.Spec.Endpoint.LoadBalancer; lb != nil && lb.Host != "" {
+		return atHost(cp, string(lb.Host))
 	}
-	ingress := svc.Status.LoadBalancer.Ingress
-	i := slices.IndexFunc(ingress, func(in corev1.LoadBalancerIngress) bool { return in.IP != "" })
-	switch {
-	case len(ingress) == 0:
-		waiting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for an address of the load balancer of Service "+svc.Name)
-		return nil, &waiting, 0, nil
-	case i < 0:
-		waiting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonLoadBalancerHostnameUnsupported,
-			fmt.Sprintf("the load balancer of Service %s has the host name %s and no IP, and the API server advertises an IP", svc.Name, ingress[0].Hostname))
-		return nil, &waiting, 0, nil
-	}
-	return &lodiav1alpha1.EndpointStatus{
-		APIServer:    lodiav1alpha1.HostPort{Host: ingress[i].IP, Port: lodiav1alpha1.APIServerServicePort},
-		Konnectivity: lodiav1alpha1.HostPort{Host: ingress[i].IP, Port: konnectivityPort},
-		InCluster:    lodiav1alpha1.HostPort{Host: ingress[i].IP, Port: kubernetesPort},
-	}, nil, 0, nil
+	return cp.Status.Endpoint
 }
 
-func (r *Reconciler) nodeAddress(ctx context.Context, published string) (string, error) {
+// atHost is a load balancer's endpoint at host: the tenant's pods dial host
+// when the spec names it as an IP address, and apiserver-proxy otherwise.
+func atHost(cp *lodiav1alpha1.ControlPlane, host string) *lodiav1alpha1.EndpointStatus {
+	inCluster := lodiav1alpha1.HostPort{Host: host, Port: lodiav1alpha1.APIServerServicePort}
+	if cp.Spec.Endpoint.NodeProxy() {
+		inCluster = lodiav1alpha1.HostPort{Host: cp.Spec.AdvertiseAddress(), Port: kubernetesPort}
+	}
+	return &lodiav1alpha1.EndpointStatus{
+		APIServer:    lodiav1alpha1.HostPort{Host: host, Port: lodiav1alpha1.APIServerServicePort},
+		Konnectivity: lodiav1alpha1.HostPort{Host: host, Port: konnectivityPort},
+		InCluster:    inCluster,
+	}
+}
+
+// loadBalancer is the endpoint of loadBalancer mode and LoadBalancerReady. With
+// host the endpoint is the spec's. Without it the endpoint is discovered and
+// keeps its host while an ingress entry still reports it, as a host name or an
+// IP, and while none reports an address: the serving certificate, the
+// kubeconfigs, the ServiceAccount issuer and every joined kubelet name it. A
+// new one is the first entry's host name, else its IP, since apiserver-proxy
+// dials either and a name outlives its addresses.
+func loadBalancer(cp *lodiav1alpha1.ControlPlane, svc *corev1.Service) (*lodiav1alpha1.EndpointStatus, metav1.Condition) {
+	ingress := svc.Status.LoadBalancer.Ingress
+	var ips, addresses []string
+	for _, in := range ingress {
+		if in.Hostname != "" {
+			addresses = append(addresses, in.Hostname)
+		}
+		if in.IP != "" {
+			ips, addresses = append(ips, in.IP), append(addresses, in.IP)
+		}
+	}
+	endpoint := published(cp)
+	reports := func(in corev1.LoadBalancerIngress) bool {
+		return endpoint != nil && (in.Hostname == endpoint.APIServer.Host || sameIP(in.IP, endpoint.APIServer.Host))
+	}
+	if cp.Spec.Endpoint.LoadBalancer.Host == "" && len(addresses) > 0 && !slices.ContainsFunc(ingress, reports) {
+		first := ingress[slices.IndexFunc(ingress, func(in corev1.LoadBalancerIngress) bool { return in.Hostname != "" || in.IP != "" })]
+		endpoint = atHost(cp, cmp.Or(first.Hostname, first.IP))
+	}
+	return endpoint, balancerReady(cp, svc.Name, ips, addresses)
+}
+
+// balancerReady is LoadBalancerReady from what the Service's load balancer
+// reports.
+func balancerReady(cp *lodiav1alpha1.ControlPlane, svc string, ips, addresses []string) metav1.Condition {
+	host := string(cp.Spec.Endpoint.LoadBalancer.Host)
+	of := "the load balancer of Service " + svc
+	switch {
+	case len(addresses) == 0:
+		return balancerCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForLoadBalancer, of+" reports no address yet")
+	case cp.Spec.Endpoint.NodeProxy():
+		return balancerCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, of+" reports "+listed(addresses))
+	case len(ips) == 0:
+		return balancerCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonUnverified,
+			fmt.Sprintf("%s reports the host names %s and no IP address, so endpoint.loadBalancer.host %s cannot be compared with them", of, listed(addresses), host))
+	case slices.ContainsFunc(ips, func(ip string) bool { return sameIP(ip, host) }):
+		return balancerCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonReady, of+" reports endpoint.loadBalancer.host "+host)
+	}
+	return balancerCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonAddressMismatch,
+		fmt.Sprintf("%s reports %s, not endpoint.loadBalancer.host %s: the annotation of endpoint.loadBalancer.annotations that asks the load balancer for it is missing or was ignored", of, listed(ips), host))
+}
+
+// sameIP says whether a and b are one IP address, which an ingress entry may
+// spell in a form that is not canonical.
+func sameIP(a, b string) bool {
+	x, errX := netip.ParseAddr(a)
+	y, errY := netip.ParseAddr(b)
+	return errX == nil && errY == nil && x == y
+}
+
+// maxListed bounds the addresses a message names: nothing bounds a Service's
+// ingress but the object's size.
+const maxListed = 10
+
+func listed(addresses []string) string {
+	if len(addresses) > maxListed {
+		return fmt.Sprintf("%s and %d more", strings.Join(addresses[:maxListed], ", "), len(addresses)-maxListed)
+	}
+	return strings.Join(addresses, ", ")
+}
+
+// nodePortEndpoint keeps the address it was published with while any node
+// still reports it as an InternalIP of the family of the first service range,
+// Ready or not: the serving certificate, the kubeconfigs, the ServiceAccount
+// issuer and every joined kubelet name it. A new one is the first Ready node's
+// by name. No event reports a node, so the caller checks again every minute.
+func (r *Reconciler) nodePortEndpoint(ctx context.Context, cp *lodiav1alpha1.ControlPlane, svc *corev1.Service) (*lodiav1alpha1.EndpointStatus, *metav1.Condition, error) {
+	published := ""
+	if e := cp.Status.Endpoint; e != nil {
+		published = e.APIServer.Host
+	}
+	range0, err := netip.ParsePrefix(string(cp.Spec.Network.ServiceCIDRs[0]))
+	if err != nil {
+		return nil, nil, err
+	}
+	ipv6 := range0.Addr().Is6()
+	host, err := r.nodeAddress(ctx, published, ipv6)
+	if err != nil {
+		return nil, nil, err
+	}
+	if host == "" {
+		family := "IPv4"
+		if ipv6 {
+			family = "IPv6"
+		}
+		waiting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint,
+			"no Ready node of the management cluster has an "+family+" InternalIP, the family of network.serviceCIDRs[0]")
+		return nil, &waiting, nil
+	}
+	return &lodiav1alpha1.EndpointStatus{
+		APIServer:    lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, lodiav1alpha1.APIServerServicePort)},
+		Konnectivity: lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, konnectivityPort)},
+		InCluster:    lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, lodiav1alpha1.APIServerServicePort)},
+	}, nil, nil
+}
+
+func (r *Reconciler) nodeAddress(ctx context.Context, published string, ipv6 bool) (string, error) {
 	nodes := &corev1.NodeList{}
 	if err := r.Reader.List(ctx, nodes); err != nil {
 		return "", err
@@ -852,7 +947,7 @@ func (r *Reconciler) nodeAddress(ctx context.Context, published string) (string,
 	for _, node := range nodes.Items {
 		var internal []string
 		for _, a := range node.Status.Addresses {
-			if a.Type == corev1.NodeInternalIP {
+			if address, err := netip.ParseAddr(a.Address); a.Type == corev1.NodeInternalIP && err == nil && address.Is6() == ipv6 {
 				internal = append(internal, a.Address)
 			}
 		}
@@ -1192,14 +1287,16 @@ func dropNulls(m map[string]any) {
 	}
 }
 
-// applyStatus applies APIServerReady and, in gateway mode, RoutesReady, each
-// at cp's generation unless it names one, status.components and, once both
-// addresses exist, status.endpoint whole; a nil endpoint or components drops a
-// published one.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition, routes *metav1.Condition) error {
+// applyStatus applies APIServerReady and, in gateway mode, RoutesReady or, in
+// loadBalancer mode, LoadBalancerReady, each at cp's generation unless it names
+// one, status.components and, once both addresses exist, status.endpoint
+// whole; a nil endpoint or components drops a published one.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, endpoint *lodiav1alpha1.EndpointStatus, components *lodiav1alpha1.ComponentsStatus, condition metav1.Condition, routes, balancer *metav1.Condition) error {
 	conditions := []metav1.Condition{condition}
-	if routes != nil {
-		conditions = append(conditions, *routes)
+	for _, c := range []*metav1.Condition{routes, balancer} {
+		if c != nil {
+			conditions = append(conditions, *c)
+		}
 	}
 	for i := range conditions {
 		if conditions[i].ObservedGeneration == 0 {
@@ -1214,13 +1311,27 @@ func newCondition(status metav1.ConditionStatus, reason, message string) metav1.
 	return metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: status, Reason: reason, Message: message}
 }
 
-func asRoutes(c metav1.Condition) *metav1.Condition {
-	c.Type = lodiav1alpha1.ConditionRoutesReady
+func as(conditionType string, c metav1.Condition) *metav1.Condition {
+	c.Type = conditionType
 	return &c
 }
 
 func routesCondition(status metav1.ConditionStatus, reason, message string) *metav1.Condition {
-	return asRoutes(newCondition(status, reason, message))
+	return as(lodiav1alpha1.ConditionRoutesReady, newCondition(status, reason, message))
+}
+
+func balancerCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
+	return metav1.Condition{Type: lodiav1alpha1.ConditionLoadBalancerReady, Status: status, Reason: reason, Message: message}
+}
+
+// balancerOf is LoadBalancerReady in loadBalancer mode on a pass that stops at
+// the Service, or on its first pass: the Service's reason and message, since
+// the load balancer is the Service's.
+func balancerOf(cp *lodiav1alpha1.ControlPlane, service metav1.Condition) *metav1.Condition {
+	if cp.Spec.Endpoint.LoadBalancer == nil {
+		return nil
+	}
+	return as(lodiav1alpha1.ConditionLoadBalancerReady, service)
 }
 
 // keptRoutes is RoutesReady in gateway mode on a pass that stops at the
@@ -1234,5 +1345,5 @@ func keptRoutes(cp *lodiav1alpha1.ControlPlane, service metav1.Condition) *metav
 	if kept := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRoutesReady); kept != nil && kept.Reason != lodiav1alpha1.ReasonReconciling {
 		return kept.DeepCopy()
 	}
-	return asRoutes(service)
+	return as(lodiav1alpha1.ConditionRoutesReady, service)
 }

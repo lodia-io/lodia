@@ -11,8 +11,23 @@ The three modes, the in-cluster `apiserver-proxy`, the tunnel and Health's probe
 | mode | what Lodia creates | public endpoint | in-cluster `kubernetes` Service |
 |---|---|---|---|
 | `gateway` (default) | three passthrough `TLSRoute`s on the platform's Gateway, all to the Service `<cp>-kube-apiserver`: `hostnames.apiServer` → the API server, `hostnames.konnectivity` → konnectivity-server, `hostnames.tunnel` → the tunnel sidecar | `https://<hostnames.apiServer>:443` | endpoints `240.0.0.1:6443`, the advertise address, served on every node by `apiserver-proxy` |
-| `loadBalancer` | one Service of type LoadBalancer: 443 and 6443 → the API server, 8132 → konnectivity | `https://<LB address>:443` | endpoints `<LB address>:6443`, no proxy |
-| `nodePort` | one Service of type NodePort with the same ports | `https://<a management node>:<port>` | endpoints `<node>:<port>`; development only |
+| `loadBalancer` | one Service of type LoadBalancer: 443 → the API server, 8132 → konnectivity | `https://<host>:443`, `endpoint.loadBalancer.host` or the load balancer's own | by the spec, below |
+| `nodePort` | one Service of type NodePort with the same ports | `https://<a management node>:<node port of 443>` | endpoints `<node>:<node port of 443>`, the node's InternalIP of the family of the first service range; development only |
+
+**A load balancer's host.**
+The platform names the host in `endpoint.loadBalancer.host`, an IP address it reserved or a name it points at the load balancer, and the spec decides how pods reach it:
+
+| the spec | the public endpoint | published | the `kubernetes` Service's endpoint | pods reach the API |
+|---|---|---|---|---|
+| `host` is an IP address | `host`:443 | on the first pass | `host`:443 | directly |
+| `host` is a name | `host`:443 | on the first pass | the advertise address:6443 | through `apiserver-proxy`, which dials `host`:443 |
+| no `host` | the first ingress entry's host name, else its IP, :443 | once the load balancer reports it | the advertise address:6443 | through `apiserver-proxy`, which dials it at 443 |
+
+Behind a load balancer Lodia writes an address into a tenant's `kubernetes` endpoints only when the spec names it as an IP address, which admission checked to be of the first service range's family and outside the tenant's ranges; the node dials anything else.
+An EndpointSlice holds IP addresses, and kube-proxy processes no other kind ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/discovery/v1/types.go#L40-L50)), so a name would have to be resolved into endpoints.
+On kind, a Service whose EndpointSlice held a live address and one that drops SYNs failed 17 of 30 new connections, each after the client's full 10 seconds, since kube-proxy picks an endpoint per connection and the retransmits stay on it; a Go client dialing a name with both addresses got all 30 through.
+Whether the load balancer reports an IP or a host name is known only at run time, while the advertise address and its rules are the schema's, so a tenant without `host` goes through `apiserver-proxy` whatever it reports.
+The Service takes the API server at 443 alone in every mode: Lodia writes the `kubernetes` endpoints itself, so nothing needs the Service at the API server's own port, 6443, which the API server and the advertise address keep.
 
 **The `kubernetes` Service's endpoints.**
 In every mode the API server runs with `--endpoint-reconciler-type=none` and writes no `kubernetes` endpoints.
@@ -140,12 +155,13 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 - The tunnel adds a second TLS session to every in-cluster API connection, not to kubelets or users; the phase 2 gate measures the overhead.
 - A `ControlPlane` keeps its advertise address for life, and two whose hostnames collide stop the younger one's routes, not the Gateway.
 - `spec.endpoint` does not change after creation in `v1alpha1` but for a load balancer's `annotations` and `sourceRanges`; moving between modes, or to another `loadBalancer.host`, changes the address in every kubeconfig and node.
+- A `loadBalancer` tenant without `host` follows its load balancer: one made again with another address moves the tenant's identity, which strands its nodes and tokens, so a tenant that must outlive its load balancer names `host`.
 - A `kubernetes` Endpoints or EndpointSlice edited or deleted inside the tenant comes back within Tenant's apply period, not within the lease reconciler's 10 seconds.
 
 ## Code
 
 - `api/v1alpha1` — the contracts of the exposure: `GatewayHostnames` with the tunnel required and the three distinct, `LoadBalancerEndpoint.Host` with its rules, `Endpoint`'s transition rule, `APIServer.AdvertiseAddress` with its rules, `Endpoint.NodeProxy`, `ControlPlaneSpec.AdvertiseAddress` and `DefaultAdvertiseAddress` in `names.go`, `EndpointStatus.Tunnel`, the tunnel's Secrets in `names.go`, and `RoutesReady` and `LoadBalancerReady` with their reasons in `conditions.go`; `test/api/validation_test.go` holds the rules, `api/v1alpha1/names_test.go` the two predicates.
-- `internal/controller/workloads` — the Service of each mode, `status.endpoint` with `inCluster`, the API server's advertise address and `--endpoint-reconciler-type=none`, and konnectivity-server beside it as a native sidecar on a Unix socket; in `gateway` mode, in `gateway.go`, the listener checks, the endpoint from the listener and kept once published, the three `TLSRoute`s with their owner by hostname and the check before each write, under the Gateway's fence of `internal/fence`, from the cache's index of routes by hostname, and in `render.go` the tunnel sidecar; `gateway_test.go` holds them against Gateways in envtest, the experimental channel's CRD included, and `testdata/render` pins the render of the other two modes.
+- `internal/controller/workloads` — the Service of each mode, `status.endpoint` with `inCluster`, the API server's advertise address and `--endpoint-reconciler-type=none`, and konnectivity-server beside it as a native sidecar on a Unix socket; in `loadBalancer` mode the endpoint from `host` or the load balancer's ingress and `LoadBalancerReady`, which `loadbalancer_internal_test.go` and `loadbalancer_test.go` hold; in `gateway` mode, in `gateway.go`, the listener checks, the endpoint from the listener and kept once published, the three `TLSRoute`s with their owner by hostname and the check before each write, under the Gateway's fence of `internal/fence`, from the cache's index of routes by hostname, and in `render.go` the tunnel sidecar; `gateway_test.go` holds them against Gateways in envtest, the experimental channel's CRD included, and `testdata/render` pins the render of every mode.
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice in `manifests/endpoints.yaml`, the agents' flags in `manifests/konnectivity.yaml`, and `apiserver-proxy` in `manifests/apiserver-proxy.yaml`, with its Secret in `render.go`, which `deliverTunnelClient` in `tenant.go` applies whatever the conditions say; `render_test.go`, `gateway_test.go` and `tenant_test.go` hold the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under requests from outside and inside the tenant.
 - `internal/controller/health` — `Reachable`'s paths in `probes`, the three external ones of `gateway` mode among them, at once and each within the timeout, the tunnel's two TLS sessions in `throughTunnel`, and `<cp>-tunnel-client` in the prober; `gateway_test.go` holds each path failing alone and a hung one.
 - `internal/controller/pki` — the tunnel's Secrets and the advertise address in the API server's serving certificate, in this mode only; `tunnel_test.go` holds them against the other modes.

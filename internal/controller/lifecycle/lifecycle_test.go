@@ -517,26 +517,29 @@ func TestGatewayModeCountsRoutesReadyAmongTheInputs(t *testing.T) {
 }
 
 func TestRoutesReadyIsNoInputOutsideGatewayMode(t *testing.T) {
-	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
 	for _, c := range []struct {
 		name     string
 		endpoint lodiav1alpha1.Endpoint
+		inputs   []string
+		allTrue  string
 	}{
-		{"nodePort", lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}},
-		{"loadBalancer", lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}},
+		{"nodePort", lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}, readiness,
+			"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"},
+		{"loadBalancer", loadBalancer(""), append([]string{lodiav1alpha1.ConditionLoadBalancerReady}, readiness...),
+			"LoadBalancerReady, CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cp := controlPlaneBehind(t, "v1.37.1", c.endpoint)
 			setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict, "api.dev.example.com is held")
-			for _, conditionType := range readiness {
+			for _, conditionType := range c.inputs {
 				setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 			}
 			testenv.Eventually(t, func() error {
-				return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+				return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, c.allTrue, 1, 1)
 			})
 
 			setVersion(t, cp, "v1.37.2")
-			for _, conditionType := range readiness {
+			for _, conditionType := range c.inputs {
 				setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
 			}
 			reportAll(t, cp, "v1.37.2")
@@ -544,10 +547,83 @@ func TestRoutesReadyIsNoInputOutsideGatewayMode(t *testing.T) {
 				if err := expect(t, cp, "v1.37.2", lodiav1alpha1.ReasonIdle); err != nil {
 					return err
 				}
-				return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 2, 2)
+				return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, c.allTrue, 2, 2)
 			})
 		})
 	}
+}
+
+func TestReadyWithoutAHostTakesLoadBalancerReadyFirst(t *testing.T) {
+	const allTrue = "LoadBalancerReady, CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True"
+	cp := controlPlaneBehind(t, "v1.37.1", loadBalancer(""))
+	for _, conditionType := range readiness {
+		setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+	}
+	testenv.Eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved, "LoadBalancerReady is not reported for generation 1", 1, 0)
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionLoadBalancerReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "")
+	testenv.Eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+	})
+
+	setCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for status.endpoint")
+	for _, reason := range []string{
+		lodiav1alpha1.ReasonWaitingForLoadBalancer,
+		lodiav1alpha1.ReasonRefused,
+		lodiav1alpha1.ReasonObjectsControlledElsewhere,
+	} {
+		setCondition(t, cp, lodiav1alpha1.ConditionLoadBalancerReady, metav1.ConditionFalse, reason, "the load balancer of dev: "+reason)
+		testenv.Eventually(t, func() error {
+			return expectReady(t, cp, metav1.ConditionFalse, reason, "LoadBalancerReady: the load balancer of dev: "+reason, 1, 1)
+		})
+	}
+
+	setCondition(t, cp, lodiav1alpha1.ConditionLoadBalancerReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "")
+	testenv.Eventually(t, func() error {
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "CertificatesReady: waiting for status.endpoint", 1, 1)
+	})
+}
+
+func TestReadyWithAHostTakesLoadBalancerReadyJustBeforeReachable(t *testing.T) {
+	const allTrue = "CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, LoadBalancerReady, Reachable and ControllersLeading are True"
+	for _, host := range []lodiav1alpha1.EndpointHost{"203.0.113.10", "api.dev.example.com"} {
+		t.Run(string(host), func(t *testing.T) {
+			cp := controlPlaneBehind(t, "v1.37.1", loadBalancer(host))
+			for _, conditionType := range readiness {
+				setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
+			}
+			setCondition(t, cp, lodiav1alpha1.ConditionLoadBalancerReady, metav1.ConditionTrue, lodiav1alpha1.ReasonUnverified, "")
+			testenv.Eventually(t, func() error {
+				return expectReady(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, allTrue, 1, 1)
+			})
+
+			setCondition(t, cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, "the public endpoint answered nothing")
+			for _, reason := range []string{lodiav1alpha1.ReasonWaitingForLoadBalancer, lodiav1alpha1.ReasonAddressMismatch} {
+				setCondition(t, cp, lodiav1alpha1.ConditionLoadBalancerReady, metav1.ConditionFalse, reason, "the load balancer of dev: "+reason)
+				testenv.Eventually(t, func() error {
+					return expectReady(t, cp, metav1.ConditionFalse, reason, "LoadBalancerReady: the load balancer of dev: "+reason, 1, 1)
+				})
+			}
+
+			for _, refused := range []struct{ conditionType, reason string }{
+				{lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonRefused},
+				{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ReasonAuthenticationInvalid},
+				{lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ReasonDatastoreClassNotFound},
+			} {
+				setCondition(t, cp, refused.conditionType, metav1.ConditionFalse, refused.reason, "refused")
+				testenv.Eventually(t, func() error {
+					return expectReady(t, cp, metav1.ConditionFalse, refused.reason, refused.conditionType+": refused", 1, 1)
+				})
+				setCondition(t, cp, refused.conditionType, metav1.ConditionTrue, "Fine", "")
+			}
+		})
+	}
+}
+
+func loadBalancer(host lodiav1alpha1.EndpointHost) lodiav1alpha1.Endpoint {
+	return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: host}}
 }
 
 func gateway() lodiav1alpha1.Endpoint {
@@ -611,7 +687,7 @@ func expectNoWrite(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType, 
 
 func controlPlane(t *testing.T, version string) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	return controlPlaneBehind(t, version, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}})
+	return controlPlaneBehind(t, version, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
 }
 
 func controlPlaneBehind(t *testing.T, version string, endpoint lodiav1alpha1.Endpoint) *lodiav1alpha1.ControlPlane {
