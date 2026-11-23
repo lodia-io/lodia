@@ -121,7 +121,7 @@ func TestLoadBalancerGate(t *testing.T) {
 			createTenant(ctx, t, k8s, mismatched.key, mismatched.class, balancer(named, "", map[string]string{metallbAnnotation: given}))
 			return ctx
 		}).
-		Assess("MetalLB gives "+given+" and the Service reports it: AddressMismatch names both addresses, the tenant is built at "+named+", and a Warning event says so", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("MetalLB gives "+given+" and the Service reports it: AddressMismatch names both addresses, the tenant is built at "+named+", and a Normal event says so", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			until(ctx, t, 8*time.Minute, "LoadBalancerReady is False, AddressMismatch, over a tenant built at "+named, func(ctx context.Context) error {
 				cp, err := publishedAt(ctx, k8s, mismatched.key, named, hostPort(named, lodiav1alpha1.APIServerServicePort))
 				if err != nil {
@@ -146,8 +146,8 @@ func TestLoadBalancerGate(t *testing.T) {
 				before.endpoint = *cp.Status.Endpoint
 				return nil
 			})
-			until(ctx, t, 2*time.Minute, "a Warning event AddressMismatch regards the ControlPlane", func(ctx context.Context) error {
-				return warned(ctx, k8s, mismatched.key, lodiav1alpha1.ReasonAddressMismatch)
+			until(ctx, t, 2*time.Minute, "a Normal event AddressMismatch of LoadBalancerReady names "+named+" and "+given, func(ctx context.Context) error {
+				return mismatchRecorded(ctx, k8s, mismatched.key, named, given)
 			})
 			before.pod = string(apiServerPod(ctx, t, k8s, mismatched.key).UID)
 			before.kubeconfig = adminKubeconfigBytes(ctx, t, k8s, mismatched.key)
@@ -414,7 +414,7 @@ func settled(ctx context.Context, k8s client.Client, b *balanced, address string
 	return nil
 }
 
-func warned(ctx context.Context, k8s client.Client, key client.ObjectKey, reason string) error {
+func mismatchRecorded(ctx context.Context, k8s client.Client, key client.ObjectKey, named, given string) error {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(ctx, key, cp); err != nil {
 		return err
@@ -428,10 +428,10 @@ func warned(ctx context.Context, k8s client.Client, key client.ObjectKey, reason
 		if e.Regarding.Kind != "ControlPlane" || e.Regarding.Name != key.Name || e.Regarding.UID != cp.UID {
 			continue
 		}
-		if e.Reason == reason && e.Type == corev1.EventTypeWarning {
+		if e.Action == lodiav1alpha1.ConditionLoadBalancerReady && e.Reason == lodiav1alpha1.ReasonAddressMismatch && e.Type == corev1.EventTypeNormal && strings.Contains(e.Note, named) && strings.Contains(e.Note, given) {
 			return nil
 		}
-		regarding = append(regarding, fmt.Sprintf("%s %s", e.Type, e.Reason))
+		regarding = append(regarding, fmt.Sprintf("%s %s %s %q", e.Type, e.Action, e.Reason, e.Note))
 	}
 	return fmt.Errorf("the events regarding it are %v", regarding)
 }
