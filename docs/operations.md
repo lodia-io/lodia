@@ -252,6 +252,7 @@ A platform that translates a public address into its load balancer's private one
 Repair it in place: edit `endpoint.loadBalancer.annotations`, which with `sourceRanges` is what a living tenant's `endpoint` still lets change.
 Nothing else moves, and `LoadBalancerReady` turns True once the Service reports `host`.
 Whether a provider moves a live load balancer to another address is its own: MetalLB does ([service.go](https://github.com/metallb/metallb/blob/v0.16.2/controller/service.go#L143-L156)).
+GKE deletes the forwarding rule and creates it again with the new address, which cuts the tenant's public path meanwhile ([forwarding_rules.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/resources/forwarding_rules.go#L274-L284), [L302-L313](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/resources/forwarding_rules.go#L302-L313)).
 
 ### Who may connect
 
