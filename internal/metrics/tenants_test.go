@@ -31,7 +31,7 @@ var conditionTypes = []string{
 	lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionRoutesReady,
 	lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable, lodiav1alpha1.ConditionReachable,
 	lodiav1alpha1.ConditionControllersLeading, lodiav1alpha1.ConditionControllerManagerHeld, lodiav1alpha1.ConditionBackupReady,
-	lodiav1alpha1.ConditionProgressing, lodiav1alpha1.ConditionReady,
+	lodiav1alpha1.ConditionProgressing, lodiav1alpha1.ConditionReady, lodiav1alpha1.ConditionLoadBalancerReady,
 }
 
 type state struct {
@@ -54,12 +54,13 @@ var healthy = map[string]state{
 	lodiav1alpha1.ConditionBackupReady:           {metav1.ConditionTrue, lodiav1alpha1.ReasonBackupSucceeded},
 	lodiav1alpha1.ConditionProgressing:           {metav1.ConditionFalse, lodiav1alpha1.ReasonIdle},
 	lodiav1alpha1.ConditionReady:                 {metav1.ConditionTrue, lodiav1alpha1.ReasonReady},
+	lodiav1alpha1.ConditionLoadBalancerReady:     {metav1.ConditionTrue, lodiav1alpha1.ReasonReady},
 }
 
 func conditions(cp *lodiav1alpha1.ControlPlane, changed map[string]state) []metav1.Condition {
 	var out []metav1.Condition
 	for i, conditionType := range conditionTypes {
-		if conditionType == lodiav1alpha1.ConditionRoutesReady && cp.Spec.Endpoint.Gateway == nil {
+		if conditionType == lodiav1alpha1.ConditionRoutesReady && cp.Spec.Endpoint.Gateway == nil || conditionType == lodiav1alpha1.ConditionLoadBalancerReady && cp.Spec.Endpoint.LoadBalancer == nil {
 			continue
 		}
 		s, ok := changed[conditionType]
