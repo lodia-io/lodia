@@ -187,7 +187,7 @@ annotations:
 
 - The class selects the controller of regional external load balancers ([gce_annotations.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/annotations/gce_annotations.go#L48-L50)), the one that reads the annotation ([hold.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/address/hold.go#L38-L53)).
 - `edge` is the name of an address reserved in the cluster's region, and `host` is the IP address it holds.
-  A name the controller does not find is skipped and the load balancer takes another address, which Lodia reports as `AddressMismatch` ([l4_static_address.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/annotations/l4_static_address.go#L60-L99)).
+  A name the controller does not find is skipped ([l4_static_address.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/annotations/l4_static_address.go#L60-L99)), and the forwarding rule then keeps the address it has or gets a new one ([to_use.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/address/to_use.go#L35-L45), [manager.go](https://github.com/kubernetes/ingress-gce/blob/v1.43.4/pkg/l4/address/manager.go#L272-L281)), which Lodia reports as `AddressMismatch`.
 
 **AWS**, AWS Load Balancer Controller v3.6.3:
 
