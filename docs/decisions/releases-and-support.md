@@ -78,7 +78,7 @@ The chart, the release workflow that builds, signs, attests and publishes the im
 
 ## Code
 
-- `charts/lodia` — the chart ([values](../README.md#installation)): the CRDs as templates of the ones in `api/crds`, which `make generate` copies into `files/crds`.
+- `charts/lodia` — the chart ([values](../README.md#installation)): the CRDs as templates of the ones in `api/crds`, which `make generate` copies into `files/crds`, and the admission policies of `api/policies`, which it copies into `files/policies`.
   `make verify` lints and renders it with tags and with digests.
 - `.ko.yaml` — the base image, pinned by digest.
 - `.github/workflows/release.yml` — the release, through the `release-*` targets of the `Makefile`; `hack/releasecheck/release_test.go` holds its trigger, order, permissions and pins.
