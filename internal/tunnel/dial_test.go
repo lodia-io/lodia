@@ -855,3 +855,48 @@ func TestConnectionsBehindThreeSilentAddressesStartPastThoseTheEarlierOnesFailed
 		requireAttempts(t, f, live1)
 	})
 }
+
+func TestAnUpstreamThatEndsBeforeItsFirstByteFailsOnlyAfterAPodByteOrWithinAnAttemptOfItsConnect(t *testing.T) {
+	for name, tc := range map[string]struct {
+		after   time.Duration
+		podSent bool
+		fails   bool
+	}{
+		"at its connect, the pod silent":                        {0, false, true},
+		"just within an attempt of its connect, the pod silent": {2*time.Second - time.Millisecond, false, true},
+		"an attempt after its connect, the pod silent":          {2 * time.Second, false, false},
+		"long after its connect, the pod silent":                {32 * time.Second, false, false},
+		"long after its connect, after a byte of the pod":       {32 * time.Second, true, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newDialFixture(t, false, live1, live2)
+				defer f.net.closeAll()
+				f.net.set(live1, f.answering())
+				f.mustDial(t)
+
+				f.net.set(live1, f.net.serving(func(c net.Conn) {
+					go func() { _, _ = io.Copy(io.Discard, c) }()
+					time.Sleep(tc.after)
+					_ = c.Close()
+				}))
+				upstream, err := f.dialUpstream(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.podSent {
+					if _, err := upstream.Write([]byte("x")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if n, _ := upstream.Read(make([]byte, 1)); n != 0 {
+					t.Fatal("read a byte from an upstream that sends none")
+				}
+				failed := f.failed.Load() != nil && *f.failed.Load() == live1
+				if failed != tc.fails || (f.answered.Load() == nil) != tc.fails {
+					t.Fatalf("stepping past %v, remembered %v; want live1 failed %t", f.failed.Load(), f.answered.Load(), tc.fails)
+				}
+			})
+		})
+	}
+}

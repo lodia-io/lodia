@@ -291,8 +291,9 @@ func order(addrs []netip.Addr, answered, failed *netip.Addr) []netip.Addr {
 // dialAddr remembers addr once it has answered: the outer handshake is done, or
 // without the tunnel its first byte has arrived. It fails addr on a failed
 // connect, a handshake's error, or without the tunnel when the upstream ends
-// before that byte. The handshake runs within what is left of the total, not
-// within the attempt, so that a slow tunnel that is up is not dialed again.
+// before that byte as answering says. The handshake runs within what is left of
+// the total, not within the attempt, so that a slow tunnel that is up is not
+// dialed again.
 func (p *Proxy) dialAddr(ctx context.Context, addr netip.Addr, last *netip.Addr) (conn, error) {
 	attempt, cancel := context.WithTimeout(ctx, p.AttemptTimeout)
 	upstream, err := p.connect(attempt, netip.AddrPortFrom(addr, p.port))
@@ -306,6 +307,7 @@ func (p *Proxy) dialAddr(ctx context.Context, addr netip.Addr, last *netip.Addr)
 			conn:     upstream,
 			answered: func() { p.answered.Store(&addr) },
 			failed:   func() { p.fail(addr, last) },
+			early:    time.Now().Add(p.AttemptTimeout),
 		}, nil
 	}
 	session := tls.Client(upstream, p.tlsConfig())
@@ -337,14 +339,19 @@ func connectTCP(ctx context.Context, addr netip.AddrPort) (conn, error) {
 }
 
 // answering is an upstream without the tunnel. It has answered with its first
-// byte, and has failed if it ends before one while its pod's side is open: a pod
-// that ended its side may be what ended it.
+// byte, and has failed if it ends before one while its pod's side is open,
+// once the pod has sent it a byte or before early: a pod that ended its side
+// may be what ended it, and an API server ends a connection on which no
+// handshake began after a timeout of its own, while an address that resets as
+// it accepts may do so before the pod's first bytes are through.
 type answering struct {
 	conn
 	once     sync.Once
 	answered func()
 	failed   func()
+	early    time.Time
 	podEnded atomic.Bool
+	podSent  atomic.Bool
 }
 
 func (a *answering) Read(b []byte) (int, error) {
@@ -352,8 +359,16 @@ func (a *answering) Read(b []byte) (int, error) {
 	switch {
 	case n > 0:
 		a.once.Do(a.answered)
-	case err != nil && !a.podEnded.Load():
+	case err != nil && !a.podEnded.Load() && (a.podSent.Load() || time.Now().Before(a.early)):
 		a.once.Do(a.failed)
+	}
+	return n, err
+}
+
+func (a *answering) Write(b []byte) (int, error) {
+	n, err := a.conn.Write(b)
+	if n > 0 {
+		a.podSent.Store(true)
 	}
 	return n, err
 }
