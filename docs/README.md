@@ -152,7 +152,7 @@ A key keeps the name it has for good, whatever it is: the API server writes the 
 
 PKI finds its Secrets by name, labelled or not, and the names above are its own in the namespace: a Secret under one of them without a controller is adopted, so a key restored from a backup without its labels is kept.
 Restore such Secrets without `metadata.ownerReferences`: a reference to the old `ControlPlane`'s UID makes the Secret that `ControlPlane`'s, and the garbage collector deletes it.
-The tunnel's four are its own in `gateway` mode only: a `ControlPlane` of another mode can never use them, since `endpoint` is immutable, so PKI neither reads nor reports a Secret under one.
+The tunnel's four are its own in `gateway` mode only: a `ControlPlane` of another mode can never use them, since the mode of `endpoint` is immutable, so PKI neither reads nor reports a Secret under one.
 A Secret under PKI's names whose controller is not this `ControlPlane`, or that refers to another `ControlPlane` at all, is neither read nor written, and while one exists PKI writes nothing (`CertificatesReady=False`, `SecretsControlledElsewhere`): a `ControlPlane` recreated under its predecessor's name waits for the garbage collector to remove the predecessor's Secrets instead of keeping its CA keys, which every old kubeconfig and node trusts.
 A `ControlPlane` deleted with `--cascade=orphan` leaves its Secrets without an owner, and one created under the name adopts them, keys included; delete them for fresh credentials.
 It never gets an etcd under them, though: the old `Etcd` is not its own (`VolumesExist`), and a new one under an older cluster CA is refused (`CAPredatesControlPlane`, [restore-replaces-the-source](decisions/restore-replaces-the-source.md)).

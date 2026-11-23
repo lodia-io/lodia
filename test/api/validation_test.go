@@ -24,6 +24,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -589,31 +590,6 @@ func TestAGatewayStoredWithoutASectionNameKeepsItsOtherUpdates(t *testing.T) {
 	expect(t, k8s.Update(ctx, stored), "")
 }
 
-func TestAnAdvertiseAddressStoredOutsideGatewayModeCanOnlyBeRemoved(t *testing.T) {
-	needsEnvtest(t)
-	ensureNamespaces(t, "team-a")
-	const gatewayOnly = "apiServer.advertiseAddress is set only with endpoint.gateway"
-	stored := example(t, "controlplane-single.yaml", "advertise-ratcheting")
-	set(t, stored, "240.0.0.2", "spec", "apiServer", "advertiseAddress")
-	storeUnderAnOlderSchema(t, "advertise.ratcheting.lodia.io", stored, gatewayOnly, func(schema map[string]any) {
-		rules, _, err := unstructured.NestedSlice(schema, "properties", "spec", "x-kubernetes-validations")
-		if err != nil {
-			t.Fatal(err)
-		}
-		kept := slices.DeleteFunc(rules, func(r any) bool { return r.(map[string]any)["message"] == gatewayOnly })
-		if err := unstructured.SetNestedSlice(schema, kept, "properties", "spec", "x-kubernetes-validations"); err != nil {
-			t.Fatal(err)
-		}
-	})
-	ctx := context.Background()
-	stored.SetFinalizers([]string{lodiav1alpha1.DatastoreFinalizer})
-	expect(t, k8s.Update(ctx, stored), "")
-	set(t, stored, true, "spec", "paused")
-	expect(t, k8s.Update(ctx, stored), gatewayOnly)
-	unstructured.RemoveNestedField(stored.Object, "spec", "apiServer", "advertiseAddress")
-	expect(t, k8s.Update(ctx, stored), "")
-}
-
 func eventually(t *testing.T, f func() error) {
 	t.Helper()
 	var last error
@@ -795,63 +771,58 @@ func TestGatewaySectionName(t *testing.T) {
 	})
 }
 
+const (
+	proxyOnly          = "apiServer.advertiseAddress is set only where apiserver-proxy runs: with endpoint.gateway, or with endpoint.loadBalancer unless its host is an IP address"
+	ipv6NeedsAnAddress = "an IPv6 first service range needs apiServer.advertiseAddress where apiserver-proxy runs, since the address has no IPv6 default"
+	advertiseOutside   = "must lie outside the service and pod ranges"
+	advertiseImmutable = "apiServer.advertiseAddress is immutable"
+)
+
+func ipv6Ranges(t *testing.T, o *unstructured.Unstructured) {
+	t.Helper()
+	set(t, o, []any{"fd00:10:96::/112"}, "spec", "network", "serviceCIDRs")
+	set(t, o, []any{"fd00:10:244::/56"}, "spec", "network", "podCIDRs")
+}
+
 func TestAdvertiseAddress(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
 	const (
 		unicast = "must be a unicast IP address in canonical form, neither loopback nor link-local"
 		family  = "must be of the family of the first service range"
-		outside = "must lie outside the service and pod ranges"
-		ipv6    = "needs apiServer.advertiseAddress, which has no IPv6 default"
-		gateway = "apiServer.advertiseAddress is set only with endpoint.gateway"
 	)
 	address := func(a string) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, a, "spec", "apiServer", "advertiseAddress")
 		}
 	}
-	ipv6Ranges := func(t *testing.T, o *unstructured.Unstructured) {
-		set(t, o, []any{"fd00:10:96::/112"}, "spec", "network", "serviceCIDRs")
-		set(t, o, []any{"fd00:10:244::/56"}, "spec", "network", "podCIDRs")
-	}
 	cases := []struct {
-		name, file string
-		mutate     []func(*testing.T, *unstructured.Unstructured)
-		want       string
+		name   string
+		mutate []func(*testing.T, *unstructured.Unstructured)
+		want   string
 	}{
-		{"the default", "controlplane-ha.yaml", nil, ""},
-		{"another address of class E", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("240.0.0.2")}, ""},
-		{"behind a load balancer", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){address("240.0.0.2")}, gateway},
-		{"behind a node port", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, map[string]any{"nodePort": map[string]any{}}, "spec", "endpoint")
-		}, address("240.0.0.2")}, gateway},
-		{"a private address", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("172.20.0.1")}, ""},
-		{"loopback", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("127.0.0.1")}, unicast},
-		{"link-local", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("169.254.0.1")}, unicast},
-		{"unspecified", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("0.0.0.0")}, unicast},
-		{"multicast", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("239.1.1.1")}, unicast},
-		{"broadcast", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("255.255.255.255")}, unicast},
-		{"a name", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("proxy.example.com")}, unicast},
-		{"in the service range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("10.96.0.1")}, outside},
-		{"in the pod range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("10.244.3.1")}, outside},
-		{"the default in the pod range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, []any{"240.0.0.0/16"}, "spec", "network", "podCIDRs")
-		}}, outside},
-		{"the default's range for pods outside gateway mode", "controlplane-single.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
-			set(t, o, []any{"240.0.0.0/16"}, "spec", "network", "podCIDRs")
-		}}, ""},
-		{"IPv6 beside an IPv4 service range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){address("fd12:3456:789a::1")}, family},
-		{"IPv6 not in canonical form", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("FD12:3456:789A::1")}, unicast},
-		{"an IPv6 service range without an address", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges}, ipv6},
-		{"an IPv6 service range with a unique local address", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("fd12:3456:789a::1")}, ""},
-		{"an IPv4 address beside an IPv6 service range", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("240.0.0.1")}, family},
-		{"dual stack, IPv4 first, with the default", "controlplane-ha.yaml", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
+		{"the default", nil, ""},
+		{"another address of class E", []func(*testing.T, *unstructured.Unstructured){address("240.0.0.2")}, ""},
+		{"a private address", []func(*testing.T, *unstructured.Unstructured){address("172.20.0.1")}, ""},
+		{"loopback", []func(*testing.T, *unstructured.Unstructured){address("127.0.0.1")}, unicast},
+		{"link-local", []func(*testing.T, *unstructured.Unstructured){address("169.254.0.1")}, unicast},
+		{"unspecified", []func(*testing.T, *unstructured.Unstructured){address("0.0.0.0")}, unicast},
+		{"multicast", []func(*testing.T, *unstructured.Unstructured){address("239.1.1.1")}, unicast},
+		{"broadcast", []func(*testing.T, *unstructured.Unstructured){address("255.255.255.255")}, unicast},
+		{"a name", []func(*testing.T, *unstructured.Unstructured){address("proxy.example.com")}, unicast},
+		{"in the service range", []func(*testing.T, *unstructured.Unstructured){address("10.96.0.1")}, advertiseOutside},
+		{"in the pod range", []func(*testing.T, *unstructured.Unstructured){address("10.244.3.1")}, advertiseOutside},
+		{"IPv6 beside an IPv4 service range", []func(*testing.T, *unstructured.Unstructured){address("fd12:3456:789a::1")}, family},
+		{"IPv6 not in canonical form", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("FD12:3456:789A::1")}, unicast},
+		{"an IPv6 service range with a unique local address", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("fd12:3456:789a::1")}, ""},
+		{"an IPv4 address beside an IPv6 service range", []func(*testing.T, *unstructured.Unstructured){ipv6Ranges, address("240.0.0.1")}, family},
+		{"dual stack, IPv4 first, with the default", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, []any{"10.96.0.0/16", "fd00:10:96::/112"}, "spec", "network", "serviceCIDRs")
 		}}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			obj := example(t, c.file, "advertised")
+			obj := example(t, "controlplane-ha.yaml", "advertised")
 			for _, mutate := range c.mutate {
 				mutate(t, obj)
 			}
@@ -860,10 +831,103 @@ func TestAdvertiseAddress(t *testing.T) {
 	}
 }
 
+type proxyScope struct {
+	name                string
+	endpoint, endpoint6 map[string]any
+	proxy               bool
+}
+
+var proxyScopes = []proxyScope{
+	{"gateway", nil, nil, true},
+	{"a load balancer without a host", map[string]any{"loadBalancer": map[string]any{}}, nil, true},
+	{"a load balancer at a name", map[string]any{"loadBalancer": map[string]any{"host": "api.scope.example.com"}}, nil, true},
+	{"a load balancer at an IP address", map[string]any{"loadBalancer": map[string]any{"host": "203.0.113.10"}}, map[string]any{"loadBalancer": map[string]any{"host": "2001:db8::10"}}, false},
+	{"a node port", map[string]any{"nodePort": map[string]any{}}, nil, false},
+}
+
+func (s proxyScope) controlPlane(t *testing.T, name string, ipv6 bool) *unstructured.Unstructured {
+	t.Helper()
+	obj := example(t, "controlplane-ha.yaml", name)
+	endpoint := s.endpoint
+	if ipv6 {
+		ipv6Ranges(t, obj)
+		if s.endpoint6 != nil {
+			endpoint = s.endpoint6
+		}
+	}
+	if endpoint != nil {
+		set(t, obj, runtime.DeepCopyJSONValue(endpoint), "spec", "endpoint")
+	}
+	if got := typedSpec(t, obj).Endpoint.NodeProxy(); got != s.proxy {
+		t.Fatalf("NodeProxy() of %v is %t, want %t", obj.Object["spec"], got, s.proxy)
+	}
+	return obj
+}
+
+func typedSpec(t *testing.T, obj *unstructured.Unstructured) lodiav1alpha1.ControlPlaneSpec {
+	t.Helper()
+	typed := lodiav1alpha1.ControlPlane{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &typed); err != nil {
+		t.Fatal(err)
+	}
+	return typed.Spec
+}
+
+func TestAdvertiseAddressScope(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	where := func(proxy bool, there, elsewhere string) string {
+		if proxy {
+			return there
+		}
+		return elsewhere
+	}
+	for _, s := range proxyScopes {
+		t.Run(s.name, func(t *testing.T) {
+			for _, c := range []struct {
+				name   string
+				ipv6   bool
+				mutate func(*testing.T, *unstructured.Unstructured)
+				want   string
+			}{
+				{"an address", false, func(t *testing.T, o *unstructured.Unstructured) {
+					set(t, o, "240.0.0.2", "spec", "apiServer", "advertiseAddress")
+				}, where(s.proxy, "", proxyOnly)},
+				{"no address", false, nil, ""},
+				{"no address beside a pod range that holds the default", false, func(t *testing.T, o *unstructured.Unstructured) {
+					advertise := typedSpec(t, o).AdvertiseAddress()
+					if want := where(s.proxy, lodiav1alpha1.DefaultAdvertiseAddress, ""); advertise != want {
+						t.Fatalf("AdvertiseAddress() is %q, want %q", advertise, want)
+					}
+					set(t, o, []any{"240.0.0.0/16"}, "spec", "network", "podCIDRs")
+				}, where(s.proxy, advertiseOutside, "")},
+				{"an address beside a pod range that holds it", false, func(t *testing.T, o *unstructured.Unstructured) {
+					set(t, o, "172.20.0.1", "spec", "apiServer", "advertiseAddress")
+					if advertise, want := typedSpec(t, o).AdvertiseAddress(), where(s.proxy, "172.20.0.1", ""); advertise != want {
+						t.Fatalf("AdvertiseAddress() is %q, want %q", advertise, want)
+					}
+					set(t, o, []any{"172.20.0.0/16"}, "spec", "network", "podCIDRs")
+				}, where(s.proxy, advertiseOutside, proxyOnly)},
+				{"no address beside an IPv6 first service range", true, nil, where(s.proxy, ipv6NeedsAnAddress, "")},
+				{"an IPv6 address beside an IPv6 first service range", true, func(t *testing.T, o *unstructured.Unstructured) {
+					set(t, o, "fd12:3456:789a::1", "spec", "apiServer", "advertiseAddress")
+				}, where(s.proxy, "", proxyOnly)},
+			} {
+				t.Run(c.name, func(t *testing.T) {
+					obj := s.controlPlane(t, "scope", c.ipv6)
+					if c.mutate != nil {
+						c.mutate(t, obj)
+					}
+					expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+				})
+			}
+		})
+	}
+}
+
 func TestAdvertiseAddressTransitions(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
-	const immutable = "apiServer.advertiseAddress is immutable"
 	cases := []struct {
 		name, from string
 		mutate     func(*testing.T, *unstructured.Unstructured)
@@ -871,25 +935,242 @@ func TestAdvertiseAddressTransitions(t *testing.T) {
 	}{
 		{"the default named", "", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "240.0.0.1", "spec", "apiServer", "advertiseAddress")
-		}, immutable},
+		}, advertiseImmutable},
 		{"changed", "240.0.0.2", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, "240.0.0.3", "spec", "apiServer", "advertiseAddress")
-		}, immutable},
+		}, advertiseImmutable},
 		{"removed", "240.0.0.2", func(t *testing.T, o *unstructured.Unstructured) {
 			unstructured.RemoveNestedField(o.Object, "spec", "apiServer", "advertiseAddress")
-		}, immutable},
+		}, advertiseImmutable},
 		{"kept while something else changes", "240.0.0.2", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, true, "spec", "paused")
 		}, ""},
 	}
-	for i, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			obj := example(t, "controlplane-ha.yaml", fmt.Sprintf("advertised-%d", i))
-			if c.from != "" {
-				set(t, obj, c.from, "spec", "apiServer", "advertiseAddress")
+	for i, s := range proxyScopes {
+		t.Run(s.name, func(t *testing.T) {
+			if !s.proxy {
+				update(t, s.controlPlane(t, fmt.Sprintf("advertised-%d", i), false), func(t *testing.T, o *unstructured.Unstructured) {
+					set(t, o, "240.0.0.2", "spec", "apiServer", "advertiseAddress")
+				}, proxyOnly)
+				return
 			}
-			update(t, obj, c.mutate, c.want)
+			for j, c := range cases {
+				t.Run(c.name, func(t *testing.T) {
+					obj := s.controlPlane(t, fmt.Sprintf("advertised-%d-%d", i, j), false)
+					if c.from != "" {
+						set(t, obj, c.from, "spec", "apiServer", "advertiseAddress")
+					}
+					update(t, obj, c.mutate, c.want)
+				})
+			}
 		})
+	}
+}
+
+func TestLoadBalancerHost(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const (
+		form    = "must be a unicast IP address in canonical form, neither loopback nor link-local, or a lowercase DNS name"
+		family  = "endpoint.loadBalancer.host, an IP address, must be of the family of the first service range"
+		outside = "endpoint.loadBalancer.host, an IP address, must lie outside the service and pod ranges"
+	)
+	for _, c := range []struct {
+		name, host string
+		ipv6       bool
+		want       string
+	}{
+		{"a public IPv4 address", "203.0.113.10", false, ""},
+		{"a private IPv4 address", "172.20.0.10", false, ""},
+		{"an IPv6 address", "2001:db8::10", true, ""},
+		{"a unique local IPv6 address", "fd12:3456:789a::10", true, ""},
+		{"a name", "api.dev.example.com", false, ""},
+		{"a name of one label", "api", false, ""},
+		{"a name of 253 characters", strings.Repeat(strings.Repeat("a", 63)+".", 3) + strings.Repeat("a", 61), false, ""},
+		{"a name of 254 characters", strings.Repeat(strings.Repeat("a", 63)+".", 3) + strings.Repeat("a", 62), false, "host: Too long"},
+		{"a label of 63 characters", strings.Repeat("a", 63) + ".example.com", false, ""},
+		{"a label of 64 characters", strings.Repeat("a", 64) + ".example.com", false, form},
+		{"empty", "", false, "host in body should be at least 1 chars long"},
+		{"an uppercase name", "API.dev.example.com", false, form},
+		{"a name with a trailing dot", "api.dev.example.com.", false, form},
+		{"a URL", "https://api.dev.example.com", false, form},
+		{"an address with a port", "203.0.113.10:443", false, form},
+		{"1.2.3", "1.2.3", false, form},
+		{"256.256.256.256", "256.256.256.256", false, form},
+		{"an IPv4 address with a leading zero", "203.0.113.010", false, form},
+		{"IPv4 loopback", "127.0.0.1", false, form},
+		{"IPv4 link-local", "169.254.0.10", false, form},
+		{"IPv4 unspecified", "0.0.0.0", false, form},
+		{"IPv4 multicast", "239.1.1.1", false, form},
+		{"IPv4 broadcast", "255.255.255.255", false, form},
+		{"IPv6 loopback", "::1", true, form},
+		{"IPv6 link-local", "fe80::10", true, form},
+		{"IPv6 unspecified", "::", true, form},
+		{"IPv6 multicast", "ff02::1", true, form},
+		{"IPv6 in uppercase", "2001:DB8::10", true, form},
+		{"IPv6 not compressed", "2001:db8:0:0:0:0:0:10", true, form},
+		{"IPv6 in brackets", "[2001:db8::10]", true, form},
+		{"IPv6 with a zone", "fe80::10%eth0", true, form},
+		{"an IPv4-mapped IPv6 address", "::ffff:203.0.113.10", true, form},
+		{"an IPv6 address beside an IPv4 first service range", "2001:db8::10", false, family},
+		{"an IPv4 address beside an IPv6 first service range", "203.0.113.10", true, family},
+		{"in the service range", "10.96.0.10", false, outside},
+		{"in the pod range", "10.244.3.10", false, outside},
+		{"in the IPv6 service range", "fd00:10:96::10", true, outside},
+		{"in the IPv6 pod range", "fd00:10:244::10", true, outside},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "host")
+			if c.ipv6 {
+				ipv6Ranges(t, obj)
+				set(t, obj, "fd12:3456:789a::1", "spec", "apiServer", "advertiseAddress")
+				if c.want == "" {
+					unstructured.RemoveNestedField(obj.Object, "spec", "apiServer")
+				}
+			}
+			set(t, obj, c.host, "spec", "endpoint", "loadBalancer", "host")
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
+		})
+	}
+	t.Run("dual stack, IPv4 first, with an IPv4 address", func(t *testing.T) {
+		obj := example(t, "controlplane-single.yaml", "host")
+		set(t, obj, []any{"10.96.0.0/16", "fd00:10:96::/112"}, "spec", "network", "serviceCIDRs")
+		set(t, obj, []any{"10.244.0.0/16", "fd00:10:244::/56"}, "spec", "network", "podCIDRs")
+		set(t, obj, "203.0.113.10", "spec", "endpoint", "loadBalancer", "host")
+		expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+	})
+}
+
+func TestAnEndpointHostTakesTheAdvertiseAddressAndHostnameRules(t *testing.T) {
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := crdSchema(t, manifest)
+	advertise := rules(at(t, schema, "spec.apiServer.advertiseAddress"))
+	hostname := rules(at(t, schema, "spec.network.clusterDomain"))
+	host := rules(at(t, schema, "spec.endpoint.loadBalancer.host"))
+	if len(advertise) != 1 || len(hostname) != 1 || !slices.Equal(host, []string{advertise[0] + " || " + hostname[0]}) {
+		t.Errorf("endpoint.loadBalancer.host has the rules %q, want the advertise address's %q or the Hostname's %q", host, advertise, hostname)
+	}
+}
+
+func TestEndpointTransitions(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const immutable = "endpoint is immutable in v1alpha1 but for loadBalancer.annotations and loadBalancer.sourceRanges"
+	loadBalancer := func(fields map[string]any) map[string]any {
+		lb := map[string]any{
+			"host":         "api.dev.example.com",
+			"class":        "example.com/l4",
+			"sourceRanges": []any{"203.0.113.0/24", "198.51.100.0/24"},
+			"annotations":  map[string]any{"example.com/address": "a"},
+		}
+		for k, v := range fields {
+			if v == nil {
+				delete(lb, k)
+			} else {
+				lb[k] = v
+			}
+		}
+		return map[string]any{"loadBalancer": lb, "certSANs": []any{"dev.example.com", "dev.corp.example.com"}}
+	}
+	gateway := example(t, "controlplane-ha.yaml", "gateway").Object["spec"].(map[string]any)["endpoint"].(map[string]any)
+	withGateway := func(mutate func(map[string]any)) map[string]any {
+		g := runtime.DeepCopyJSONValue(gateway).(map[string]any)
+		mutate(g["gateway"].(map[string]any))
+		return g
+	}
+	under := func(m map[string]any, path ...string) map[string]any {
+		for _, p := range path {
+			m = m[p].(map[string]any)
+		}
+		return m
+	}
+	nodePort := map[string]any{"nodePort": map[string]any{}}
+	cases := []struct {
+		field    string
+		name     string
+		from, to map[string]any
+		want     string
+	}{
+		{"loadBalancer.annotations", "added", loadBalancer(map[string]any{"annotations": nil}), loadBalancer(nil), ""},
+		{"loadBalancer.annotations", "changed", loadBalancer(nil), loadBalancer(map[string]any{"annotations": map[string]any{"example.com/address": "b"}}), ""},
+		{"loadBalancer.annotations", "removed", loadBalancer(nil), loadBalancer(map[string]any{"annotations": nil}), ""},
+		{"loadBalancer.annotations", "changed beside an IP host", loadBalancer(map[string]any{"host": "203.0.113.10"}), loadBalancer(map[string]any{"host": "203.0.113.10", "annotations": map[string]any{"example.com/address": "b"}}), ""},
+		{"loadBalancer.annotations", "changed with the class", loadBalancer(nil), loadBalancer(map[string]any{"class": "example.com/l7", "annotations": map[string]any{"example.com/address": "b"}}), immutable},
+		{"loadBalancer.sourceRanges", "added", loadBalancer(map[string]any{"sourceRanges": nil}), loadBalancer(nil), ""},
+		{"loadBalancer.sourceRanges", "narrowed", loadBalancer(nil), loadBalancer(map[string]any{"sourceRanges": []any{"203.0.113.0/24"}}), ""},
+		{"loadBalancer.sourceRanges", "reordered", loadBalancer(nil), loadBalancer(map[string]any{"sourceRanges": []any{"198.51.100.0/24", "203.0.113.0/24"}}), ""},
+		{"loadBalancer.sourceRanges", "removed", loadBalancer(nil), loadBalancer(map[string]any{"sourceRanges": nil}), ""},
+		{"loadBalancer.host", "an IP address added", loadBalancer(map[string]any{"host": nil}), loadBalancer(map[string]any{"host": "203.0.113.10"}), immutable},
+		{"loadBalancer.host", "a name added", loadBalancer(map[string]any{"host": nil}), loadBalancer(nil), immutable},
+		{"loadBalancer.host", "an IP address changed", loadBalancer(map[string]any{"host": "203.0.113.10"}), loadBalancer(map[string]any{"host": "203.0.113.11"}), immutable},
+		{"loadBalancer.host", "a name changed", loadBalancer(nil), loadBalancer(map[string]any{"host": "api2.dev.example.com"}), immutable},
+		{"loadBalancer.host", "an IP address for a name", loadBalancer(nil), loadBalancer(map[string]any{"host": "203.0.113.10"}), immutable},
+		{"loadBalancer.host", "removed", loadBalancer(nil), loadBalancer(map[string]any{"host": nil}), immutable},
+		{"loadBalancer.class", "added", loadBalancer(map[string]any{"class": nil}), loadBalancer(nil), immutable},
+		{"loadBalancer.class", "changed", loadBalancer(nil), loadBalancer(map[string]any{"class": "example.com/l7"}), immutable},
+		{"loadBalancer.class", "removed", loadBalancer(nil), loadBalancer(map[string]any{"class": nil}), immutable},
+		{"certSANs", "added", map[string]any{"loadBalancer": map[string]any{}}, map[string]any{"loadBalancer": map[string]any{}, "certSANs": []any{"dev.example.com"}}, immutable},
+		{"certSANs", "changed", loadBalancer(nil), func() map[string]any {
+			e := loadBalancer(nil)
+			e["certSANs"] = []any{"dev.example.com", "dev2.corp.example.com"}
+			return e
+		}(), immutable},
+		{"certSANs", "reordered", loadBalancer(nil), func() map[string]any {
+			e := loadBalancer(nil)
+			e["certSANs"] = []any{"dev.corp.example.com", "dev.example.com"}
+			return e
+		}(), ""},
+		{"certSANs", "removed", loadBalancer(nil), func() map[string]any {
+			e := loadBalancer(nil)
+			delete(e, "certSANs")
+			return e
+		}(), immutable},
+		{"loadBalancer", "for a node port", loadBalancer(nil), nodePort, immutable},
+		{"loadBalancer", "for a gateway", map[string]any{"loadBalancer": map[string]any{}}, gateway, immutable},
+		{"nodePort", "for a load balancer", nodePort, map[string]any{"loadBalancer": map[string]any{}}, immutable},
+		{"gateway", "for a load balancer", gateway, map[string]any{"loadBalancer": map[string]any{}}, immutable},
+		{"gateway.parentRef.name", "changed", gateway, withGateway(func(g map[string]any) { under(g, "parentRef")["name"] = "other" }), immutable},
+		{"gateway.parentRef.namespace", "changed", gateway, withGateway(func(g map[string]any) { under(g, "parentRef")["namespace"] = "other" }), immutable},
+		{"gateway.parentRef.sectionName", "changed", gateway, withGateway(func(g map[string]any) { under(g, "parentRef")["sectionName"] = "other" }), immutable},
+		{"gateway.hostnames.apiServer", "changed", gateway, withGateway(func(g map[string]any) { under(g, "hostnames")["apiServer"] = "api2.prod-eu.k8s.example.com" }), immutable},
+		{"gateway.hostnames.konnectivity", "changed", gateway, withGateway(func(g map[string]any) {
+			under(g, "hostnames")["konnectivity"] = "konnectivity2.prod-eu.k8s.example.com"
+		}), immutable},
+		{"gateway.hostnames.tunnel", "changed", gateway, withGateway(func(g map[string]any) { under(g, "hostnames")["tunnel"] = "tunnel2.prod-eu.k8s.example.com" }), immutable},
+	}
+	covered := map[string]bool{}
+	for i, c := range cases {
+		covered[c.field] = true
+		t.Run(c.field+"/"+c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("endpoint-%d", i))
+			set(t, obj, runtime.DeepCopyJSONValue(c.from), "spec", "endpoint")
+			update(t, obj, func(t *testing.T, o *unstructured.Unstructured) {
+				set(t, o, runtime.DeepCopyJSONValue(c.to), "spec", "endpoint")
+			}, c.want)
+		})
+	}
+	manifest, err := os.ReadFile(filepath.Join("..", "..", "api", "crds", "lodia.io_controlplanes.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var leaves func(prefix string, schema apiextensionsv1.JSONSchemaProps) []string
+	leaves = func(prefix string, schema apiextensionsv1.JSONSchemaProps) []string {
+		if schema.Type != "object" || len(schema.Properties) == 0 {
+			return []string{prefix}
+		}
+		var out []string
+		for name, child := range schema.Properties {
+			out = append(out, leaves(strings.TrimPrefix(prefix+"."+name, "."), child)...)
+		}
+		return out
+	}
+	for _, field := range leaves("", at(t, crdSchema(t, manifest), "spec.endpoint")) {
+		if !covered[field] {
+			t.Errorf("spec.endpoint.%s has no transition case", field)
+		}
 	}
 }
 
@@ -900,7 +1181,7 @@ func TestTheSchemaDefaultsTheAdvertiseAddressAsTheAPI(t *testing.T) {
 	}
 	quoted := "'" + lodiav1alpha1.DefaultAdvertiseAddress + "'"
 	if !slices.ContainsFunc(rules(at(t, crdSchema(t, manifest), "spec")), func(rule string) bool { return strings.Contains(rule, "["+quoted+"]") }) {
-		t.Errorf("no rule of spec takes %s for the advertise address of gateway mode", quoted)
+		t.Errorf("no rule of spec takes %s for the advertise address where apiserver-proxy runs", quoted)
 	}
 }
 

@@ -11,6 +11,7 @@ const (
 	ConditionDatastoreReady        = "DatastoreReady"        // Datastore
 	ConditionAPIServerReady        = "APIServerReady"        // Workloads
 	ConditionRoutesReady           = "RoutesReady"           // Workloads, in gateway mode only
+	ConditionLoadBalancerReady     = "LoadBalancerReady"     // Workloads, in loadBalancer mode only
 	ConditionAddonsApplied         = "AddonsApplied"         // Tenant
 	ConditionAddonsAvailable       = "AddonsAvailable"       // Tenant
 	ConditionReachable             = "Reachable"             // Health
@@ -111,6 +112,19 @@ const (
 	ReasonGatewayUnsupported = "GatewayUnsupported"
 	ReasonRouteNotAccepted   = "RouteNotAccepted"
 	ReasonHostnameConflict   = "HostnameConflict"
+)
+
+// LoadBalancerReady: Ready, True, when the Service's load balancer reports
+// an address, and with an IP endpoint.loadBalancer.host, that address;
+// Unverified, True, when host is an IP address and the load balancer reports
+// only host names, so the two cannot be compared; WaitingForLoadBalancer,
+// False, while it reports none; AddressMismatch, False, when host is an IP
+// address its IP addresses do not include; Refused, ObjectsControlledElsewhere
+// and Reconciling as above.
+const (
+	ReasonUnverified             = "Unverified"
+	ReasonWaitingForLoadBalancer = "WaitingForLoadBalancer"
+	ReasonAddressMismatch        = "AddressMismatch"
 )
 
 // AddonsApplied and AddonsAvailable.
@@ -238,6 +252,7 @@ var WarningReasons = map[string]WarningGroup{
 	ReasonHostnameConflict:                WarningRefusal,
 	ReasonTooManyNodes:                    WarningRefusal,
 	ReasonAuthenticationInvalid:           WarningRefusal,
+	ReasonAddressMismatch:                 WarningRefusal,
 
 	ReasonFailed:                   WarningFailure,
 	ReasonMaintenanceFailed:        WarningFailure,

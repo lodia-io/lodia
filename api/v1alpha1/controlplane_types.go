@@ -44,11 +44,13 @@ type ControlPlaneList struct {
 
 // ControlPlaneSpec is what the owner of the cluster wants.
 // +kubebuilder:validation:XValidation:rule="!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas) || self.apiServer.replicas >= 2",message="highAvailability runs at least two API servers"
-// +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || has(self.endpoint.gateway)",message="apiServer.advertiseAddress is set only with endpoint.gateway"
+// +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || (has(self.endpoint.gateway) || has(self.endpoint.loadBalancer) && (!has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host)))",message="apiServer.advertiseAddress is set only where apiserver-proxy runs: with endpoint.gateway, or with endpoint.loadBalancer unless its host is an IP address"
 // +kubebuilder:validation:XValidation:rule="!has(self.apiServer) || !has(self.apiServer.advertiseAddress) || !isIP(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || ip(self.apiServer.advertiseAddress).family() == cidr(self.network.serviceCIDRs[0]).ip().family()",message="apiServer.advertiseAddress must be of the family of the first service range"
-// +kubebuilder:validation:XValidation:rule="!has(self.endpoint.gateway) || has(self.apiServer) && has(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || cidr(self.network.serviceCIDRs[0]).ip().family() == 4",message="an IPv6 first service range in gateway mode needs apiServer.advertiseAddress, which has no IPv6 default"
-// +kubebuilder:validation:XValidation:rule="(has(self.apiServer) && has(self.apiServer.advertiseAddress) ? [self.apiServer.advertiseAddress] : has(self.endpoint.gateway) ? ['240.0.0.1'] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))",message="the advertise address, apiServer.advertiseAddress or 240.0.0.1 in gateway mode, must lie outside the service and pod ranges"
-// +kubebuilder:validation:XValidation:rule="!has(self.endpoint.gateway) || (has(self.apiServer) && has(self.apiServer.advertiseAddress) ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress) && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress))",message="apiServer.advertiseAddress is immutable"
+// +kubebuilder:validation:XValidation:rule="!(has(self.endpoint.gateway) || has(self.endpoint.loadBalancer) && (!has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host))) || has(self.apiServer) && has(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0]) || cidr(self.network.serviceCIDRs[0]).ip().family() == 4",message="an IPv6 first service range needs apiServer.advertiseAddress where apiserver-proxy runs, since the address has no IPv6 default"
+// +kubebuilder:validation:XValidation:rule="(has(self.apiServer) && has(self.apiServer.advertiseAddress) ? [self.apiServer.advertiseAddress] : (has(self.endpoint.gateway) || has(self.endpoint.loadBalancer) && (!has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host))) ? ['240.0.0.1'] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))",message="the advertise address, apiServer.advertiseAddress or 240.0.0.1 where apiserver-proxy runs, must lie outside the service and pod ranges"
+// +kubebuilder:validation:XValidation:rule="!(has(self.endpoint.gateway) || has(self.endpoint.loadBalancer) && (!has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host))) || (has(self.apiServer) && has(self.apiServer.advertiseAddress) ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress) && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress))",message="apiServer.advertiseAddress is immutable"
+// +kubebuilder:validation:XValidation:rule="!has(self.endpoint.loadBalancer) || !has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host) || !isCIDR(self.network.serviceCIDRs[0]) || ip(self.endpoint.loadBalancer.host).family() == cidr(self.network.serviceCIDRs[0]).ip().family()",message="endpoint.loadBalancer.host, an IP address, must be of the family of the first service range"
+// +kubebuilder:validation:XValidation:rule="!has(self.endpoint.loadBalancer) || !has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(self.endpoint.loadBalancer.host))",message="endpoint.loadBalancer.host, an IP address, must lie outside the service and pod ranges"
 // +kubebuilder:validation:XValidation:rule="has(self.restoreFrom) == has(oldSelf.restoreFrom)",message="restoreFrom can be set only when the ControlPlane is created, and never removed"
 // +kubebuilder:validation:XValidation:rule="has(self.datastore) && has(self.datastore.className) && size(self.datastore.className) > 0 ? has(oldSelf.datastore) && has(oldSelf.datastore.className) && oldSelf.datastore.className == self.datastore.className : !has(oldSelf.datastore) || !has(oldSelf.datastore.className) || size(oldSelf.datastore.className) == 0",message="datastore.className is immutable in v1alpha1"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) == 1",message="kube-controller-manager refuses node-cidr-mask-size with two pod ranges: use node-cidr-mask-size-ipv4 and node-cidr-mask-size-ipv6"
@@ -78,7 +80,6 @@ type ControlPlaneSpec struct {
 
 	// Endpoint is how nodes, people and pods reach the API server.
 	// +required
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="endpoint is immutable in v1alpha1"
 	Endpoint Endpoint `json:"endpoint"`
 
 	// Network holds the tenant cluster's address ranges.
@@ -155,8 +156,10 @@ type DatastoreSettings struct {
 	ClassName string `json:"className,omitempty"`
 }
 
-// Endpoint is exactly one of Gateway, LoadBalancer and NodePort.
+// Endpoint is exactly one of Gateway, LoadBalancer and NodePort. It cannot
+// change but for the load balancer's annotations and source ranges.
 // +kubebuilder:validation:XValidation:rule="[has(self.gateway), has(self.loadBalancer), has(self.nodePort)].filter(x, x).size() == 1",message="set exactly one of gateway, loadBalancer and nodePort"
+// +kubebuilder:validation:XValidation:rule="[has(self.gateway), has(self.loadBalancer), has(self.nodePort), has(self.certSANs)] == [has(oldSelf.gateway), has(oldSelf.loadBalancer), has(oldSelf.nodePort), has(oldSelf.certSANs)] && (!has(self.gateway) || self.gateway == oldSelf.gateway) && (!has(self.loadBalancer) || [has(self.loadBalancer.host), has(self.loadBalancer.class)] == [has(oldSelf.loadBalancer.host), has(oldSelf.loadBalancer.class)] && (!has(self.loadBalancer.host) || self.loadBalancer.host == oldSelf.loadBalancer.host) && (!has(self.loadBalancer.class) || self.loadBalancer.class == oldSelf.loadBalancer.class)) && (!has(self.certSANs) || self.certSANs == oldSelf.certSANs)",message="endpoint is immutable in v1alpha1 but for loadBalancer.annotations and loadBalancer.sourceRanges"
 type Endpoint struct {
 	// Gateway attaches routes to a shared Gateway that routes by SNI.
 	// +optional
@@ -230,6 +233,13 @@ type GatewayHostnames struct {
 
 // LoadBalancerEndpoint configures the control plane's LoadBalancer Service.
 type LoadBalancerEndpoint struct {
+	// Host is the address this tenant is reached at, which the platform owns
+	// and points at its load balancer; absent, the load balancer's own. The
+	// tenant's pods reach an IP address directly and a name through
+	// apiserver-proxy.
+	// +optional
+	Host EndpointHost `json:"host,omitempty"`
+
 	// Class is the Service's loadBalancerClass.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
@@ -246,6 +256,13 @@ type LoadBalancerEndpoint struct {
 	// +kubebuilder:validation:MaxProperties=32
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
+
+// EndpointHost is an IP address, unicast, neither loopback nor link-local, in
+// canonical form, or a lowercase DNS name.
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=253
+// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast() || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$') && !self.matches('^[0-9.]+$')",message="must be a unicast IP address in canonical form, neither loopback nor link-local, or a lowercase DNS name"
+type EndpointHost string
 
 // NodePortEndpoint has no settings yet.
 type NodePortEndpoint struct{}
@@ -281,9 +298,11 @@ type APIServer struct {
 	// +kubebuilder:validation:Maximum=5
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// AdvertiseAddress is the address apiserver-proxy owns on every node in
-	// gateway mode: 240.0.0.1 by default when the first service range is
-	// IPv4, and required when it is IPv6. It cannot change.
+	// AdvertiseAddress is the address apiserver-proxy owns on every node,
+	// which it does in gateway mode and in loadBalancer mode unless
+	// endpoint.loadBalancer.host is an IP address, and is set nowhere else:
+	// 240.0.0.1 by default when the first service range is IPv4, and required
+	// when it is IPv6. It cannot change.
 	// +optional
 	// +kubebuilder:validation:MaxLength=45
 	// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()",message="must be a unicast IP address in canonical form, neither loopback nor link-local"

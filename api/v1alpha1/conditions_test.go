@@ -25,6 +25,8 @@ var normalReasons = []string{
 	lodiav1alpha1.ReasonWaitingForAPIServer,
 	lodiav1alpha1.ReasonWaitingForAccess,
 	lodiav1alpha1.ReasonWaitingForBackup,
+	lodiav1alpha1.ReasonWaitingForLoadBalancer,
+	lodiav1alpha1.ReasonUnverified,
 	lodiav1alpha1.ReasonNoBackupStore,
 	lodiav1alpha1.ReasonIssued,
 	lodiav1alpha1.ReasonIssuing,
