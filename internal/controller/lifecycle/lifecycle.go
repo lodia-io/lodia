@@ -35,22 +35,30 @@ const (
 )
 
 // readiness is what Ready is made of, in the order its reason is taken from.
-// In gateway mode RoutesReady comes first: what stops the routes causes what
-// the others report then, a wait for the endpoint or a failed probe.
+// In gateway mode RoutesReady comes first, and so does LoadBalancerReady in
+// loadBalancer mode without endpoint.loadBalancer.host: what stops the routes
+// or the load balancer causes what the others report then, a wait for the
+// endpoint or a failed probe. With host the load balancer holds up nothing but
+// reachability, so LoadBalancerReady comes just before Reachable and hides no
+// refusal that stops the build.
 func readiness(cp *lodiav1alpha1.ControlPlane) []string {
-	conditions := []string{
+	build := []string{
 		lodiav1alpha1.ConditionCertificatesReady,
 		lodiav1alpha1.ConditionDatastoreReady,
 		lodiav1alpha1.ConditionAPIServerReady,
 		lodiav1alpha1.ConditionAccessReady,
 		lodiav1alpha1.ConditionAddonsApplied,
-		lodiav1alpha1.ConditionReachable,
-		lodiav1alpha1.ConditionControllersLeading,
 	}
-	if cp.Spec.Endpoint.Gateway != nil {
-		return append([]string{lodiav1alpha1.ConditionRoutesReady}, conditions...)
+	reach := []string{lodiav1alpha1.ConditionReachable, lodiav1alpha1.ConditionControllersLeading}
+	switch e := cp.Spec.Endpoint; {
+	case e.Gateway != nil:
+		return slices.Concat([]string{lodiav1alpha1.ConditionRoutesReady}, build, reach)
+	case e.LoadBalancer != nil && e.LoadBalancer.Host == "":
+		return slices.Concat([]string{lodiav1alpha1.ConditionLoadBalancerReady}, build, reach)
+	case e.LoadBalancer != nil:
+		return slices.Concat(build, []string{lodiav1alpha1.ConditionLoadBalancerReady}, reach)
 	}
-	return conditions
+	return slices.Concat(build, reach)
 }
 
 type Reconciler struct {

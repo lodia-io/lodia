@@ -116,8 +116,9 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 // Inputs are what Setup registers the controllers with: Config is what
 // LoadConfig returned, Version the operator's build version, SignerImage
 // lodia-signer's, which runs beside each API server, TunnelImage
-// lodia-tunnel's, which runs on each node of a gateway tenant,
-// EtcdDruidVersion, EtcdDruidNamespace, EtcdDruidDeployment and
+// lodia-tunnel's, the API server's sidecar in gateway mode and apiserver-proxy
+// on the nodes of a gateway tenant and of a loadBalancer tenant without an IP
+// host, EtcdDruidVersion, EtcdDruidNamespace, EtcdDruidDeployment and
 // EtcdDruidStatusSync etcd-druid's,
 // OperatorNamespace the operator's, which each etcd's NetworkPolicy admits,
 // and GatewayAPI what GatewayAPI found. Dial, when set, opens every

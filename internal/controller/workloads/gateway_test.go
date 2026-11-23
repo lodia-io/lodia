@@ -60,12 +60,8 @@ func TestAGatewayControlPlaneRunsBehindItsListener(t *testing.T) {
 	}
 
 	svc := getService(t, cp)
-	var ports []string
-	for _, p := range svc.Spec.Ports {
-		ports = append(ports, fmt.Sprintf("%s %d %s", p.Name, p.Port, p.TargetPort.String()))
-	}
-	if svc.Spec.Type != corev1.ServiceTypeClusterIP || strings.Join(ports, ", ") != "https 443 https, kubernetes 6443 https, konnectivity 8132 konnectivity, tunnel 6444 tunnel" {
-		t.Errorf("the Service is %s with the ports %v", svc.Spec.Type, ports)
+	if ports := servicePorts(svc); svc.Spec.Type != corev1.ServiceTypeClusterIP || ports != "https 443 https, konnectivity 8132 konnectivity, tunnel 6444 tunnel" {
+		t.Errorf("the Service is %s with the ports %s", svc.Spec.Type, ports)
 	}
 
 	for suffix, port := range map[string]int32{"kube-apiserver": 443, "konnectivity": 8132, "tunnel": 6444} {

@@ -146,24 +146,80 @@ func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {
 	if e := get(t, cp).Status.Endpoint; e != nil {
 		t.Errorf("status.endpoint is %+v before the load balancer has an address", e)
 	}
-
-	setIngress(t, cp, corev1.LoadBalancerIngress{Hostname: "lb.example.com"})
-	testenv.Eventually(t, func() error {
-		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonLoadBalancerHostnameUnsupported)
-	})
-	if e := get(t, cp).Status.Endpoint; e != nil {
-		t.Errorf("status.endpoint is %+v while the load balancer has a host name alone", e)
+	if err := expectBalancer(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForLoadBalancer, "the load balancer of Service dev-kube-apiserver reports no address yet"); err != nil {
+		t.Error(err)
+	}
+	if ports := servicePorts(svc); ports != "https 443 https, konnectivity 8132 konnectivity" {
+		t.Errorf("the Service's ports are %s", ports)
 	}
 
-	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
+	setIngress(t, cp, corev1.LoadBalancerIngress{Hostname: "lb.example.com"})
 	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
 	want := lodiav1alpha1.EndpointStatus{
-		APIServer:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 443},
-		Konnectivity: lodiav1alpha1.HostPort{Host: lbAddress, Port: 8132},
-		InCluster:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 6443},
+		APIServer:    lodiav1alpha1.HostPort{Host: "lb.example.com", Port: 443},
+		Konnectivity: lodiav1alpha1.HostPort{Host: "lb.example.com", Port: 8132},
+		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
 	}
 	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
 		t.Errorf("status.endpoint is %+v, want %+v", e, want)
+	}
+	if err := expectBalancer(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "the load balancer of Service dev-kube-apiserver reports lb.example.com"); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestAHostIsPublishedOnTheFirstPassBeforeTheServiceHasAnIngress(t *testing.T) {
+	for host, want := range map[lodiav1alpha1.EndpointHost]lodiav1alpha1.EndpointStatus{
+		lbAddress: {
+			APIServer:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 443},
+			Konnectivity: lodiav1alpha1.HostPort{Host: lbAddress, Port: 8132},
+			InCluster:    lodiav1alpha1.HostPort{Host: lbAddress, Port: 443},
+		},
+		"api.dev.example.com": {
+			APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.com", Port: 443},
+			Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.com", Port: 8132},
+			InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
+		},
+	} {
+		t.Run(string(host), func(t *testing.T) {
+			ns := namespace(t)
+			events, err := k8s.Watch(t.Context(), &lodiav1alpha1.ControlPlaneList{}, client.InNamespace(ns))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer events.Stop()
+			cp := create(t, ns, loadBalancerAt(host))
+			var first *lodiav1alpha1.ControlPlane
+			for first == nil {
+				select {
+				case event := <-events.ResultChan():
+					if fresh, ok := event.Object.(*lodiav1alpha1.ControlPlane); ok && event.Type == watch.Modified && meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) != nil {
+						first = fresh
+					}
+				case <-time.After(30 * time.Second):
+					t.Fatal("no APIServerReady condition was written")
+				}
+			}
+			for _, conditionType := range []string{lodiav1alpha1.ConditionAPIServerReady, lodiav1alpha1.ConditionLoadBalancerReady} {
+				if c := meta.FindStatusCondition(first.Status.Conditions, conditionType); c == nil || c.Status != metav1.ConditionUnknown || c.Reason != lodiav1alpha1.ReasonReconciling {
+					t.Errorf("the first %s is %+v, want Unknown/%s", conditionType, c, lodiav1alpha1.ReasonReconciling)
+				}
+			}
+			if e := first.Status.Endpoint; e == nil || *e != want {
+				t.Errorf("the first pass published %+v, want %+v", e, want)
+			}
+
+			testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
+			if err := expectBalancer(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForLoadBalancer, "the load balancer of Service dev-kube-apiserver reports no address yet"); err != nil {
+				t.Error(err)
+			}
+			if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+				t.Errorf("status.endpoint is %+v before the load balancer has an address, want %+v", e, want)
+			}
+			inputsReady(t, cp)
+			expectFlags(t, eventuallyDeployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command,
+				"--advertise-address="+want.InCluster.Host, "--service-account-issuer=https://"+string(host))
+		})
 	}
 }
 
@@ -174,7 +230,7 @@ func TestANodePortControlPlanePublishesItsNodePorts(t *testing.T) {
 	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
 	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
 	svc := getService(t, cp)
-	api, konnectivity := nodePort(svc, 6443), nodePort(svc, 8132)
+	api, konnectivity := nodePort(svc, 443), nodePort(svc, 8132)
 	e := get(t, cp).Status.Endpoint
 	want := lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: api},
@@ -183,6 +239,12 @@ func TestANodePortControlPlanePublishesItsNodePorts(t *testing.T) {
 	}
 	if svc.Spec.Type != corev1.ServiceTypeNodePort || api == 0 || konnectivity == 0 || e == nil || *e != want {
 		t.Fatalf("Service %s with node ports %d and %d, status.endpoint %+v", svc.Spec.Type, api, konnectivity, e)
+	}
+	if ports := servicePorts(svc); ports != "https 443 https, konnectivity 8132 konnectivity" {
+		t.Errorf("the Service's ports are %s", ports)
+	}
+	if c := get(t, cp).Status.Conditions; meta.FindStatusCondition(c, lodiav1alpha1.ConditionLoadBalancerReady) != nil {
+		t.Errorf("a nodePort ControlPlane has LoadBalancerReady: %+v", c)
 	}
 
 	inputsReady(t, cp)
@@ -277,7 +339,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		t.Fatalf("the API server pod runs %+v and %+v", pod.InitContainers, pod.Containers)
 	}
 	expectFlags(t, pod.Containers[0].Command,
-		"--advertise-address="+lbAddress,
+		"--advertise-address=240.0.0.1",
 		"--secure-port=6443",
 		"--etcd-servers=https://etcd-0.dev.example:2379,https://[2001:db8::5]:12379",
 		"--service-account-signing-endpoint=/run/signer/signer.sock",
@@ -882,13 +944,21 @@ func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
 	}
 }
 
-func TestOutsideGatewayModeAHeldServiceDropsThePublishedEndpointAndARefusedOneKeepsIt(t *testing.T) {
-	for mode, cp := range map[string]*lodiav1alpha1.ControlPlane{"loadBalancer": running(t), "nodePort": runningOnNodePort(t)} {
+func TestOutsideGatewayModeAHeldOrRefusedServiceKeepsThePublishedEndpoint(t *testing.T) {
+	withHost := func(host lodiav1alpha1.EndpointHost) func(*lodiav1alpha1.ControlPlaneSpec) {
+		return func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Endpoint.LoadBalancer.Host = host }
+	}
+	for mode, cp := range map[string]*lodiav1alpha1.ControlPlane{
+		"loadBalancer": running(t), "loadBalancer at an IP": running(t, withHost(lbAddress)), "loadBalancer at a name": running(t, withHost("api.dev.example.com")),
+		"nodePort": runningOnNodePort(t),
+	} {
 		published := get(t, cp).Status.Endpoint
+		if published == nil {
+			t.Fatalf("%s: no endpoint is published", mode)
+		}
 		for exit, c := range map[string]struct {
-			funcs    interceptor.Funcs
-			reason   string
-			endpoint *lodiav1alpha1.EndpointStatus
+			funcs  interceptor.Funcs
+			reason string
 		}{
 			"held": {interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if err := c.Get(ctx, key, obj, opts...); err != nil {
@@ -898,13 +968,13 @@ func TestOutsideGatewayModeAHeldServiceDropsThePublishedEndpointAndARefusedOneKe
 					svc.OwnerReferences = []metav1.OwnerReference{foreignController()}
 				}
 				return nil
-			}}, lodiav1alpha1.ReasonObjectsControlledElsewhere, nil},
+			}}, lodiav1alpha1.ReasonObjectsControlledElsewhere},
 			"refused": {interceptor.Funcs{Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
 				if kindOf(t, obj) == "Service" {
 					return apierrors.NewForbidden(corev1.Resource("services"), lodiav1alpha1.APIServerServiceName(cp.Name), errors.New("denied by a policy"))
 				}
 				return c.Apply(ctx, obj, opts...)
-			}}, lodiav1alpha1.ReasonRefused, published},
+			}}, lodiav1alpha1.ReasonRefused},
 		} {
 			t.Run(mode+"/"+exit, func(t *testing.T) {
 				var applied *lodiav1alpha1.ControlPlane
@@ -920,11 +990,19 @@ func TestOutsideGatewayModeAHeldServiceDropsThePublishedEndpointAndARefusedOneKe
 				if applied == nil {
 					t.Fatal("the pass applied no status")
 				}
-				if a := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); a == nil || a.Reason != c.reason {
-					t.Errorf("APIServerReady is %+v, want %s", a, c.reason)
+				a := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
+				if a == nil || a.Reason != c.reason {
+					t.Fatalf("APIServerReady is %+v, want %s", a, c.reason)
 				}
-				if !equality.Semantic.DeepEqual(applied.Status.Endpoint, c.endpoint) {
-					t.Errorf("the pass applied the endpoint %+v, want %+v", applied.Status.Endpoint, c.endpoint)
+				b := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
+				switch {
+				case cp.Spec.Endpoint.LoadBalancer == nil && b != nil:
+					t.Errorf("a nodePort pass applied LoadBalancerReady %+v", b)
+				case cp.Spec.Endpoint.LoadBalancer != nil && (b == nil || b.Status != metav1.ConditionFalse || b.Reason != c.reason || b.Message != a.Message):
+					t.Errorf("LoadBalancerReady is %+v, want False %s %q", b, c.reason, a.Message)
+				}
+				if !equality.Semantic.DeepEqual(applied.Status.Endpoint, published) {
+					t.Errorf("the pass applied the endpoint %+v, want the published %+v", applied.Status.Endpoint, published)
 				}
 			})
 		}
@@ -1037,25 +1115,7 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 
 func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
 	ns := namespace(t)
-	none := corev1.ResourceList{corev1.ResourceServicesLoadBalancers: resource.MustParse("0")}
-	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "no-load-balancers", Namespace: ns}, Spec: corev1.ResourceQuotaSpec{Hard: none}}
-	if err := k8s.Create(t.Context(), quota); err != nil {
-		t.Fatal(err)
-	}
-	quota.Status = corev1.ResourceQuotaStatus{Hard: none, Used: none}
-	if err := k8s.Status().Update(t.Context(), quota); err != nil {
-		t.Fatal(err)
-	}
-	testenv.Eventually(t, func() error {
-		probe := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns},
-			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, Ports: []corev1.ServicePort{{Port: 443}}},
-		}
-		if err := k8s.Create(t.Context(), probe, client.DryRunAll); !apistatus.Refused(err) || !strings.Contains(err.Error(), "exceeded quota") {
-			return fmt.Errorf("the quota does not refuse a load balancer yet: %w", err)
-		}
-		return nil
-	})
+	quota := refuseLoadBalancers(t, ns)
 
 	cp := create(t, ns, loadBalancer())
 	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused) })
@@ -1580,6 +1640,30 @@ func refuseScheduler(t *testing.T, ns string) *admissionregistrationv1.Validatin
 	return binding
 }
 
+func refuseLoadBalancers(t *testing.T, ns string) *corev1.ResourceQuota {
+	t.Helper()
+	none := corev1.ResourceList{corev1.ResourceServicesLoadBalancers: resource.MustParse("0")}
+	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "no-load-balancers", Namespace: ns}, Spec: corev1.ResourceQuotaSpec{Hard: none}}
+	if err := k8s.Create(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	quota.Status = corev1.ResourceQuotaStatus{Hard: none, Used: none}
+	if err := k8s.Status().Update(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		probe := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, Ports: []corev1.ServicePort{{Port: 443}}},
+		}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); !apistatus.Refused(err) || !strings.Contains(err.Error(), "exceeded quota") {
+			return fmt.Errorf("the quota does not refuse a load balancer yet: %w", err)
+		}
+		return nil
+	})
+	return quota
+}
+
 func loadBalancer() lodiav1alpha1.Endpoint {
 	return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}
 }
@@ -1816,14 +1900,45 @@ func setSecret(t *testing.T, cp *lodiav1alpha1.ControlPlane, s lodiav1alpha1.Sec
 
 func setIngress(t *testing.T, cp *lodiav1alpha1.ControlPlane, ingress corev1.LoadBalancerIngress) {
 	t.Helper()
+	setIngresses(t, cp, ingress)
+}
+
+func servicePorts(svc *corev1.Service) string {
+	var ports []string
+	for _, p := range svc.Spec.Ports {
+		ports = append(ports, fmt.Sprintf("%s %d %s", p.Name, p.Port, p.TargetPort.String()))
+	}
+	return strings.Join(ports, ", ")
+}
+
+func expectBalancer(cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string) error {
+	fresh := &lodiav1alpha1.ControlPlane{}
+	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
+		return err
+	}
+	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
+	if c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != fresh.Generation {
+		return fmt.Errorf("LoadBalancerReady is %+v, want %s %s %q at generation %d", c, status, reason, message, fresh.Generation)
+	}
+	return nil
+}
+
+func loadBalancerAt(host lodiav1alpha1.EndpointHost) lodiav1alpha1.Endpoint {
+	return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: host}}
+}
+
+func setIngresses(t *testing.T, cp *lodiav1alpha1.ControlPlane, ingress ...corev1.LoadBalancerIngress) {
+	t.Helper()
 	testenv.Eventually(t, func() error {
 		svc := getServiceOrNil(t, cp)
 		if svc == nil {
 			return errors.New("no Service yet")
 		}
-		svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{ingress}
-		if ingress.IP != "" {
-			svc.Status.LoadBalancer.Ingress[0].IPMode = new(corev1.LoadBalancerIPModeVIP)
+		svc.Status.LoadBalancer.Ingress = slices.Clone(ingress)
+		for i := range svc.Status.LoadBalancer.Ingress {
+			if svc.Status.LoadBalancer.Ingress[i].IP != "" {
+				svc.Status.LoadBalancer.Ingress[i].IPMode = new(corev1.LoadBalancerIPModeVIP)
+			}
 		}
 		return k8s.Status().Update(t.Context(), svc)
 	})

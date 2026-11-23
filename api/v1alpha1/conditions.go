@@ -11,6 +11,7 @@ const (
 	ConditionDatastoreReady        = "DatastoreReady"        // Datastore
 	ConditionAPIServerReady        = "APIServerReady"        // Workloads
 	ConditionRoutesReady           = "RoutesReady"           // Workloads, in gateway mode only
+	ConditionLoadBalancerReady     = "LoadBalancerReady"     // Workloads, in loadBalancer mode only
 	ConditionAddonsApplied         = "AddonsApplied"         // Tenant
 	ConditionAddonsAvailable       = "AddonsAvailable"       // Tenant
 	ConditionReachable             = "Reachable"             // Health
@@ -95,10 +96,9 @@ const (
 
 // APIServerReady.
 const (
-	ReasonUnavailable                     = "Unavailable"
-	ReasonProgressDeadlineExceeded        = "ProgressDeadlineExceeded"
-	ReasonLoadBalancerHostnameUnsupported = "LoadBalancerHostnameUnsupported"
-	ReasonAuthenticationInvalid           = "AuthenticationInvalid"
+	ReasonUnavailable              = "Unavailable"
+	ReasonProgressDeadlineExceeded = "ProgressDeadlineExceeded"
+	ReasonAuthenticationInvalid    = "AuthenticationInvalid"
 )
 
 // RoutesReady: Accepted, True, when every route of the ControlPlane is
@@ -111,6 +111,19 @@ const (
 	ReasonGatewayUnsupported = "GatewayUnsupported"
 	ReasonRouteNotAccepted   = "RouteNotAccepted"
 	ReasonHostnameConflict   = "HostnameConflict"
+)
+
+// LoadBalancerReady: Ready, True, when the Service's load balancer reports
+// an address, and with an IP endpoint.loadBalancer.host, that address;
+// Unverified, True, when host is an IP address and the load balancer reports
+// only host names, so the two cannot be compared; WaitingForLoadBalancer,
+// False, while it reports none; AddressMismatch, False, when host is an IP
+// address its IP addresses do not include; Refused, ObjectsControlledElsewhere
+// and Reconciling as above.
+const (
+	ReasonUnverified             = "Unverified"
+	ReasonWaitingForLoadBalancer = "WaitingForLoadBalancer"
+	ReasonAddressMismatch        = "AddressMismatch"
 )
 
 // AddonsApplied and AddonsAvailable.
@@ -217,27 +230,27 @@ const (
 // True, or has a reason that is neither a first pass, a wait nor another of
 // these (docs/decisions/metrics-are-part-of-the-api.md).
 var WarningReasons = map[string]WarningGroup{
-	ReasonUnsupported:                     WarningRefusal,
-	ReasonLoadBalancerHostnameUnsupported: WarningRefusal,
-	ReasonGatewayUnsupported:              WarningRefusal,
-	ReasonTimeZoneUnsupported:             WarningRefusal,
-	ReasonRefused:                         WarningRefusal,
-	ReasonObjectsControlledElsewhere:      WarningRefusal,
-	ReasonSecretsControlledElsewhere:      WarningRefusal,
-	ReasonSecretsExist:                    WarningRefusal,
-	ReasonDatastoreClassNotFound:          WarningRefusal,
-	ReasonBackupNotFound:                  WarningRefusal,
-	ReasonGatewayNotFound:                 WarningRefusal,
-	ReasonControlPlaneNotFound:            WarningRefusal,
-	ReasonSecretNotFound:                  WarningRefusal,
-	ReasonDatastoreClassAmbiguous:         WarningRefusal,
-	ReasonVolumesExist:                    WarningRefusal,
-	ReasonBackupIncompatible:              WarningRefusal,
-	ReasonCAPredatesControlPlane:          WarningRefusal,
-	ReasonRouteNotAccepted:                WarningRefusal,
-	ReasonHostnameConflict:                WarningRefusal,
-	ReasonTooManyNodes:                    WarningRefusal,
-	ReasonAuthenticationInvalid:           WarningRefusal,
+	ReasonUnsupported:                WarningRefusal,
+	ReasonGatewayUnsupported:         WarningRefusal,
+	ReasonTimeZoneUnsupported:        WarningRefusal,
+	ReasonRefused:                    WarningRefusal,
+	ReasonObjectsControlledElsewhere: WarningRefusal,
+	ReasonSecretsControlledElsewhere: WarningRefusal,
+	ReasonSecretsExist:               WarningRefusal,
+	ReasonDatastoreClassNotFound:     WarningRefusal,
+	ReasonBackupNotFound:             WarningRefusal,
+	ReasonGatewayNotFound:            WarningRefusal,
+	ReasonControlPlaneNotFound:       WarningRefusal,
+	ReasonSecretNotFound:             WarningRefusal,
+	ReasonDatastoreClassAmbiguous:    WarningRefusal,
+	ReasonVolumesExist:               WarningRefusal,
+	ReasonBackupIncompatible:         WarningRefusal,
+	ReasonCAPredatesControlPlane:     WarningRefusal,
+	ReasonRouteNotAccepted:           WarningRefusal,
+	ReasonHostnameConflict:           WarningRefusal,
+	ReasonTooManyNodes:               WarningRefusal,
+	ReasonAuthenticationInvalid:      WarningRefusal,
+	ReasonAddressMismatch:            WarningRefusal,
 
 	ReasonFailed:                   WarningFailure,
 	ReasonMaintenanceFailed:        WarningFailure,

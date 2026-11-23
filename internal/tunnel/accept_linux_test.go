@@ -64,7 +64,7 @@ func TestAFatalAcceptErrorStopsHealthz(t *testing.T) {
 
 func TestAFatalAcceptErrorStopsTheProbe(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	shutdownListener(t, f.Listen)
 	eventually(t, "probe to stop answering", func() bool { return Probe(context.Background(), f.Socket) != nil })

@@ -1,7 +1,10 @@
-# apiserver-proxy, the node half of a gateway tenant's in-cluster path
-# (docs/decisions/api-exposure.md): lodia-tunnel's addr and proxy, whose flags
-# are in cmd/lodia-tunnel. Virtual Kubelet's nodes carry type=virtual-kubelet
-# (virtual-kubelet v1.14.1, node/nodeutil/controller.go).
+# apiserver-proxy, the node half of the in-cluster path of a gateway tenant and
+# of a loadBalancer tenant without an IP host (docs/decisions/api-exposure.md):
+# lodia-tunnel's addr and proxy, whose flags are in cmd/lodia-tunnel; proxy
+# wraps each connection in the tunnel in gateway mode and splices it to the
+# public endpoint otherwise.
+# Virtual Kubelet's nodes carry type=virtual-kubelet (virtual-kubelet v1.14.1,
+# node/nodeutil/controller.go).
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -42,7 +45,9 @@ spec:
                 values:
                 - virtual-kubelet
       securityContext:
+{{- if .Tunnel }}
         fsGroup: 65532
+{{- end }}
         seccompProfile:
           type: RuntimeDefault
       initContainers:
@@ -80,10 +85,12 @@ spec:
         image: {{ quote .TunnelImage }}
         args:
         - proxy
-        - --listen={{ .TunnelListen }}
-        - --upstream={{ .TunnelUpstream }}
+        - --listen={{ .ProxyListen }}
+        - --upstream={{ .ProxyUpstream }}
+{{- if .Tunnel }}
         - --cert-dir=/etc/lodia/client
         - --ca=/etc/lodia/ca
+{{- end }}
         - --socket=/run/lodia/proxy.sock
         resources:
           requests:
@@ -111,15 +118,18 @@ spec:
             - probe
             - --socket=/run/lodia/proxy.sock
         volumeMounts:
+{{- if .Tunnel }}
         - name: client
           mountPath: /etc/lodia/client
           readOnly: true
         - name: ca
           mountPath: /etc/lodia/ca
           readOnly: true
+{{- end }}
         - name: run
           mountPath: /run/lodia
       volumes:
+{{- if .Tunnel }}
       - name: client
         secret:
           secretName: apiserver-proxy-client
@@ -127,5 +137,6 @@ spec:
       - name: ca
         configMap:
           name: kube-root-ca.crt
+{{- end }}
       - name: run
         emptyDir: {}

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -33,8 +34,9 @@ type Resolver interface {
 	LookupNetIP(ctx context.Context, network, host string) ([]netip.Addr, error)
 }
 
-// Proxy is lodia-tunnel proxy: it opens the tunnel's outer TLS session for
-// each connection a pod makes to the node's advertise address.
+// Proxy is lodia-tunnel proxy: for each connection a pod makes to the node's
+// advertise address it opens the tunnel's outer TLS session, or, with no
+// CertDir and CADir, splices the pod's bytes to the upstream as they are.
 type Proxy struct {
 	Listen  string
 	CertDir string
@@ -42,23 +44,26 @@ type Proxy struct {
 	Socket  string
 	Log     *slog.Logger
 
-	Resolver      Resolver
-	RefreshPeriod time.Duration
-	DialTimeout   time.Duration
-	ShutdownWait  time.Duration
-	MaxConns      int
-	MaxPerIP      int
-	ReloadRetry   time.Duration
+	Resolver       Resolver
+	RefreshPeriod  time.Duration
+	DialTimeout    time.Duration
+	AttemptTimeout time.Duration
+	ShutdownWait   time.Duration
+	MaxConns       int
+	MaxPerIP       int
+	ReloadRetry    time.Duration
 
 	host     string
 	port     uint16
 	addrs    atomic.Pointer[[]netip.Addr]
+	answered atomic.Pointer[netip.Addr]
+	failed   atomic.Pointer[netip.Addr]
 	sessions tls.ClientSessionCache
 	pair     *source[tls.Certificate]
 	ca       *source[x509.CertPool]
 	limits   connLimits
 	conns    sync.WaitGroup
-	dial     func(ctx context.Context) (conn, error)
+	connect  func(ctx context.Context, addr netip.AddrPort) (conn, error)
 
 	capLog, lookupLog, dialLog, spliceLog rate.Sometimes
 }
@@ -76,13 +81,14 @@ func NewProxy(listen, upstream, certDir, caDir, socket string, log *slog.Logger)
 	}
 	p := &Proxy{
 		Listen: listen, CertDir: certDir, CADir: caDir, Socket: socket, Log: log,
-		Resolver:      net.DefaultResolver,
-		RefreshPeriod: 30 * time.Second,
-		DialTimeout:   10 * time.Second,
-		ShutdownWait:  30 * time.Second,
-		MaxConns:      1000,
-		MaxPerIP:      128,
-		ReloadRetry:   reloadRetry,
+		Resolver:       net.DefaultResolver,
+		RefreshPeriod:  30 * time.Second,
+		DialTimeout:    6 * time.Second,
+		AttemptTimeout: 2 * time.Second,
+		ShutdownWait:   30 * time.Second,
+		MaxConns:       1000,
+		MaxPerIP:       128,
+		ReloadRetry:    reloadRetry,
 
 		host:     host,
 		port:     uint16(portNumber),
@@ -94,21 +100,29 @@ func NewProxy(listen, upstream, certDir, caDir, socket string, log *slog.Logger)
 		dialLog:   everyMinute(),
 		spliceLog: everyMinute(),
 	}
-	p.dial = p.dialUpstream
+	p.connect = connectTCP
 	return p, nil
+}
+
+func (p *Proxy) tunneled() bool {
+	return p.CertDir != ""
 }
 
 // Run loads the sources, then serves until ctx is done, when it closes the
 // listener and waits up to ShutdownWait for its connections.
 func (p *Proxy) Run(ctx context.Context) error {
-	p.pair = pairSource(p.CertDir, p.ReloadRetry, p.Log)
-	p.ca = caSource(p.CADir, p.ReloadRetry, p.Log)
 	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error { p.pair.watch(ctx); return nil })
-	g.Go(func() error { p.ca.watch(ctx); return nil })
+	var loaded []<-chan struct{}
+	if p.tunneled() {
+		p.pair = pairSource(p.CertDir, p.ReloadRetry, p.Log)
+		p.ca = caSource(p.CADir, p.ReloadRetry, p.Log)
+		g.Go(func() error { p.pair.watch(ctx); return nil })
+		g.Go(func() error { p.ca.watch(ctx); return nil })
+		loaded = append(loaded, p.pair.loaded, p.ca.loaded)
+	}
 	g.Go(func() error { p.refresh(ctx); return nil })
 	g.Go(func() error {
-		if !allLoaded(ctx, p.pair.loaded, p.ca.loaded) {
+		if !allLoaded(ctx, loaded...) {
 			return nil
 		}
 		return p.serve(ctx)
@@ -158,7 +172,7 @@ func (p *Proxy) serve(ctx context.Context) error {
 		_ = ln.Close()
 		return fmt.Errorf("listen on %s: %w", p.Socket, err)
 	}
-	p.Log.InfoContext(ctx, "proxying", "listen", ln.Addr().String(), "upstream", p.host, "socket", p.Socket)
+	p.Log.InfoContext(ctx, "proxying", "listen", ln.Addr().String(), "upstream", p.host, "tunnel", p.tunneled(), "socket", p.Socket)
 
 	conns, closeConns := context.WithCancel(context.WithoutCancel(ctx))
 	defer closeConns()
@@ -211,41 +225,169 @@ func (p *Proxy) admit(ctx context.Context) func(net.Conn) {
 }
 
 func (p *Proxy) forward(ctx context.Context, client *net.TCPConn) {
-	upstream, err := p.dial(ctx)
+	upstream, err := p.dialUpstream(ctx)
 	if err != nil {
 		p.dialLog.Do(func() { p.Log.WarnContext(ctx, "upstream dial failed", "upstream", p.host, "error", err) })
 		return
 	}
-	if err := splice(ctx, p.Log, client, upstream); err != nil {
+	var downstream conn = client
+	if plain, ok := upstream.(*answering); ok {
+		downstream = plain.pod(client)
+	}
+	if err := splice(ctx, p.Log, downstream, upstream); err != nil {
 		p.spliceLog.Do(func() {
 			p.Log.WarnContext(ctx, "connection failed", "client", client.RemoteAddr().String(), "error", err)
 		})
 	}
 }
 
-// dialUpstream tries the addresses in turn within DialTimeout, each with its
-// share of what is left, as net.Dialer does: a silent address must not use up
-// the time of the next.
+// dialUpstream tries the upstream's addresses in turn, as order ranks them,
+// within DialTimeout, and moves on when an attempt fails. DialTimeout stays
+// under the 10 s of a client's TLS handshake, which runs while this dials.
 func (p *Proxy) dialUpstream(ctx context.Context) (conn, error) {
 	addrs := p.addrs.Load()
-	if addrs == nil {
+	if addrs == nil || len(*addrs) == 0 {
 		return nil, fmt.Errorf("no addresses of %s yet", p.host)
 	}
 	ctx, cancel := context.WithTimeout(ctx, p.DialTimeout)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
-	dialer := &tls.Dialer{NetDialer: tcpDialer(), Config: p.tlsConfig()}
+	last := p.answered.Load()
 	var errs []error
-	for i, addr := range *addrs {
-		attempt, cancel := context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(*addrs)-i))
-		upstream, err := dialer.DialContext(attempt, "tcp", netip.AddrPortFrom(addr, p.port).String())
-		cancel()
+	for _, addr := range order(*addrs, last, p.failed.Load()) {
+		upstream, err := p.dialAddr(ctx, addr, last)
 		if err == nil {
-			return upstream.(*tls.Conn), nil
+			return upstream, nil
 		}
 		errs = append(errs, err)
+		if !time.Now().Before(deadline) {
+			break
+		}
 	}
 	return nil, errors.Join(errs...)
+}
+
+// order is the address that last answered, while the lookup lists it, then the
+// lookup's addresses from the one after the address that last failed: the
+// connection that met it may have no way or time left to move on, so the next
+// starts past it.
+func order(addrs []netip.Addr, answered, failed *netip.Addr) []netip.Addr {
+	start := 0
+	if failed != nil {
+		start = slices.Index(addrs, *failed) + 1
+	}
+	ordered := make([]netip.Addr, 0, len(addrs))
+	if answered != nil && slices.Contains(addrs, *answered) {
+		ordered = append(ordered, *answered)
+	}
+	for i := range addrs {
+		if addr := addrs[(start+i)%len(addrs)]; answered == nil || addr != *answered {
+			ordered = append(ordered, addr)
+		}
+	}
+	return ordered
+}
+
+// dialAddr remembers addr once it has answered: the outer handshake is done, or
+// without the tunnel its first byte has arrived. It fails addr on a failed
+// connect, a handshake's error, or without the tunnel when the upstream ends
+// before that byte as answering says. The handshake runs within what is left of
+// the total, not within the attempt, so that a slow tunnel that is up is not
+// dialed again.
+func (p *Proxy) dialAddr(ctx context.Context, addr netip.Addr, last *netip.Addr) (conn, error) {
+	attempt, cancel := context.WithTimeout(ctx, p.AttemptTimeout)
+	upstream, err := p.connect(attempt, netip.AddrPortFrom(addr, p.port))
+	cancel()
+	if err != nil {
+		p.fail(addr, last)
+		return nil, err
+	}
+	if !p.tunneled() {
+		return &answering{
+			conn:     upstream,
+			answered: func() { p.answered.Store(&addr) },
+			failed:   func() { p.fail(addr, last) },
+			early:    time.Now().Add(p.AttemptTimeout),
+		}, nil
+	}
+	session := tls.Client(upstream, p.tlsConfig())
+	if err := session.HandshakeContext(ctx); err != nil {
+		_ = upstream.Close()
+		p.fail(addr, last)
+		return nil, err
+	}
+	p.answered.Store(&addr)
+	return session, nil
+}
+
+// fail starts later dials after addr, and forgets addr if it is last, the
+// address remembered when the dial began, and still remembered: a newer answer
+// is never undone.
+func (p *Proxy) fail(addr netip.Addr, last *netip.Addr) {
+	if last != nil && *last == addr {
+		p.answered.CompareAndSwap(last, nil)
+	}
+	p.failed.Store(&addr)
+}
+
+func connectTCP(ctx context.Context, addr netip.AddrPort) (conn, error) {
+	upstream, err := tcpDialer().DialContext(ctx, "tcp", addr.String())
+	if err != nil {
+		return nil, err
+	}
+	return upstream.(*net.TCPConn), nil
+}
+
+// answering is an upstream without the tunnel. It has answered with its first
+// byte, and has failed if it ends before one while its pod's side is open,
+// once the pod has sent it a byte or before early: a pod that ended its side
+// may be what ended it, and an API server ends a connection on which no
+// handshake began after a timeout of its own, while an address that resets as
+// it accepts may do so before the pod's first bytes are through.
+type answering struct {
+	conn
+	once     sync.Once
+	answered func()
+	failed   func()
+	early    time.Time
+	podEnded atomic.Bool
+	podSent  atomic.Bool
+}
+
+func (a *answering) Read(b []byte) (int, error) {
+	n, err := a.conn.Read(b)
+	switch {
+	case n > 0:
+		a.once.Do(a.answered)
+	case err != nil && !a.podEnded.Load() && (a.podSent.Load() || time.Now().Before(a.early)):
+		a.once.Do(a.failed)
+	}
+	return n, err
+}
+
+func (a *answering) Write(b []byte) (int, error) {
+	n, err := a.conn.Write(b)
+	if n > 0 {
+		a.podSent.Store(true)
+	}
+	return n, err
+}
+
+func (a *answering) pod(c conn) conn {
+	return &podSide{conn: c, ended: &a.podEnded}
+}
+
+type podSide struct {
+	conn
+	ended *atomic.Bool
+}
+
+func (s *podSide) Read(b []byte) (int, error) {
+	n, err := s.conn.Read(b)
+	if err != nil {
+		s.ended.Store(true)
+	}
+	return n, err
 }
 
 func (p *Proxy) tlsConfig() *tls.Config {

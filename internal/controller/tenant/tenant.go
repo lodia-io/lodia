@@ -54,12 +54,13 @@ const waitPeriod = time.Minute
 // its minute, ReconciliationTimeout, and statusapply gives the status write 10 s
 // of its own after it.
 // A pass completes while the tenant answers each request in under 60 s over
-// the requests it sends. At rest those are 39 for the defaults (the
-// inventory's read, 35 applies, 3 reads of workloads), 1.54 s each, and 45 for
-// a gateway tenant (the delivery's 2, then 1, 38 and 4), 1.33 s. A fresh
-// tenant's first pass writes the inventory with its request 37, or 41, and its
-// second is a pass at rest, so it converges in two passes within the same
-// figures.
+// the requests it sends. At rest those are 39 for the defaults where the pods
+// dial an IP host or a node port (the inventory's read, 35 applies, 3 reads of
+// workloads), 1.54 s each, 42 where apiserver-proxy runs without the tunnel (1,
+// 37 and 4), 1.43 s, and 45 for a gateway tenant (the delivery's 2, then 1, 38
+// and 4), 1.33 s. A fresh tenant's first pass writes the inventory with its
+// request 37, 39 or 41, and its second is a pass at rest, so it converges in
+// two passes within the same figures.
 const (
 	deliveryTimeout = 10 * time.Second
 	applyTimeout    = 30 * time.Second

@@ -205,8 +205,12 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	refresh(t, cp)
 	left := cp.DeepCopy()
-	left.Spec.Endpoint = lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}
-	left.Status.Endpoint.Tunnel = nil
+	left.Spec.Endpoint = lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: endpointHost}}
+	left.Status.Endpoint = &lodiav1alpha1.EndpointStatus{
+		APIServer:    lodiav1alpha1.HostPort{Host: endpointHost, Port: apiServerPort},
+		Konnectivity: lodiav1alpha1.HostPort{Host: endpointHost, Port: konnectivityPort},
+		InCluster:    lodiav1alpha1.HostPort{Host: endpointHost, Port: inClusterPort},
+	}
 	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: left}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
@@ -247,6 +251,8 @@ func TestOnlyGatewayModeReadsTheTunnelsClient(t *testing.T) {
 		{"tenant-reads-node-port", func(cp *lodiav1alpha1.ControlPlane) {
 			cp.Spec.Endpoint = lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}
 		}, publish, false},
+		{"tenant-reads-name-host", nameHostMode, publishNameHost, false},
+		{"tenant-reads-no-host", noHostMode, publishNameHost, false},
 		{"tenant-reads-gateway", gatewayMode, publishGateway, true},
 	} {
 		cp := controlPlane(t, c.namespace, c.mode)
@@ -1019,14 +1025,21 @@ func (s *slowTenant) lists(name string) {
 	s.inventory = strings.TrimSuffix(s.inventory, "]") + `,{"version":"v1","kind":"ConfigMap","namespace":"kube-system","name":"` + name + `"}]`
 }
 
-func slowSetUp(t *testing.T, namespace string, gateway, held bool, delay time.Duration) (*tenant.Reconciler, *lodiav1alpha1.ControlPlane, *slowTenant) {
+type endpointMode struct {
+	set     func(*lodiav1alpha1.ControlPlane)
+	publish func(*testing.T, *lodiav1alpha1.ControlPlane)
+}
+
+var (
+	direct  = endpointMode{func(*lodiav1alpha1.ControlPlane) {}, publish}
+	proxied = endpointMode{nameHostMode, publishNameHost}
+	tunnel  = endpointMode{gatewayMode, publishGateway}
+)
+
+func slowSetUp(t *testing.T, namespace string, mode endpointMode, held bool, delay time.Duration) (*tenant.Reconciler, *lodiav1alpha1.ControlPlane, *slowTenant) {
 	t.Helper()
-	mode, published := func(*lodiav1alpha1.ControlPlane) {}, publish
-	if gateway {
-		mode, published = gatewayMode, publishGateway
-	}
-	cp := controlPlane(t, namespace, mode)
-	published(t, cp)
+	cp := controlPlane(t, namespace, mode.set)
+	mode.publish(t, cp)
 	reconcilePKI(t, gatewayIssuer(), cp)
 	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
@@ -1107,16 +1120,16 @@ func TestATenantThatAnswersEveryRequestSlowlyHasItsPassEndedByTheMinuteAndItsSta
 	t.Parallel()
 	for _, c := range []struct {
 		namespace string
-		gateway   bool
+		mode      endpointMode
 		held      bool
 	}{
-		{"tenant-slow-gateway", true, false},
-		{"tenant-slow-load-balancer", false, false},
-		{"tenant-slow-held", false, true},
+		{"tenant-slow-gateway", tunnel, false},
+		{"tenant-slow-load-balancer", direct, false},
+		{"tenant-slow-held", direct, true},
 	} {
 		t.Run(c.namespace, func(t *testing.T) {
 			t.Parallel()
-			r, cp, s := slowSetUp(t, c.namespace, c.gateway, c.held, 9*time.Second)
+			r, cp, s := slowSetUp(t, c.namespace, c.mode, c.held, 9*time.Second)
 			elapsed, _, err := slowPass(t, r, cp, s)
 			t.Logf("the pass took %s", elapsed)
 			if err == nil {
@@ -1145,14 +1158,15 @@ func TestATenantAtRestThatAnswersEveryRequestIn900msCompletesItsPass(t *testing.
 	t.Parallel()
 	for _, c := range []struct {
 		namespace string
-		gateway   bool
+		mode      endpointMode
 	}{
-		{"tenant-at-rest-slow-defaults", false},
-		{"tenant-at-rest-slow-gateway", true},
+		{"tenant-at-rest-slow-defaults", direct},
+		{"tenant-at-rest-slow-proxy", proxied},
+		{"tenant-at-rest-slow-gateway", tunnel},
 	} {
 		t.Run(c.namespace, func(t *testing.T) {
 			t.Parallel()
-			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 0)
+			r, cp, s := slowSetUp(t, c.namespace, c.mode, false, 0)
 			if _, _, err := slowPass(t, r, cp, s); err != nil {
 				t.Fatal(err)
 			}
@@ -1169,14 +1183,15 @@ func TestAFreshTenantThatAnswersEveryRequestIn900msConvergesWithinTwoPasses(t *t
 	t.Parallel()
 	for _, c := range []struct {
 		namespace string
-		gateway   bool
+		mode      endpointMode
 	}{
-		{"tenant-fresh-slow-defaults", false},
-		{"tenant-fresh-slow-gateway", true},
+		{"tenant-fresh-slow-defaults", direct},
+		{"tenant-fresh-slow-proxy", proxied},
+		{"tenant-fresh-slow-gateway", tunnel},
 	} {
 		t.Run(c.namespace, func(t *testing.T) {
 			t.Parallel()
-			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 900*time.Millisecond)
+			r, cp, s := slowSetUp(t, c.namespace, c.mode, false, 900*time.Millisecond)
 			var err error
 			for pass := 1; pass <= 2; pass++ {
 				var elapsed time.Duration
@@ -1196,7 +1211,7 @@ func TestAFreshTenantThatAnswersEveryRequestIn900msConvergesWithinTwoPasses(t *t
 
 func TestThePairIsDeliveredToATenantThatAnswersEveryRequestIn6s(t *testing.T) {
 	t.Parallel()
-	r, cp, s := slowSetUp(t, "tenant-delivery-slow", true, false, 6*time.Second)
+	r, cp, s := slowSetUp(t, "tenant-delivery-slow", tunnel, false, 6*time.Second)
 	elapsed, sent, err := slowPass(t, r, cp, s)
 	t.Logf("the pass sent %d requests in %s and returned %v", len(sent), elapsed, err)
 	if !s.delivered.Load() {
@@ -1208,17 +1223,17 @@ func TestATenantThatHoldsOneKindOfWriteCostsThePassThatRequestsDeadline(t *testi
 	t.Parallel()
 	for _, c := range []struct {
 		namespace string
-		gateway   bool
+		mode      endpointMode
 		held      string
 		timeouts  time.Duration
 	}{
-		{"tenant-held-applies-load-balancer", false, http.MethodPatch, 30 * time.Second},
-		{"tenant-held-applies-gateway", true, http.MethodPatch, 40 * time.Second},
-		{"tenant-held-deletes", false, http.MethodDelete, 30 * time.Second},
+		{"tenant-held-applies-load-balancer", direct, http.MethodPatch, 30 * time.Second},
+		{"tenant-held-applies-gateway", tunnel, http.MethodPatch, 40 * time.Second},
+		{"tenant-held-deletes", direct, http.MethodDelete, 30 * time.Second},
 	} {
 		t.Run(c.namespace, func(t *testing.T) {
 			t.Parallel()
-			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 0)
+			r, cp, s := slowSetUp(t, c.namespace, c.mode, false, 0)
 			if _, _, err := slowPass(t, r, cp, s); err != nil {
 				t.Fatal(err)
 			}
@@ -1237,15 +1252,16 @@ func TestAPassSendsTheRequestsTheTimeoutsAreSizedFor(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
 		namespace               string
-		gateway                 bool
+		mode                    endpointMode
 		beforeInventory, atRest int
 	}{
-		{"tenant-requests-defaults", false, 37, 39},
-		{"tenant-requests-gateway", true, 41, 45},
+		{"tenant-requests-defaults", direct, 37, 39},
+		{"tenant-requests-proxy", proxied, 39, 42},
+		{"tenant-requests-gateway", tunnel, 41, 45},
 	} {
 		t.Run(c.namespace, func(t *testing.T) {
 			t.Parallel()
-			r, cp, s := slowSetUp(t, c.namespace, c.gateway, false, 0)
+			r, cp, s := slowSetUp(t, c.namespace, c.mode, false, 0)
 			s.holdsOnlyWhatItIsSent()
 			_, sent, err := slowPass(t, r, cp, s)
 			if err != nil {
