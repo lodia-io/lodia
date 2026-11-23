@@ -542,7 +542,7 @@ func TestTheControlPlaneCRDIsDeletedOnlyOnceConfirmed(t *testing.T) {
 	dryRun := func(name string) error {
 		return k8s.Delete(ctx, crd(name), client.DryRunAll)
 	}
-	message := "CustomResourceDefinition " + crdName + " is deleted only once confirmed, and deleting it deletes every ControlPlane: kubectl annotate customresourcedefinition " + crdName + " --overwrite " + confirmed + "=true"
+	message := "CustomResourceDefinition " + crdName + " is deleted only once confirmed, and deleting it takes every ControlPlane with it: kubectl annotate customresourcedefinition " + crdName + " --overwrite " + confirmed + "=true"
 
 	for _, obj := range policies(t, "controlplanes.yaml", controlPlanePolicy, controlPlaneCRDPolicy) {
 		if err := k8s.Create(ctx, obj); err != nil {
@@ -611,6 +611,10 @@ func TestTheControlPlaneCRDIsDeletedOnlyOnceConfirmed(t *testing.T) {
 		}
 		if err := collection(otherCRD); err != nil {
 			t.Fatalf("want the collection of %s admitted, got %v", otherCRD, err)
+		}
+		annotate(t, map[string]string{confirmed: "true"})
+		if err := collection(crdName); err != nil {
+			t.Fatalf("want the confirmed collection admitted, got %v", err)
 		}
 	})
 }

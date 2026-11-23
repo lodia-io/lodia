@@ -111,6 +111,7 @@ A new annotation wakes nothing in it, since only a deletion that has begun does 
 ### Deleting the ControlPlane CRD
 
 Deleting the CustomResourceDefinition `controlplanes.lodia.io` deletes every `ControlPlane`, none of them confirmed: the API server's finalizer of a CRD deletes its objects straight from storage, with no admission ([crd_finalizer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/finalizer/crd_finalizer.go#L182-L184), [#L220](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiextensions-apiserver/pkg/controller/finalizer/crd_finalizer.go#L220)).
+A collection's delete of CRDs removes the CRD at once instead, past the finalizer that only the CRD's own delete adds ([etcd.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiextensions-apiserver/pkg/registry/customresourcedefinition/etcd.go#L83-L84), [store.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go#L1353)), and its `ControlPlane`s stay in etcd, unserved, until a CRD of that name is created again.
 The policy `controlplanes-crd.lodia.io` refuses the delete of that CRD unless it carries the same annotation, which stands for every `ControlPlane`'s own:
 
 ```sh
