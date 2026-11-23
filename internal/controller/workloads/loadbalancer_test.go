@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/testenv"
 )
 
@@ -97,6 +98,43 @@ func TestAnAddressMismatchBuildsTheTenantMovesNothingAndIsRepairedInPlace(t *tes
 	}
 	if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestARefusedServiceAtAHostKeepsTheSpecsEndpointFromTheStart(t *testing.T) {
+	for host, inCluster := range map[lodiav1alpha1.EndpointHost]lodiav1alpha1.HostPort{
+		lbAddress:             {Host: lbAddress, Port: 443},
+		"api.dev.example.com": {Host: "240.0.0.1", Port: 6443},
+	} {
+		t.Run(string(host), func(t *testing.T) {
+			ns := namespace(t)
+			refuseLoadBalancers(t, ns)
+			cp := create(t, ns, loadBalancerAt(host))
+			want := lodiav1alpha1.EndpointStatus{
+				APIServer:    lodiav1alpha1.HostPort{Host: string(host), Port: 443},
+				Konnectivity: lodiav1alpha1.HostPort{Host: string(host), Port: 8132},
+				InCluster:    inCluster,
+			}
+			testenv.Eventually(t, func() error {
+				if err := expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+					return err
+				}
+				fresh := get(t, cp)
+				if b := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady); b == nil || b.Reason != lodiav1alpha1.ReasonRefused {
+					return fmt.Errorf("LoadBalancerReady is %+v", b)
+				}
+				if e := fresh.Status.Endpoint; e == nil || *e != want {
+					return fmt.Errorf("status.endpoint is %+v while the Service is refused, want the spec's %+v", e, want)
+				}
+				return nil
+			})
+			if _, err := operatorAt(k8s, revision).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
+				t.Errorf("a second pass whose Service is refused returned %v, want the refusal", err)
+			}
+			if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+				t.Errorf("status.endpoint is %+v after a second refused pass, want the spec's %+v", e, want)
+			}
+		})
 	}
 }
 

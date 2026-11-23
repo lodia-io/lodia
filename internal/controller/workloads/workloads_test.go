@@ -1115,25 +1115,7 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 
 func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
 	ns := namespace(t)
-	none := corev1.ResourceList{corev1.ResourceServicesLoadBalancers: resource.MustParse("0")}
-	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "no-load-balancers", Namespace: ns}, Spec: corev1.ResourceQuotaSpec{Hard: none}}
-	if err := k8s.Create(t.Context(), quota); err != nil {
-		t.Fatal(err)
-	}
-	quota.Status = corev1.ResourceQuotaStatus{Hard: none, Used: none}
-	if err := k8s.Status().Update(t.Context(), quota); err != nil {
-		t.Fatal(err)
-	}
-	testenv.Eventually(t, func() error {
-		probe := &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns},
-			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, Ports: []corev1.ServicePort{{Port: 443}}},
-		}
-		if err := k8s.Create(t.Context(), probe, client.DryRunAll); !apistatus.Refused(err) || !strings.Contains(err.Error(), "exceeded quota") {
-			return fmt.Errorf("the quota does not refuse a load balancer yet: %w", err)
-		}
-		return nil
-	})
+	quota := refuseLoadBalancers(t, ns)
 
 	cp := create(t, ns, loadBalancer())
 	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused) })
@@ -1656,6 +1638,30 @@ func refuseScheduler(t *testing.T, ns string) *admissionregistrationv1.Validatin
 		return nil
 	})
 	return binding
+}
+
+func refuseLoadBalancers(t *testing.T, ns string) *corev1.ResourceQuota {
+	t.Helper()
+	none := corev1.ResourceList{corev1.ResourceServicesLoadBalancers: resource.MustParse("0")}
+	quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "no-load-balancers", Namespace: ns}, Spec: corev1.ResourceQuotaSpec{Hard: none}}
+	if err := k8s.Create(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	quota.Status = corev1.ResourceQuotaStatus{Hard: none, Used: none}
+	if err := k8s.Status().Update(t.Context(), quota); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		probe := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns},
+			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeLoadBalancer, Ports: []corev1.ServicePort{{Port: 443}}},
+		}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); !apistatus.Refused(err) || !strings.Contains(err.Error(), "exceeded quota") {
+			return fmt.Errorf("the quota does not refuse a load balancer yet: %w", err)
+		}
+		return nil
+	})
+	return quota
 }
 
 func loadBalancer() lodiav1alpha1.Endpoint {
