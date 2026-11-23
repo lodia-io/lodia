@@ -34,7 +34,9 @@ the same change.
 ## Commands
 
 - `make generate` — deepcopy functions and the CRDs in `api/crds/` from
-  `api/`, their copies in `charts/lodia/files/crds/`, and each controller's
+  `api/`, their copies in `charts/lodia/files/crds/`, the copies of the
+  admission policies of `api/policies/` in `charts/lodia/files/policies/`,
+  and each controller's
   ClusterRole in `charts/lodia/files/rbac/` from the `+kubebuilder:rbac`
   markers in its package; commit the result.
 - `make verify` — the one check whose exit code says a change is done: generated files current, the three modules tidy (`.`, `api/`, which is `go.lodia.io/lodia/api`, and `test/monitoring/`), the chart linted and rendered, the release's images built for two platforms with no push and its chart packaged with their digests and rendered, golangci-lint, the metrics' golden and the alert rules checked by promtool, the rules' promtool tests, the dashboards linted by dashboard-linter, the metric names they and the rules read checked against what Lodia serves, unit and envtest tests, and the etcd keys a restore's cleanup deletes against each minor Lodia runs (`make restore-keys`); `helm`, golangci-lint, promtool and dashboard-linter are installed on their own.

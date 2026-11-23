@@ -53,7 +53,7 @@ APART = \
 APART_TESTS = $(subst $(space),|,$(strip $(APART)))
 DASHBOARDS = $(wildcard $(CHART)/files/dashboards/*.json)
 METRICS = metrics.service.enabled=true,metrics.serviceMonitor.enabled=true,metrics.rules.enabled=true,metrics.dashboards.enabled=true
-GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/rbac/*.yaml
+GENERATED = api/v1alpha1/zz_generated.deepcopy.go api/crds/*.yaml $(CHART)/files/crds/*.yaml $(CHART)/files/policies/*.yaml $(CHART)/files/rbac/*.yaml
 DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
 KO = go run github.com/google/ko@v0.19.1
 YQ = go run github.com/mikefarah/yq/v4@v4.54.1
@@ -78,10 +78,11 @@ cd $(1)/charts && $(SHA256) --check --strict $(DRUID_SUM) || { echo "the etcd-dr
 endef
 
 .PHONY: generate
-generate: ## regenerate deepcopy functions and CRDs from api/, the chart's copy of the CRDs, and each controller's ClusterRole from its RBAC markers
+generate: ## regenerate deepcopy functions and CRDs from api/, the chart's copies of the CRDs and of the admission policies in api/policies, and each controller's ClusterRole from its RBAC markers
 	go tool controller-gen object:headerFile=hack/boilerplate.go.txt paths=./api/...
 	go tool controller-gen crd paths=./api/... output:crd:artifacts:config=api/crds
 	rm -f $(CHART)/files/crds/*.yaml && cp api/crds/*.yaml $(CHART)/files/crds/
+	rm -f $(CHART)/files/policies/*.yaml && cp api/policies/*.yaml $(CHART)/files/policies/
 	rm -f $(CHART)/files/rbac/*.yaml
 	for c in $(CONTROLLERS); do go tool controller-gen rbac:roleName=lodia-$$c,fileName=$$c.yaml paths=./internal/controller/$$c output:rbac:artifacts:config=$(CHART)/files/rbac || exit 1; done
 

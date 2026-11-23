@@ -40,4 +40,4 @@ The schema rules, the defaults, the controllers' conditions and the chart's admi
 
 - `api/v1alpha1/*_types.go` — every rule and default as a `+kubebuilder:validation` or `+kubebuilder:default` marker; `api/crds/` is generated from them.
 - `test/api/validation_test.go` — the envtest table of accepted and rejected manifests.
-- `charts/lodia/files/policies/` — the admission policies and their bindings; `test/api/policy_test.go` holds them in envtest.
+- `api/policies/` — the admission policies and their bindings, in the API module so that an importer tests against them, and copied into `charts/lodia/files/policies/` by `make generate`; `test/api/policy_test.go` holds them in envtest.
