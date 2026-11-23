@@ -900,3 +900,50 @@ func TestAnUpstreamThatEndsBeforeItsFirstByteFailsOnlyAfterAPodByteOrWithinAnAtt
 		})
 	}
 }
+
+func TestTheAddressesAfterTheRememberedOneStartPastTheLastFailed(t *testing.T) {
+	eachMode(t, func(t *testing.T, tunnel bool) {
+		f := newDialFixture(t, tunnel, dead1, live1, live2)
+		defer f.net.closeAll()
+		f.net.set(dead1, silent)
+		f.net.set(live1, f.answering())
+		f.net.set(live2, f.answering())
+		requireTook(t, f.mustDial(t), f.AttemptTimeout)
+		requireAttempts(t, f, dead1, live1)
+
+		f.net.set(live1, silent)
+		f.net.forget()
+		requireTook(t, f.mustDial(t), f.AttemptTimeout)
+		requireAttempts(t, f, live1, live2)
+	})
+}
+
+func TestAFailureForgetsOnlyTheAnswerTheConnectionBeganWith(t *testing.T) {
+	eachMode(t, func(t *testing.T, tunnel bool) {
+		f := newDialFixture(t, tunnel, dead1, live1)
+		defer f.net.closeAll()
+		f.net.set(dead1, silent)
+		f.net.set(live1, f.answering())
+
+		var others sync.WaitGroup
+		others.Go(func() {
+			time.Sleep(time.Second)
+			if f.answers(t) {
+				t.Error("the connection begun before live1 answered and dialing it after it failed answered")
+			}
+		})
+		others.Go(func() {
+			time.Sleep(2*time.Second + time.Second/2)
+			if tunnel {
+				f.net.set(live1, f.stalling())
+			} else {
+				f.net.set(live1, f.resetting())
+			}
+		})
+		requireTook(t, f.mustDial(t), f.AttemptTimeout)
+		others.Wait()
+		if got := f.lastAnswered(); got != live1 {
+			t.Fatalf("remembered %v after a connection begun before live1 answered failed it, want %v", got, live1)
+		}
+	})
+}
