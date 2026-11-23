@@ -1,9 +1,10 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Command lodia-tunnel carries a tenant's in-cluster API traffic through its
-// Gateway: serve beside each API server, addr and proxy on each node, and probe
-// as proxy's health check.
+// Command lodia-tunnel carries a tenant's in-cluster API traffic: serve beside
+// each API server, addr and proxy on each node, and probe as proxy's health
+// check. Through a Gateway proxy opens the tunnel's outer TLS session; without
+// certificates it splices to the API server as it is.
 package main
 
 import (
@@ -95,15 +96,23 @@ func addr(ctx context.Context, args []string, stderr io.Writer, log *slog.Logger
 func proxy(ctx context.Context, args []string, stderr io.Writer, log *slog.Logger) int {
 	flags := newFlags("proxy", stderr)
 	listen := flags.String("listen", "", "The advertise address and port pods connect to. Required.")
-	upstream := flags.String("upstream", "", "The tunnel's host:port. Required.")
-	certDir := flags.String("cert-dir", "", "Directory of the mounted client pair: tls.crt and tls.key. Required.")
-	ca := flags.String("ca", "", "Directory of the mounted CA of the upstream: ca.crt. Required.")
+	upstream := flags.String("upstream", "", "The host:port each connection is spliced to: the tunnel's with --cert-dir and --ca, else the API server's. Required.")
+	certDir := flags.String("cert-dir", "", "Directory of the mounted client pair: tls.crt and tls.key. With --ca the proxy opens the tunnel's outer TLS session; with neither it splices as it is.")
+	ca := flags.String("ca", "", "Directory of the mounted CA of the upstream: ca.crt. Goes with --cert-dir.")
 	socket := flags.String("socket", "", "Path of the Unix socket probe asks. Required.")
 	if code, done := parse(flags, args); done {
 		return code
 	}
-	if *listen == "" || *upstream == "" || *certDir == "" || *ca == "" || *socket == "" {
-		log.ErrorContext(ctx, "--listen, --upstream, --cert-dir, --ca and --socket are required")
+	if *listen == "" || *upstream == "" || *socket == "" {
+		log.ErrorContext(ctx, "--listen, --upstream and --socket are required")
+		return exitUsage
+	}
+	switch {
+	case *certDir != "" && *ca == "":
+		log.ErrorContext(ctx, "--ca is required with --cert-dir")
+		return exitUsage
+	case *certDir == "" && *ca != "":
+		log.ErrorContext(ctx, "--cert-dir is required with --ca")
 		return exitUsage
 	}
 	p, err := tunnel.NewProxy(*listen, *upstream, *certDir, *ca, *socket, log)

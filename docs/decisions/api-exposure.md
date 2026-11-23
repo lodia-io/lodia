@@ -60,6 +60,15 @@ Ninety days, since a stolen one gives only sessions on the sidecar, until the tu
 Neither existing CA fits: kubelets accept the cluster CA for client authentication, and the API server accepts the client CA.
 Without it, anyone who reaches the Gateway could hold the sidecar's sessions and lock every pod of the tenant out of its API.
 
+**How `proxy` dials.**
+A client's TLS handshake has 10 seconds ([cache.go](https://github.com/kubernetes/client-go/blob/v0.37.1/transport/cache.go#L149)), and its clock runs while `proxy` dials, since `proxy` accepts at once: a dial has 6 seconds in all, and a TCP connect to one address at most 2, or what is left of the 6.
+`proxy` starts with the address that last answered, while its lookup still lists it, and moves on to the next when an attempt fails.
+An address has answered when the outer handshake is done, or, without the tunnel, when its first byte arrives from it: one that accepts and resets is not remembered.
+So an address that dies costs each connection begun before the first success 2 seconds, on each node, and every later connection nothing.
+The outer handshake runs within what is left of the 6 seconds, not within the 2: a tunnel that is slow and up is not cut and dialed again, and an address that accepts a connection and never answers holds it for what is left.
+Three silent addresses ahead of the first live one use all 6 seconds, the connection ends and no address is remembered.
+Racing the addresses a quarter of a second apart ([RFC 8305 §5](https://www.rfc-editor.org/rfc/rfc8305#section-5)) would cut the 2 seconds and lift that limit, and is left out until a measurement asks for it.
+
 **One image.**
 `lodia-tunnel` is a Go binary on `crypto/tls`, built by ko like `lodia-signer`, that reloads its certificates from their mounted directories; its modes `serve`, `addr` and `proxy` are the sidecar and the node's two containers.
 Workloads and Tenant render it ([Installation](../README.md#installation)).
@@ -140,5 +149,5 @@ The kubelet's own listener address is a node flag (`--address`, `--node-ip`), wh
 - `internal/controller/tenant` — the `kubernetes` Endpoints and EndpointSlice in `manifests/endpoints.yaml`, the agents' flags in `manifests/konnectivity.yaml`, and `apiserver-proxy` in `manifests/apiserver-proxy.yaml`, with its Secret in `render.go`, which `deliverTunnelClient` in `tenant.go` applies whatever the conditions say; `render_test.go`, `gateway_test.go` and `tenant_test.go` hold the objects, and `TestPhase1Gate` in `test/e2e` rolls the API server under requests from outside and inside the tenant.
 - `internal/controller/health` — `Reachable`'s paths in `probes`, the three external ones of `gateway` mode among them, at once and each within the timeout, the tunnel's two TLS sessions in `throughTunnel`, and `<cp>-tunnel-client` in the prober; `gateway_test.go` holds each path failing alone and a hung one.
 - `internal/controller/pki` — the tunnel's Secrets and the advertise address in the API server's serving certificate, in this mode only; `tunnel_test.go` holds them against the other modes.
-- `cmd/lodia-tunnel`, `internal/tunnel` — `lodia-tunnel`'s modes `serve`, `addr` and `proxy`, and `probe`, `proxy`'s health check.
+- `cmd/lodia-tunnel`, `internal/tunnel` — `lodia-tunnel`'s modes `serve`, `addr` and `proxy`, which splices without the tunnel when it has no `--cert-dir` and `--ca`, and `probe`, `proxy`'s health check; `dial_test.go` holds the dial's attempts on a fake clock (`testing/synctest`).
 - `internal/operator` — `GatewayAPI`, whether `TLSRoute` and `Gateway` are served at `gateway.networking.k8s.io/v1`, which `cmd/lodia/main.go` asks before it builds the manager, since the cache can hold only kinds served then ([cache.go](https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/pkg/cache/cache.go#L505-L509)); `operator_test.go` runs it on envtest with and without the standard CRDs of the `sigs.k8s.io/gateway-api` module that `go.mod` requires; `Setup` refuses to start while client-go reports `InOrderInformers` or `AtomicFIFO` off, which `fence.Ordered` checks and `operator_test.go` holds.

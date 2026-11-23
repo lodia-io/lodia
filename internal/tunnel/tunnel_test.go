@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"regexp"
 	"slices"
 	"sync"
@@ -48,7 +49,7 @@ func TestEveryTCPLegKeepsAlive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = serveLeg.Close() }()
-	proxyLeg, err := f.proxy.dial(context.Background())
+	proxyLeg, err := f.proxy.dialUpstream(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,15 +222,20 @@ func TestAnAcceptErrorThatWillNotPassIsReturned(t *testing.T) {
 
 type fakeConn struct {
 	net.Conn
-	read       func(p []byte) (int, error)
-	written    atomic.Int64
-	closes     atomic.Int64
-	closeWrite atomic.Int64
+	read          func(p []byte) (int, error)
+	writeErr      error
+	closeWriteErr error
+	written       atomic.Int64
+	closes        atomic.Int64
+	closeWrite    atomic.Int64
 }
 
 func (c *fakeConn) Read(p []byte) (int, error) { return c.read(p) }
 
 func (c *fakeConn) Write(p []byte) (int, error) {
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
 	c.written.Add(int64(len(p)))
 	return len(p), nil
 }
@@ -241,7 +247,7 @@ func (c *fakeConn) Close() error {
 
 func (c *fakeConn) CloseWrite() error {
 	c.closeWrite.Add(1)
-	return nil
+	return c.closeWriteErr
 }
 
 func (c *fakeConn) ReadFrom(io.Reader) (int64, error) {
@@ -346,4 +352,157 @@ func TestASpliceEndsWithItsContext(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("splice returned %v, want no failure for a closing", err)
 	}
+}
+
+func syscallError(op string, errno syscall.Errno) error {
+	return &net.OpError{Op: op, Net: "tcp", Err: os.NewSyscallError(op, errno)}
+}
+
+func cleanEOF([]byte) (int, error) { return 0, io.EOF }
+
+func failWith(err error) func([]byte) (int, error) {
+	return func([]byte) (int, error) { return 0, err }
+}
+
+func sendOnce(data string) func([]byte) (int, error) {
+	return func(p []byte) (int, error) { return copy(p, data), nil }
+}
+
+func blockedUntil(release <-chan struct{}) func([]byte) (int, error) {
+	return func([]byte) (int, error) {
+		<-release
+		return 0, net.ErrClosed
+	}
+}
+
+func afterHalfClose(c *fakeConn, read func(p []byte) (int, error)) func(p []byte) (int, error) {
+	return func(p []byte) (int, error) {
+		for c.closeWrite.Load() == 0 {
+			time.Sleep(time.Millisecond)
+		}
+		return read(p)
+	}
+}
+
+type spliceScenario struct {
+	downstream bool
+	build      func(err error, release <-chan struct{}) (downstream, upstream *fakeConn)
+}
+
+var afterACleanEnd = map[string]spliceScenario{
+	"the downstream ended, a read of the upstream": {false, func(err error, _ <-chan struct{}) (*fakeConn, *fakeConn) {
+		up := &fakeConn{}
+		up.read = afterHalfClose(up, failWith(err))
+		return &fakeConn{read: cleanEOF}, up
+	}},
+	"the downstream ended, a write to the downstream": {true, func(err error, _ <-chan struct{}) (*fakeConn, *fakeConn) {
+		up := &fakeConn{}
+		up.read = afterHalfClose(up, sendOnce("late"))
+		return &fakeConn{read: cleanEOF, writeErr: err}, up
+	}},
+	"the downstream ended, the half-close of the upstream": {false, func(err error, release <-chan struct{}) (*fakeConn, *fakeConn) {
+		return &fakeConn{read: cleanEOF}, &fakeConn{read: blockedUntil(release), closeWriteErr: err}
+	}},
+	"the upstream ended, a read of the downstream": {true, func(err error, _ <-chan struct{}) (*fakeConn, *fakeConn) {
+		down := &fakeConn{}
+		down.read = afterHalfClose(down, failWith(err))
+		return down, &fakeConn{read: cleanEOF}
+	}},
+	"the upstream ended, a write to the upstream": {false, func(err error, _ <-chan struct{}) (*fakeConn, *fakeConn) {
+		down := &fakeConn{}
+		down.read = afterHalfClose(down, sendOnce("late"))
+		return down, &fakeConn{read: cleanEOF, writeErr: err}
+	}},
+	"the upstream ended, the half-close of the downstream": {true, func(err error, release <-chan struct{}) (*fakeConn, *fakeConn) {
+		return &fakeConn{read: blockedUntil(release), closeWriteErr: err}, &fakeConn{read: cleanEOF}
+	}},
+}
+
+var beforeAnyEnd = map[string]spliceScenario{
+	"a read of the downstream": {true, func(err error, release <-chan struct{}) (*fakeConn, *fakeConn) {
+		return &fakeConn{read: failWith(err)}, &fakeConn{read: blockedUntil(release)}
+	}},
+	"a write to the downstream": {true, func(err error, release <-chan struct{}) (*fakeConn, *fakeConn) {
+		return &fakeConn{read: blockedUntil(release), writeErr: err}, &fakeConn{read: sendOnce("early")}
+	}},
+	"a read of the upstream": {false, func(err error, release <-chan struct{}) (*fakeConn, *fakeConn) {
+		return &fakeConn{read: blockedUntil(release)}, &fakeConn{read: failWith(err)}
+	}},
+	"a write to the upstream": {false, func(err error, release <-chan struct{}) (*fakeConn, *fakeConn) {
+		return &fakeConn{read: sendOnce("early")}, &fakeConn{read: blockedUntil(release), writeErr: err}
+	}},
+}
+
+func spliceOf(t *testing.T, scenario spliceScenario, err error) error {
+	t.Helper()
+	release := make(chan struct{})
+	downstream, upstream := scenario.build(err, release)
+	done := make(chan error, 1)
+	go func() { done <- splice(context.Background(), discardLog(), downstream, upstream) }()
+	eventually(t, "both sides closed", func() bool { return downstream.closes.Load() == 1 && upstream.closes.Load() == 1 })
+	close(release)
+	return <-done
+}
+
+func eachSplice(t *testing.T, scenarios map[string]spliceScenario, downstream *bool, errs map[string]error, run func(t *testing.T, scenario spliceScenario, err error)) {
+	t.Helper()
+	for name, scenario := range scenarios {
+		if downstream != nil && scenario.downstream != *downstream {
+			continue
+		}
+		for kind, err := range errs {
+			t.Run(name+"/"+kind, func(t *testing.T) { run(t, scenario, err) })
+		}
+	}
+}
+
+func teardownErrors() map[string]error {
+	return map[string]error{
+		"a reset":       syscallError("read", syscall.ECONNRESET),
+		"a broken pipe": syscallError("write", syscall.EPIPE),
+		"not connected": syscallError("shutdown", syscall.ENOTCONN),
+	}
+}
+
+func unrelatedErrors() map[string]error {
+	return map[string]error{
+		"a timeout":           syscallError("read", syscall.ETIMEDOUT),
+		"a truncated session": io.ErrUnexpectedEOF,
+		"another error":       errors.New("unrelated"),
+	}
+}
+
+func requireNoFailure(t *testing.T, scenario spliceScenario, err error) {
+	t.Helper()
+	if got := spliceOf(t, scenario, err); got != nil {
+		t.Fatalf("splice returned %v, want no failure", got)
+	}
+}
+
+func requireFailure(t *testing.T, scenario spliceScenario, err error) {
+	t.Helper()
+	if got := spliceOf(t, scenario, err); !errors.Is(got, err) {
+		t.Fatalf("splice returned %v, want %v", got, err)
+	}
+}
+
+func TestASpliceDoesNotReportTheTeardownOfTheDownstreamLegBeforeOrAfterAnEnd(t *testing.T) {
+	downstream := true
+	eachSplice(t, beforeAnyEnd, &downstream, teardownErrors(), requireNoFailure)
+	eachSplice(t, afterACleanEnd, &downstream, teardownErrors(), requireNoFailure)
+}
+
+func TestASpliceDoesNotReportTheTeardownOfTheUpstreamLegAfterACleanEnd(t *testing.T) {
+	upstream := false
+	eachSplice(t, afterACleanEnd, &upstream, teardownErrors(), requireNoFailure)
+}
+
+func TestASpliceReportsTheTeardownOfTheUpstreamLegBeforeAnyCleanEnd(t *testing.T) {
+	upstream := false
+	eachSplice(t, beforeAnyEnd, &upstream, teardownErrors(), requireFailure)
+}
+
+func TestASpliceReportsAnUnrelatedErrorOfEitherLegBeforeOrAfterACleanEnd(t *testing.T) {
+	eachSplice(t, beforeAnyEnd, nil, unrelatedErrors(), requireFailure)
+	eachSplice(t, afterACleanEnd, nil, unrelatedErrors(), requireFailure)
 }

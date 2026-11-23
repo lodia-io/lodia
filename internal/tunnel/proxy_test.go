@@ -11,12 +11,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	"go.lodia.io/lodia/internal/certs"
 )
@@ -26,8 +30,8 @@ func TestProxyBoundsAreTheDesigns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.MaxConns != 1000 || p.MaxPerIP != 128 || p.DialTimeout != 10*time.Second || p.RefreshPeriod != 30*time.Second || p.ShutdownWait != 30*time.Second {
-		t.Fatalf("conns %d, per IP %d, dial %s, refresh %s, wait %s", p.MaxConns, p.MaxPerIP, p.DialTimeout, p.RefreshPeriod, p.ShutdownWait)
+	if p.MaxConns != 1000 || p.MaxPerIP != 128 || p.DialTimeout != 6*time.Second || p.AttemptTimeout != 2*time.Second || p.RefreshPeriod != 30*time.Second || p.ShutdownWait != 30*time.Second {
+		t.Fatalf("conns %d, per IP %d, dial %s, attempt %s, refresh %s, wait %s", p.MaxConns, p.MaxPerIP, p.DialTimeout, p.AttemptTimeout, p.RefreshPeriod, p.ShutdownWait)
 	}
 }
 
@@ -46,8 +50,14 @@ type tunnelFixture struct {
 
 func startTunnel(t *testing.T, handle func(*net.TCPConn)) *tunnelFixture {
 	t.Helper()
+	return startTunnelTo(t, startPlainUpstream(t, handle).addr)
+}
+
+func startTunnelTo(t *testing.T, upstream string) *tunnelFixture {
+	t.Helper()
 	server := startServer(t, func(s *Server) {
-		s.Upstream = startPlainUpstream(t, handle).addr
+		s.Upstream = upstream
+		s.spliceLog = rate.Sometimes{Every: 1}
 	})
 	_, port, err := net.SplitHostPort(server.Listen)
 	if err != nil {
@@ -55,7 +65,10 @@ func startTunnel(t *testing.T, handle func(*net.TCPConn)) *tunnelFixture {
 	}
 	proxy := startProxy(t, net.JoinHostPort(tunnelHost, port),
 		pairFiles(t, client(t, server.tunnelCA)), caFiles(t, server.cluster),
-		func(p *Proxy) { p.Resolver = always("127.0.0.1") })
+		func(p *Proxy) {
+			p.Resolver = always("127.0.0.1")
+			p.spliceLog = rate.Sometimes{Every: 1}
+		})
 	eventually(t, "the first lookup", func() bool { return proxy.addrs.Load() != nil })
 	return &tunnelFixture{server: server, proxy: proxy}
 }
@@ -160,16 +173,23 @@ func requireClosedAfterData(t *testing.T, c net.Conn) {
 	}
 }
 
-func TestAResetClientEndsItsConnectionAndIsLogged(t *testing.T) {
+func TestAResetClientEndsItsConnectionAndIsNotLogged(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	c := dialTCP(t, f.Listen)
 	if err := roundTrip(c); err != nil {
 		t.Fatal(err)
 	}
 	reset(t, c)
-	eventually(t, "the failure in the log", func() bool { return f.logs.count("connection failed") == 1 })
+	eventually(t, "the connection's slot to free", func() bool {
+		f.limits.mu.Lock()
+		defer f.limits.mu.Unlock()
+		return f.limits.total == 0
+	})
+	if n := f.logs.count("connection failed"); n != 0 {
+		t.Fatalf("the client's reset was logged as a failure:\n%s", f.logs)
+	}
 }
 
 func TestProxyRefusesAServer(t *testing.T) {
@@ -194,7 +214,7 @@ func TestProxyRefusesAServer(t *testing.T) {
 		{name: "on TLS 1.2", leaf: serving(t, ca), tune: func(c *tls.Config) { c.MinVersion, c.MaxVersion = tls.VersionTLS12, tls.VersionTLS12 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			upstream := startTLSUpstream(t, "127.0.0.1:0", tc.leaf, tc.tune)
+			upstream := startTLSUpstream(t, tc.leaf, tc.tune)
 			f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 			c := dialTCP(t, f.Listen)
 			if _, err := c.Write([]byte("secret")); err != nil {
@@ -207,7 +227,7 @@ func TestProxyRefusesAServer(t *testing.T) {
 		})
 	}
 
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	if err := tripThrough(t, f.Listen); err != nil {
 		t.Fatalf("the server those were refused against: %v", err)
@@ -216,7 +236,7 @@ func TestProxyRefusesAServer(t *testing.T) {
 
 func TestProxyResumesSessions(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	if err := tripThrough(t, f.Listen); err != nil {
 		t.Fatal(err)
@@ -239,7 +259,7 @@ func TestProxyClosesOverEitherCapAtOnce(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := newCA(t, "cluster")
-			upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+			upstream := startTLSUpstream(t, serving(t, ca), nil)
 			f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), tune)
 
 			first, second := dialTCP(t, f.Listen), dialTCP(t, f.Listen)
@@ -263,7 +283,7 @@ func TestProxyClosesOverEitherCapAtOnce(t *testing.T) {
 
 func TestTwoProxiesShareThePort(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	first := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	listen := first.Listen
 	second := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) { p.Listen = listen })
@@ -280,7 +300,7 @@ func TestTwoProxiesShareThePort(t *testing.T) {
 
 func TestProxyDialsNothingBeforeTheFirstAnswer(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	_, port, err := net.SplitHostPort(upstream.addr)
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +332,7 @@ func TestProxyDialsNothingBeforeTheFirstAnswer(t *testing.T) {
 
 func TestAFailedFirstLookupIsRetriedBeforeTheRefreshPeriod(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	_, port, err := net.SplitHostPort(upstream.addr)
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +360,7 @@ func TestAFailedFirstLookupIsRetriedBeforeTheRefreshPeriod(t *testing.T) {
 
 func TestAFailedRefreshAfterAnAnswerWaitsForItsPeriod(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	_, port, err := net.SplitHostPort(upstream.addr)
 	if err != nil {
 		t.Fatal(err)
@@ -369,7 +389,7 @@ func TestAFailedRefreshAfterAnAnswerWaitsForItsPeriod(t *testing.T) {
 
 func TestAFailedRefreshKeepsTheLastGoodAndAnAnswerReplacesIt(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	_, port, err := net.SplitHostPort(upstream.addr)
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +435,7 @@ func TestAFailedRefreshKeepsTheLastGoodAndAnAnswerReplacesIt(t *testing.T) {
 
 func TestAnUpstreamThatIsAnIPSkipsTheResolver(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	resolver := always("192.0.2.1")
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) { p.Resolver = resolver })
 	if err := tripThrough(t, f.Listen); err != nil {
@@ -428,7 +448,7 @@ func TestAnUpstreamThatIsAnIPSkipsTheResolver(t *testing.T) {
 
 func TestADialTriesTheAddressesInTurn(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	_, port, err := net.SplitHostPort(upstream.addr)
 	if err != nil {
 		t.Fatal(err)
@@ -440,31 +460,8 @@ func TestADialTriesTheAddressesInTurn(t *testing.T) {
 	if err := tripThrough(t, f.Listen); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestASilentAddressLeavesTheNextItsShareOfTheDial(t *testing.T) {
-	silent, err := net.Listen("tcp", "[::1]:0")
-	if err != nil {
-		t.Skipf("no IPv6 loopback: %v", err)
-	}
-	defer func() { _ = silent.Close() }()
-	_, port, err := net.SplitHostPort(silent.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ca := newCA(t, "cluster")
-	startTLSUpstream(t, net.JoinHostPort("127.0.0.1", port), serving(t, ca), nil)
-	f := startProxy(t, net.JoinHostPort(tunnelHost, port), pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) {
-		p.Resolver = always("::1", "127.0.0.1")
-		p.DialTimeout = 2 * time.Second
-	})
-	eventually(t, "the first lookup", func() bool { return f.addrs.Load() != nil })
-	start := time.Now()
-	if err := tripThrough(t, f.Listen); err != nil {
-		t.Fatal(err)
-	}
-	if took := time.Since(start); took < 900*time.Millisecond || took > 2*time.Second {
-		t.Fatalf("took %s, want about half of the 2s dial on the silent address", took)
+	if got := f.answered.Load(); got == nil || *got != netip.MustParseAddr("127.0.0.1") {
+		t.Fatalf("remembered %v, want the address that answered", got)
 	}
 }
 
@@ -488,7 +485,7 @@ func TestADialStopsAtItsTimeout(t *testing.T) {
 
 func TestProxyPresentsANewPairToNewSessionsWhileAnOldOneKeepsWorking(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), noTickets)
+	upstream := startTLSUpstream(t, serving(t, ca), noTickets)
 	first := client(t, ca)
 	f := startProxy(t, upstream.addr, pairFiles(t, first), caFiles(t, ca), nil)
 	old := dialTCP(t, f.Listen)
@@ -511,7 +508,7 @@ func TestProxyPresentsANewPairToNewSessionsWhileAnOldOneKeepsWorking(t *testing.
 
 func TestProxyPresentsANewPairOnceItsTicketStopsResuming(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	first := shortLived(t, ca, clientProfile)
 	f := startProxy(t, upstream.addr, pairFiles(t, first), caFiles(t, ca), nil)
 	if err := tripThrough(t, f.Listen); err != nil {
@@ -542,7 +539,7 @@ func TestProxyPresentsANewPairOnceItsTicketStopsResuming(t *testing.T) {
 func TestProxyRefusesACachedSessionOfAnExpiredServer(t *testing.T) {
 	ca := newCA(t, "cluster")
 	leaf := shortLived(t, ca, servingProfile)
-	upstream := startTLSUpstream(t, "127.0.0.1:0", leaf, nil)
+	upstream := startTLSUpstream(t, leaf, nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	for range 2 {
 		if err := tripThrough(t, f.Listen); err != nil {
@@ -565,7 +562,7 @@ func TestProxyRefusesACachedSessionOfAnExpiredServer(t *testing.T) {
 
 func TestProxyUsesANewCAPoolForTheNextDial(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	old := dialTCP(t, f.Listen)
 	if err := roundTrip(old); err != nil {
@@ -598,7 +595,7 @@ func TestProxyKeepsTheLastGoodPair(t *testing.T) {
 	ca := newCA(t, "cluster")
 	for name, breakIt := range badPairVolumes(t, ca) {
 		t.Run(name, func(t *testing.T) {
-			upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), noTickets)
+			upstream := startTLSUpstream(t, serving(t, ca), noTickets)
 			good := client(t, ca)
 			f := startProxy(t, upstream.addr, pairFiles(t, good), caFiles(t, ca), nil)
 			failures := f.logs.count("not loaded")
@@ -624,7 +621,7 @@ func TestProxyKeepsTheLastGoodCAPool(t *testing.T) {
 	ca := newCA(t, "cluster")
 	for name, breakIt := range badCAVolumes(t, ca) {
 		t.Run(name, func(t *testing.T) {
-			upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), noTickets)
+			upstream := startTLSUpstream(t, serving(t, ca), noTickets)
 			f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 			failures := f.logs.count("not loaded")
 			breakIt(f.caDir)
@@ -642,7 +639,7 @@ func TestProxyKeepsTheLastGoodCAPool(t *testing.T) {
 func TestProxyDoesNotListenUntilItHasLoaded(t *testing.T) {
 	ca := newCA(t, "cluster")
 	goodPair, goodCA := pairFiles(t, client(t, ca)), caFiles(t, ca)
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 
 	for name, setUp := range map[string]func(t *testing.T, f *proxyFixture){
 		"an empty directory": func(*testing.T, *proxyFixture) {},
@@ -696,7 +693,7 @@ func TestProxyDoesNotListenUntilItHasLoaded(t *testing.T) {
 
 func TestProbeAnswersWhileTheAcceptLoopRuns(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	if err := Probe(context.Background(), f.Socket); err != nil {
 		t.Fatal(err)
@@ -751,7 +748,7 @@ func TestProxyStartsOverALeftover(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ca := newCA(t, "cluster")
-			upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+			upstream := startTLSUpstream(t, serving(t, ca), nil)
 			f := newProxyFixture(t, upstream.addr, nil)
 			leave(t, f.Socket)
 			writeVolume(t, f.certDir, pairFiles(t, client(t, ca)))
@@ -776,7 +773,7 @@ func TestProxyStopsBeforeItHasLoaded(t *testing.T) {
 
 func TestTheProxyFixtureStartsOnAnotherAddressWhenOneIsTaken(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	var taken string
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) {
 		taken = p.Listen
@@ -792,7 +789,7 @@ func TestTheProxyFixtureStartsOnAnotherAddressWhenOneIsTaken(t *testing.T) {
 
 func TestTheProxyFixtureKeepsAnAddressTheTestSet(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	taken := occupy(t, "127.0.0.1:0")
 	f := newProxyFixture(t, upstream.addr, func(p *Proxy) { p.Listen = taken })
 	writeVolume(t, f.certDir, pairFiles(t, client(t, ca)))
@@ -805,7 +802,7 @@ func TestTheProxyFixtureKeepsAnAddressTheTestSet(t *testing.T) {
 
 func TestTheProxyFixtureReportsARunThatFailsAtOnce(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := newProxyFixture(t, upstream.addr, func(p *Proxy) { p.Listen = "no port" })
 	writeVolume(t, f.certDir, pairFiles(t, client(t, ca)))
 	writeVolume(t, f.caDir, caFiles(t, ca))
@@ -818,7 +815,7 @@ func TestTheProxyFixtureReportsARunThatFailsAtOnce(t *testing.T) {
 
 func TestProxyFailsWhenItCannotBind(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -851,7 +848,7 @@ func TestProxyFailsWhenItCannotBind(t *testing.T) {
 func TestProxyOnItsSignalClosesTheListenerAndWaitsForItsConnections(t *testing.T) {
 	const wait = 5 * time.Second
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), func(p *Proxy) { p.ShutdownWait = wait })
 
 	finishes, staysOpen := dialTCP(t, f.Listen), dialTCP(t, f.Listen)
@@ -900,7 +897,7 @@ func TestProxyOnItsSignalClosesTheListenerAndWaitsForItsConnections(t *testing.T
 
 func TestProxyStopsBeforeItsWaitWhenItsConnectionsHaveFinished(t *testing.T) {
 	ca := newCA(t, "cluster")
-	upstream := startTLSUpstream(t, "127.0.0.1:0", serving(t, ca), nil)
+	upstream := startTLSUpstream(t, serving(t, ca), nil)
 	f := startProxy(t, upstream.addr, pairFiles(t, client(t, ca)), caFiles(t, ca), nil)
 	c := dialTCP(t, f.Listen)
 	if err := roundTrip(c); err != nil {
@@ -980,6 +977,196 @@ func TestATunnelCARotationGetsPastCachedSessions(t *testing.T) {
 	eventually(t, "a session of the new client", func() bool { return tripThrough(t, f.proxy.Listen) == nil })
 }
 
+const requestWorkers, requestsEach = 4, 20
+
+func concurrently(do func()) {
+	var wg sync.WaitGroup
+	for range requestWorkers {
+		wg.Go(func() {
+			for range requestsEach {
+				do()
+			}
+		})
+	}
+	wg.Wait()
+}
+
+func requestsThePodEnds(t *testing.T, listen string) {
+	t.Helper()
+	transport := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}}
+	defer transport.CloseIdleConnections()
+	httpClient := &http.Client{Transport: transport, Timeout: waitFor}
+	concurrently(func() {
+		resp, err := httpClient.Get("https://" + listen + "/")
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		transport.CloseIdleConnections()
+	})
+}
+
+func startHTTPSUpstream(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	t.Cleanup(srv.Close)
+	return srv.Listener.Addr().String()
+}
+
+func TestOrdinaryRequestClosesAreNotLoggedAsFailuresWithoutTheTunnel(t *testing.T) {
+	f := startPlainProxy(t, startHTTPSUpstream(t), func(p *Proxy) { p.spliceLog = rate.Sometimes{Every: 1} })
+	requestsThePodEnds(t, f.Listen)
+	eventually(t, "every connection to end", func() bool {
+		f.limits.mu.Lock()
+		defer f.limits.mu.Unlock()
+		return f.limits.total == 0
+	})
+	if n := f.logs.count("connection failed"); n != 0 {
+		t.Fatalf("%d of %d ordinary requests logged as failures:\n%s", n, requestWorkers*requestsEach, f.logs)
+	}
+}
+
+func TestOrdinaryRequestClosesAreNotLoggedAsFailuresThroughTheTunnel(t *testing.T) {
+	f := startTunnelTo(t, startHTTPSUpstream(t))
+	requestsThePodEnds(t, f.proxy.Listen)
+	eventually(t, "every connection to end", func() bool {
+		f.proxy.limits.mu.Lock()
+		defer f.proxy.limits.mu.Unlock()
+		return f.proxy.limits.total == 0 && f.server.sessions.Load() == 0
+	})
+	if n, m := f.proxy.logs.count("connection failed"), f.server.logs.count("session failed"); n+m != 0 {
+		t.Fatalf("of %d ordinary requests, %d logged as failures by the proxy and %d by the server:\n%s\n%s", requestWorkers*requestsEach, n, m, f.proxy.logs, f.server.logs)
+	}
+}
+
+func TestAnUpstreamThatResetsMidResponseIsLoggedWithoutTheTunnel(t *testing.T) {
+	upstream := startPlainUpstream(t, func(c *net.TCPConn) {
+		_, _ = c.Read(make([]byte, 16))
+		_, _ = c.Write([]byte("partial"))
+		reset(t, c)
+	})
+	f := startPlainProxy(t, upstream.addr, func(p *Proxy) { p.spliceLog = rate.Sometimes{Every: 1} })
+	c := dialTCP(t, f.Listen)
+	if _, err := c.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the failure in the log", func() bool { return f.logs.count("connection failed") == 1 })
+	if f.logs.count("connection reset by peer") != 1 {
+		t.Fatalf("the failure is not the upstream's reset:\n%s", f.logs)
+	}
+}
+
+func TestAnUpstreamThatResetsMidResponseIsLoggedByTheServer(t *testing.T) {
+	f := startTunnel(t, func(c *net.TCPConn) {
+		_, _ = c.Read(make([]byte, 16))
+		_, _ = c.Write([]byte("partial"))
+		reset(t, c)
+	})
+	c := dialTCP(t, f.proxy.Listen)
+	if _, err := c.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the failure in the server's log", func() bool { return f.server.logs.count("session failed") == 1 })
+	if f.server.logs.count("connection reset by peer") != 1 {
+		t.Fatalf("the failure is not the upstream's reset:\n%s", f.server.logs)
+	}
+}
+
+func startPlainProxy(t *testing.T, upstream string, tune func(*Proxy)) *proxyFixture {
+	t.Helper()
+	f := newProxyFixture(t, upstream, func(p *Proxy) {
+		p.CertDir, p.CADir = "", ""
+		if tune != nil {
+			tune(p)
+		}
+	})
+	f.start(t)
+	f.waitReady(t)
+	return f
+}
+
+func TestProxyWithoutCertificatesSplicesAsItIsAtOnce(t *testing.T) {
+	ca := newCA(t, "cluster")
+	upstream := startTLSUpstream(t, serving(t, ca), func(c *tls.Config) { c.ClientAuth = tls.NoClientCert })
+	f := startPlainProxy(t, upstream.addr, nil)
+
+	if f.pair != nil || f.ca != nil || f.logs.count("loaded") != 0 {
+		t.Fatalf("the certificate sources started: pair %v, ca %v, log:\n%s", f.pair, f.ca, f.logs)
+	}
+	raw := dialTCP(t, f.Listen)
+	session := tls.Client(raw, &tls.Config{MinVersion: tls.VersionTLS13, ServerName: tunnelHost, RootCAs: roots(ca)})
+	if err := session.SetDeadline(time.Now().Add(waitFor)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Handshake(); err != nil {
+		t.Fatalf("the client's own session with the upstream: %v", err)
+	}
+	if err := roundTrip(session); err != nil {
+		t.Fatal(err)
+	}
+	if upstream.lastResumed() {
+		t.Fatal("the proxy resumed a session of its own")
+	}
+}
+
+func TestPlainProxyCarriesAHalfCloseAndRemembersTheAddressOfItsFirstByte(t *testing.T) {
+	upstream := startPlainUpstream(t, func(c *net.TCPConn) {
+		got, err := io.ReadAll(c)
+		if err != nil {
+			return
+		}
+		_, _ = c.Write(append([]byte("got "), got...))
+	})
+	_, port, err := net.SplitHostPort(upstream.addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := startPlainProxy(t, net.JoinHostPort(tunnelHost, port), func(p *Proxy) { p.Resolver = always("::1", "127.0.0.1") })
+	eventually(t, "the first lookup", func() bool { return f.addrs.Load() != nil })
+
+	c := dialTCP(t, f.Listen)
+	if err := c.SetDeadline(time.Now().Add(waitFor)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if f.answered.Load() != nil {
+		t.Fatal("remembered an address before any byte came from it")
+	}
+	if err := c.CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "got request" {
+		t.Fatalf("read %q", got)
+	}
+	if a := f.answered.Load(); a == nil || *a != netip.MustParseAddr("127.0.0.1") {
+		t.Fatalf("remembered %v, want 127.0.0.1", a)
+	}
+}
+
+func TestPlainProxyDoesNotRememberAnAddressThatAcceptsAndResets(t *testing.T) {
+	upstream := startPlainUpstream(t, func(c *net.TCPConn) { reset(t, c) })
+	f := startPlainProxy(t, upstream.addr, nil)
+	c := dialTCP(t, f.Listen)
+	if _, err := c.Write([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	requireClosed(t, c)
+	if upstream.accepted.Load() != 1 {
+		t.Fatalf("the upstream accepted %d connections", upstream.accepted.Load())
+	}
+	if a := f.answered.Load(); a != nil {
+		t.Fatalf("remembered %v", a)
+	}
+}
+
 type tlsUpstream struct {
 	addr     string
 	cert     atomic.Pointer[tls.Certificate]
@@ -991,7 +1178,7 @@ type tlsUpstream struct {
 	failures []error
 }
 
-func startTLSUpstream(t *testing.T, addr string, leaf *certs.Certificate, tune func(*tls.Config)) *tlsUpstream {
+func startTLSUpstream(t *testing.T, leaf *certs.Certificate, tune func(*tls.Config)) *tlsUpstream {
 	t.Helper()
 	u := &tlsUpstream{}
 	pair := tlsPair(t, leaf)
@@ -1004,7 +1191,7 @@ func startTLSUpstream(t *testing.T, addr string, leaf *certs.Certificate, tune f
 	if tune != nil {
 		tune(cfg)
 	}
-	ln, err := tls.Listen("tcp", addr, cfg)
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1161,7 +1348,8 @@ func TestAPanicInAProxyConnectionEndsOnlyThatConnection(t *testing.T) {
 	panicking := atomic.Bool{}
 	panicking.Store(true)
 	upstream := startPlainUpstream(t, echo)
-	p.dial = func(ctx context.Context) (conn, error) {
+	p.addrs.Store(&[]netip.Addr{netip.MustParseAddr("127.0.0.1")})
+	p.connect = func(ctx context.Context, _ netip.AddrPort) (conn, error) {
 		if panicking.Load() {
 			panic("boom")
 		}

@@ -55,8 +55,12 @@ func TestUsageExitsTwo(t *testing.T) {
 		{"addr with no IP", []string{"addr", "--address=tunnel.lodia.test"}, "--address"},
 		{"proxy without --listen", []string{"proxy", "--upstream=u:1", "--cert-dir=c", "--ca=a", "--socket=s"}, "--listen"},
 		{"proxy without --upstream", []string{"proxy", "--listen=l:1", "--cert-dir=c", "--ca=a", "--socket=s"}, "--upstream"},
-		{"proxy without --cert-dir", []string{"proxy", "--listen=l:1", "--upstream=u:1", "--ca=a", "--socket=s"}, "--cert-dir"},
-		{"proxy without --ca", []string{"proxy", "--listen=l:1", "--upstream=u:1", "--cert-dir=c", "--socket=s"}, "--ca"},
+		{"proxy without certificates and without --listen", []string{"proxy", "--upstream=u:1", "--socket=s"}, "--listen"},
+		{"proxy without certificates and without --upstream", []string{"proxy", "--listen=l:1", "--socket=s"}, "--upstream"},
+		{"proxy without certificates and without --socket", []string{"proxy", "--listen=l:1", "--upstream=u:1"}, "--socket"},
+		{"proxy without certificates and with an upstream without a port", []string{"proxy", "--listen=l:1", "--upstream=u", "--socket=s"}, "--upstream"},
+		{"proxy with --ca and no --cert-dir", []string{"proxy", "--listen=l:1", "--upstream=u:1", "--ca=a", "--socket=s"}, "--cert-dir is required with --ca"},
+		{"proxy with --cert-dir and no --ca", []string{"proxy", "--listen=l:1", "--upstream=u:1", "--cert-dir=c", "--socket=s"}, "--ca is required with --cert-dir"},
 		{"proxy without --socket", []string{"proxy", "--listen=l:1", "--upstream=u:1", "--cert-dir=c", "--ca=a"}, "--socket"},
 		{"proxy with an upstream without a port", []string{"proxy", "--listen=l:1", "--upstream=u", "--cert-dir=c", "--ca=a", "--socket=s"}, "--upstream"},
 		{"probe without --socket", []string{"probe"}, "--socket"},
@@ -333,5 +337,65 @@ func TestTheModesWorkUnderTheirFlags(t *testing.T) {
 	}
 	if code := exitCode(t, "probe", "--socket="+socket); code != exitFailed {
 		t.Fatalf("probe after proxy exits %d", code)
+	}
+}
+
+func TestTheProxyWithoutCertificatesSplicesAsItIs(t *testing.T) {
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = upstream.Close() }()
+	go func() {
+		for {
+			c, err := upstream.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				_, _ = io.Copy(c, c)
+			}()
+		}
+	}()
+	socketDir, err := os.MkdirTemp("/tmp", "lodia-tunnel-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socket := filepath.Join(socketDir, "health.sock")
+	listen := freeAddr(t)
+
+	proxy := start(t, "proxy", "--listen="+listen, "--upstream="+upstream.Addr().String(), "--socket="+socket)
+	eventually(t, "probe", func() bool { return exitCode(t, "probe", "--socket="+socket) == 0 })
+	eventually(t, "a byte through proxy", func() bool {
+		c, err := net.DialTimeout("tcp", listen, 10*time.Second)
+		if err != nil {
+			return false
+		}
+		defer func() { _ = c.Close() }()
+		if err := c.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return false
+		}
+		if _, err := c.Write([]byte("ping")); err != nil {
+			return false
+		}
+		got := make([]byte, 4)
+		_, err = io.ReadFull(c, got)
+		return err == nil && string(got) == "ping"
+	})
+
+	if err := proxy.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- proxy.Wait() }()
+	select {
+	case err := <-exited:
+		if err != nil {
+			t.Fatalf("proxy exited with %v on SIGTERM", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("proxy did not exit on SIGTERM")
 	}
 }
