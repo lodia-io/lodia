@@ -47,6 +47,7 @@ var conditionWriters = map[string]string{
 	lodiav1alpha1.ConditionBackupReady:           "lodia/datastore",
 	lodiav1alpha1.ConditionAPIServerReady:        "lodia/workloads",
 	lodiav1alpha1.ConditionRoutesReady:           "lodia/workloads",
+	lodiav1alpha1.ConditionLoadBalancerReady:     "lodia/workloads",
 	lodiav1alpha1.ConditionAddonsApplied:         "lodia/tenant",
 	lodiav1alpha1.ConditionAddonsAvailable:       "lodia/tenant",
 	lodiav1alpha1.ConditionReachable:             "lodia/health",
@@ -55,6 +56,11 @@ var conditionWriters = map[string]string{
 	lodiav1alpha1.ConditionProgressing:           "lodia/lifecycle",
 	lodiav1alpha1.ConditionReady:                 "lodia/lifecycle",
 	lodiav1alpha1.ConditionRehearsed:             "lodia/rehearsal",
+}
+
+var modeConditions = map[string]func(lodiav1alpha1.Endpoint) bool{
+	lodiav1alpha1.ConditionRoutesReady:       func(e lodiav1alpha1.Endpoint) bool { return e.Gateway != nil },
+	lodiav1alpha1.ConditionLoadBalancerReady: func(e lodiav1alpha1.Endpoint) bool { return e.LoadBalancer != nil },
 }
 
 var fieldWriters = map[string]string{
@@ -92,33 +98,38 @@ func TestEveryStatusFieldHasOneWriter(t *testing.T) {
 	defer updates.Stop()
 	class, gateway, cp := gatewayTenant(ns.Name)
 	cp.Spec.Version = "v1.36.6"
+	lb := cp.DeepCopy()
+	lb.Name = "lb"
+	lb.Spec.Endpoint = lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "203.0.113.10"}}
 	backup := &lodiav1alpha1.Backup{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev-backup", Namespace: ns.Name},
 		Spec:       lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: cp.Name}},
 	}
-	for _, obj := range []client.Object{class, gateway, cp, backup} {
+	for _, obj := range []client.Object{class, gateway, cp, lb, backup} {
 		if err := k8s.Create(t.Context(), obj); err != nil {
 			t.Fatal(err)
 		}
 	}
-	atRehearsal := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": lodiav1alpha1.GroupVersion.String(),
-		"kind":       "ControlPlane",
-		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
-		"status": map[string]any{
-			"target":     map[string]any{"version": "v1.35.0"},
-			"kubernetes": map[string]any{"upgrade": map[string]any{"step": string(lodiav1alpha1.UpgradeStepRehearsal), "startedAt": "2026-11-20T00:00:00Z"}},
-		},
-	}}
-	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(atRehearsal), client.FieldOwner("lodia/lifecycle"), client.ForceOwnership); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{cp.Name, lb.Name} {
+		atRehearsal := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": lodiav1alpha1.GroupVersion.String(),
+			"kind":       "ControlPlane",
+			"metadata":   map[string]any{"name": name, "namespace": ns.Name},
+			"status": map[string]any{
+				"target":     map[string]any{"version": "v1.35.0"},
+				"kubernetes": map[string]any{"upgrade": map[string]any{"step": string(lodiav1alpha1.UpgradeStepRehearsal), "startedAt": "2026-11-20T00:00:00Z"}},
+			},
+		}}
+		if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(atRehearsal), client.FieldOwner("lodia/lifecycle"), client.ForceOwnership); err != nil {
+			t.Fatal(err)
+		}
 	}
 	run(t, cfg)
 
 	owners := map[string][]string{}
 	deadline := time.After(time.Minute)
 	var settled <-chan time.Time
-	written := false
+	written := map[string]bool{}
 watching:
 	for {
 		select {
@@ -139,13 +150,14 @@ watching:
 				slices.Sort(merged)
 				owners[key] = slices.Compact(merged)
 			}
-			if written = written || complete(fresh); written {
+			written[fresh.Name] = written[fresh.Name] || complete(fresh)
+			if written[cp.Name] && written[lb.Name] {
 				settled = time.After(2 * time.Second)
 			}
 		case <-settled:
 			break watching
 		case <-deadline:
-			t.Fatalf("the controllers did not write their status and stop within a minute: written %t", written)
+			t.Fatalf("the controllers did not write their status and stop within a minute: written %v", written)
 		}
 	}
 	for _, key := range slices.Sorted(maps.Keys(owners)) {
@@ -158,6 +170,16 @@ watching:
 			t.Errorf("status %s is written by %v and has no writer in the table", key, owners[key])
 		case !slices.Equal(owners[key], []string{writer}):
 			t.Errorf("status %s is written by %v, want %s alone", key, owners[key], writer)
+		}
+	}
+	for _, tenant := range []*lodiav1alpha1.ControlPlane{cp, lb} {
+		if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(tenant), tenant); err != nil {
+			t.Fatal(err)
+		}
+		for conditionType, inMode := range modeConditions {
+			if !inMode(tenant.Spec.Endpoint) && meta.FindStatusCondition(tenant.Status.Conditions, conditionType) != nil {
+				t.Errorf("%s has %s, a condition of another mode", tenant.Name, conditionType)
+			}
 		}
 	}
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(backup), backup); err != nil {
@@ -204,10 +226,13 @@ func gatewayTenant(ns string) (*lodiav1alpha1.DatastoreClass, *gatewayv1.Gateway
 }
 
 func complete(cp *lodiav1alpha1.ControlPlane) bool {
-	if cp.Status.Datastore == nil || cp.Status.Credentials == nil || cp.Status.Target == nil || cp.Status.Endpoint == nil || cp.Status.Endpoint.Tunnel == nil {
+	if cp.Status.Datastore == nil || cp.Status.Credentials == nil || cp.Status.Target == nil || cp.Status.Endpoint == nil || cp.Spec.Endpoint.Gateway != nil && cp.Status.Endpoint.Tunnel == nil {
 		return false
 	}
 	for conditionType := range conditionWriters {
+		if inMode, ok := modeConditions[conditionType]; ok && !inMode(cp.Spec.Endpoint) {
+			continue
+		}
 		if meta.FindStatusCondition(cp.Status.Conditions, conditionType) == nil {
 			return false
 		}

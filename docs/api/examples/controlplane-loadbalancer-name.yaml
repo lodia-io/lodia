@@ -1,0 +1,20 @@
+# A ControlPlane behind its own load balancer at a name the platform keeps
+# pointing at it, here through external-dns's annotation
+# (https://github.com/kubernetes-sigs/external-dns/blob/v0.24.0/docs/annotations/annotations.md?plain=1#L82-L84):
+# the load balancer may report an IP address, several, or a host name, and
+# pods reach the name through apiserver-proxy on every node.
+apiVersion: lodia.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: edge-dns
+  namespace: team-a
+spec:
+  version: v1.37.1
+  endpoint:
+    loadBalancer:
+      host: api.edge.k8s.example.com
+      annotations:
+        external-dns.kubernetes.io/hostname: api.edge.k8s.example.com
+  network:
+    serviceCIDRs: [10.96.0.0/16]
+    podCIDRs: [10.244.0.0/16]

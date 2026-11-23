@@ -471,7 +471,7 @@ func TestAFailedUpstreamDialClosesTheSession(t *testing.T) {
 	}
 }
 
-func TestAResetClientEndsItsSessionAndIsLogged(t *testing.T) {
+func TestAResetClientEndsItsSessionAndIsNotLogged(t *testing.T) {
 	f := startServer(t, nil)
 	raw := dialTCP(t, f.Listen)
 	c := tls.Client(raw, f.config())
@@ -479,8 +479,10 @@ func TestAResetClientEndsItsSessionAndIsLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	reset(t, raw)
-	eventually(t, "the failure in the log", func() bool { return f.logs.count("session failed") == 1 })
 	eventually(t, "the slot to free", func() bool { return f.sessions.Load() == 0 })
+	if n := f.logs.count("session failed"); n != 0 {
+		t.Fatalf("the client's reset was logged as a failure:\n%s", f.logs)
+	}
 }
 
 func TestServeServesANewPairToNewSessionsWhileAnOldOneKeepsWorking(t *testing.T) {

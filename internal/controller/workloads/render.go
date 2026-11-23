@@ -99,7 +99,6 @@ func service(cp *lodiav1alpha1.ControlPlane) *corev1.Service {
 			Selector: podLabels(cp.Name, apiServer),
 			Ports: []corev1.ServicePort{
 				{Name: "https", Protocol: corev1.ProtocolTCP, Port: lodiav1alpha1.APIServerServicePort, TargetPort: intstr.FromString("https")},
-				{Name: "kubernetes", Protocol: corev1.ProtocolTCP, Port: kubernetesPort, TargetPort: intstr.FromString("https")},
 				{Name: "konnectivity", Protocol: corev1.ProtocolTCP, Port: konnectivityPort, TargetPort: intstr.FromString("konnectivity")},
 			},
 		},

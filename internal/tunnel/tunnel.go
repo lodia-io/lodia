@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tunnel implements lodia-tunnel, which carries a tenant's in-cluster
-// API traffic through its Gateway: Server beside each API server, Address and
-// Proxy on each node.
+// API traffic, through its Gateway or straight to the API server: Server beside
+// each API server, Address and Proxy on each node.
 package tunnel
 
 import (

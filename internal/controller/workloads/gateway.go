@@ -62,14 +62,10 @@ func (r *Reconciler) gateway(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 
 func gatewayEndpoint(cp *lodiav1alpha1.ControlPlane, port int32) *lodiav1alpha1.EndpointStatus {
 	hostnames := cp.Spec.Endpoint.Gateway.Hostnames
-	advertise := lodiav1alpha1.DefaultAdvertiseAddress
-	if a := cp.Spec.APIServer; a != nil && a.AdvertiseAddress != "" {
-		advertise = a.AdvertiseAddress
-	}
 	return &lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: string(hostnames.APIServer), Port: port},
 		Konnectivity: lodiav1alpha1.HostPort{Host: string(hostnames.Konnectivity), Port: port},
-		InCluster:    lodiav1alpha1.HostPort{Host: advertise, Port: kubernetesPort},
+		InCluster:    lodiav1alpha1.HostPort{Host: cp.Spec.AdvertiseAddress(), Port: kubernetesPort},
 		Tunnel:       &lodiav1alpha1.HostPort{Host: string(hostnames.Tunnel), Port: port},
 	}
 }
@@ -336,7 +332,7 @@ func (r *Reconciler) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 				fmt.Sprintf("hostname %s is held by TLSRoute %s/%s on Gateway %s/%s; Workloads writes no route for it until that one is gone", hostname, other.Namespace, other.Name, gw.Namespace, gw.Name)}, nil
 		}
 	}
-	err = r.apply(ctx, cp, route)
+	_, err = r.apply(ctx, cp, route)
 	// A route left at the version it was read at is nothing new for the cache.
 	if err == nil && route.ResourceVersion == stored.ResourceVersion {
 		return nil, nil

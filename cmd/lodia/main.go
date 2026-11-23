@@ -32,7 +32,7 @@ func main() {
 	flag.BoolVar(&leaderElect, "leader-elect", true, "Run controllers only in the replica that holds the leader lease.")
 	flag.StringVar(&configPath, "config", "", "Path to the operator's configuration file, YAML; without it the defaults apply.")
 	flag.StringVar(&signerImage, "signer-image", "", "Image of lodia-signer, the API server's ServiceAccount token signer; required.")
-	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, a gateway tenant's in-cluster path to its API server; required.")
+	flag.StringVar(&tunnelImage, "tunnel-image", "", "Image of lodia-tunnel, the API server's sidecar in gateway mode and apiserver-proxy on the nodes of a gateway tenant and of a loadBalancer tenant without an IP host; required.")
 	flag.StringVar(&etcdDruidVersion, "etcd-druid-version", "", "Version of etcd-druid, what follows the repository and its colon in its image, a digest included, which the operator revision covers; required.")
 	flag.StringVar(&etcdDruidNamespace, "etcd-druid-namespace", "", "Namespace etcd-druid runs in, whose pods each etcd's NetworkPolicy admits to the backup-restore sidecar; required.")
 	flag.DurationVar(&etcdDruidStatusSync, "etcd-druid-status-sync-period", 0, "How often etcd-druid syncs an Etcd's status, its etcdStatusSyncPeriod, which the Datastore controller polls a rollout at and Lifecycle's settling time counts; required.")

@@ -19,10 +19,6 @@ spec:
     port: 443
     protocol: TCP
     targetPort: https
-  - name: kubernetes
-    port: 6443
-    protocol: TCP
-    targetPort: https
   - name: konnectivity
     port: 8132
     protocol: TCP

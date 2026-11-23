@@ -763,7 +763,7 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 			}
 			expectAReplicaLoads(t, cp)
 			expectLifecycle(t, lifecyclePass(t, cp, c.running), ready.ObservedGeneration, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
-				"CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", c.running)
+				"LoadBalancerReady, CertificatesReady, DatastoreReady, APIServerReady, AccessReady, AddonsApplied, Reachable and ControllersLeading are True", c.running)
 			if c.running != revision {
 				return
 			}

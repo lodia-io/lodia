@@ -39,9 +39,9 @@ func TestTheRenderIsPinned(t *testing.T) {
 	tableTag := ":" + table.KonnectivityAgent[strings.LastIndex(table.KonnectivityAgent, ":")+1:]
 	const tableTagInGolden = ":$konnectivity"
 	network := lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}
-	outsideGateway := map[string]lodiav1alpha1.Endpoint{
-		"loadBalancer": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
-		"nodePort":     {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+	direct := map[string]lodiav1alpha1.Endpoint{
+		"loadBalancer with an IP host": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "203.0.113.10"}},
+		"nodePort":                     {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
 	}
 	for golden, c := range map[string]struct {
 		addons    *lodiav1alpha1.Addons
@@ -49,8 +49,15 @@ func TestTheRenderIsPinned(t *testing.T) {
 		endpoints map[string]lodiav1alpha1.Endpoint
 	}{
 		"defaults.yaml": {
-			status:    lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
-			endpoints: outsideGateway,
+			status:    lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
+			endpoints: direct,
+		},
+		"proxy.yaml": {
+			status: lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443}},
+			endpoints: map[string]lodiav1alpha1.Endpoint{
+				"loadBalancer with a name host": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "api.dev.example.test"}},
+				"loadBalancer without a host":   {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
+			},
 		},
 		"agents-as-a-deployment.yaml": {
 			addons: &lodiav1alpha1.Addons{
@@ -59,7 +66,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 				Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.34.0", Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment", Replicas: new(int32(2))}},
 			},
 			status:    lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "2001:db8::10", Port: 31443}},
-			endpoints: outsideGateway,
+			endpoints: direct,
 		},
 		"gateway.yaml": {
 			status: lodiav1alpha1.EndpointStatus{
@@ -121,12 +128,13 @@ func TestKubeProxyServesItsHealthOnTheAddressGiven(t *testing.T) {
 		cp := &lodiav1alpha1.ControlPlane{
 			ObjectMeta: metav1.ObjectMeta{Name: "dev"},
 			Spec: lodiav1alpha1.ControlPlaneSpec{
-				Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-				Addons:  &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{HealthzBindAddress: address}},
+				Endpoint: lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "203.0.113.10"}},
+				Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+				Addons:   &lodiav1alpha1.Addons{KubeProxy: &lodiav1alpha1.KubeProxy{HealthzBindAddress: address}},
 			},
 			Status: lodiav1alpha1.ControlPlaneStatus{
 				Target:   &lodiav1alpha1.Target{Version: "v1.35.8"},
-				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
 			},
 		}
 		v, waiting, err := newValues(cp, nil)
@@ -214,6 +222,34 @@ func gatewayControlPlane(inCluster, tunnel string) *lodiav1alpha1.ControlPlane {
 	}
 }
 
+func proxiedControlPlane(endpoint lodiav1alpha1.Endpoint, apiServer, inCluster string) *lodiav1alpha1.ControlPlane {
+	return &lodiav1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Endpoint: endpoint,
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+		},
+		Status: lodiav1alpha1.ControlPlaneStatus{
+			Target: &lodiav1alpha1.Target{Version: "v1.35.8", OperatorRevision: "v0.0.0-test+running"},
+			Endpoint: &lodiav1alpha1.EndpointStatus{
+				APIServer:    lodiav1alpha1.HostPort{Host: apiServer, Port: 443},
+				Konnectivity: lodiav1alpha1.HostPort{Host: apiServer, Port: 8132},
+				InCluster:    lodiav1alpha1.HostPort{Host: inCluster, Port: 6443},
+			},
+		},
+	}
+}
+
+func directControlPlane(endpoint lodiav1alpha1.Endpoint, host string) *lodiav1alpha1.ControlPlane {
+	cp := proxiedControlPlane(endpoint, host, host)
+	cp.Status.Endpoint.InCluster.Port = 443
+	return cp
+}
+
+func nameHost(host string) lodiav1alpha1.Endpoint {
+	return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: lodiav1alpha1.EndpointHost(host)}}
+}
+
 func rendered(t *testing.T, cp *lodiav1alpha1.ControlPlane) []*unstructured.Unstructured {
 	t.Helper()
 	v, waiting, err := newValues(cp, []byte("the cluster CA"))
@@ -249,14 +285,22 @@ func apiserverProxyOf(t *testing.T, objects []*unstructured.Unstructured) *appsv
 }
 
 func TestApiserverProxyRendersAsSpecified(t *testing.T) {
-	for _, c := range []struct{ inCluster, tunnel, listen, upstream string }{
-		{"240.0.0.1", "tunnel.dev.example.test", "240.0.0.1:6443", "tunnel.dev.example.test:443"},
-		{"fd12:3456:789a::1", "2001:db8::20", "[fd12:3456:789a::1]:6443", "[2001:db8::20]:443"},
+	for _, c := range []struct {
+		name             string
+		cp               *lodiav1alpha1.ControlPlane
+		inCluster        string
+		listen, upstream string
+		tunnel           bool
+	}{
+		{"gateway", gatewayControlPlane("240.0.0.1", "tunnel.dev.example.test"), "240.0.0.1", "240.0.0.1:6443", "tunnel.dev.example.test:443", true},
+		{"gateway, IPv6", gatewayControlPlane("fd12:3456:789a::1", "2001:db8::20"), "fd12:3456:789a::1", "[fd12:3456:789a::1]:6443", "[2001:db8::20]:443", true},
+		{"a name host", proxiedControlPlane(nameHost("api.dev.example.test"), "api.dev.example.test", "240.0.0.1"), "240.0.0.1", "240.0.0.1:6443", "api.dev.example.test:443", false},
+		{"no host, a discovered IPv6 address", proxiedControlPlane(nameHost(""), "2001:db8::30", "240.0.0.1"), "240.0.0.1", "240.0.0.1:6443", "[2001:db8::30]:443", false},
 	} {
-		ds := apiserverProxyOf(t, rendered(t, gatewayControlPlane(c.inCluster, c.tunnel)))
+		ds := apiserverProxyOf(t, rendered(t, c.cp))
 		labels := map[string]string{"k8s-app": "apiserver-proxy"}
 		if ds.Labels["k8s-app"] != "apiserver-proxy" || ds.Labels[lodiav1alpha1.ManagedByLabel] != lodiav1alpha1.ManagedBy {
-			t.Errorf("%s: the DaemonSet is labelled %v", c.inCluster, ds.Labels)
+			t.Errorf("%s: the DaemonSet is labelled %v", c.name, ds.Labels)
 		}
 		probe := func(args ...string) *corev1.Probe {
 			return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: append([]string{"/ko-app/lodia-tunnel"}, args...)}}}
@@ -329,10 +373,18 @@ func TestApiserverProxyRendersAsSpecified(t *testing.T) {
 				},
 			},
 		}
+		if !c.tunnel {
+			pod := &want.Template.Spec
+			pod.SecurityContext.FSGroup = nil
+			proxy := &pod.Containers[0]
+			proxy.Args = slices.DeleteFunc(proxy.Args, func(arg string) bool { return strings.HasPrefix(arg, "--cert-dir=") || strings.HasPrefix(arg, "--ca=") })
+			proxy.VolumeMounts = proxy.VolumeMounts[2:]
+			pod.Volumes = pod.Volumes[2:]
+		}
 		if !equality.Semantic.DeepEqual(ds.Spec, want) {
 			got, _ := yaml.Marshal(ds.Spec)
 			expected, _ := yaml.Marshal(want)
-			t.Errorf("%s: the DaemonSet's spec is\n%s\nwant\n%s", c.inCluster, got, expected)
+			t.Errorf("%s: the DaemonSet's spec is\n%s\nwant\n%s", c.name, got, expected)
 		}
 	}
 }
@@ -370,7 +422,7 @@ func TestApiserverProxysSecretIsTheBuildersOfThePair(t *testing.T) {
 	}
 }
 
-func TestGatewayModeMovesTheAgentsToThePublicPath(t *testing.T) {
+func TestWhereTheNodesProxyRunsTheAgentsTakeThePublicPath(t *testing.T) {
 	for _, agent := range []struct {
 		kind  string
 		addon *lodiav1alpha1.Addons
@@ -378,53 +430,85 @@ func TestGatewayModeMovesTheAgentsToThePublicPath(t *testing.T) {
 		{"DaemonSet", nil},
 		{"Deployment", &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment"}}}},
 	} {
-		key := entry{Group: "apps", Version: "v1", Kind: agent.kind, Namespace: "kube-system", Name: "konnectivity-agent"}
-		gateway := gatewayControlPlane("240.0.0.1", "tunnel.dev.example.test")
-		gateway.Spec.Addons = agent.addon
-		objects := rendered(t, gateway)
-		other := gateway.DeepCopy()
-		other.Spec.Endpoint = lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}
-		other.Status.Endpoint.Tunnel = nil
+		for name, proxied := range map[string]*lodiav1alpha1.ControlPlane{
+			"gateway":     gatewayControlPlane("240.0.0.1", "tunnel.dev.example.test"),
+			"a name host": proxiedControlPlane(nameHost("api.dev.example.test"), "api.dev.example.test", "240.0.0.1"),
+			"no host":     proxiedControlPlane(nameHost(""), "api.dev.example.test", "240.0.0.1"),
+		} {
+			key := entry{Group: "apps", Version: "v1", Kind: agent.kind, Namespace: "kube-system", Name: "konnectivity-agent"}
+			proxied.Spec.Addons = agent.addon
+			objects := rendered(t, proxied)
+			direct := proxied.DeepCopy()
+			direct.Spec.Endpoint = nameHost("203.0.113.10")
+			direct.Status.Endpoint.Tunnel = nil
 
-		var got, want corev1.PodTemplateSpec
-		if agent.kind == "DaemonSet" {
-			g, w := &appsv1.DaemonSet{}, &appsv1.DaemonSet{}
-			renderedObject(t, objects, key, g)
-			renderedObject(t, rendered(t, other), key, w)
-			got, want = g.Spec.Template, w.Spec.Template
-		} else {
-			g, w := &appsv1.Deployment{}, &appsv1.Deployment{}
-			renderedObject(t, objects, key, g)
-			renderedObject(t, rendered(t, other), key, w)
-			got, want = g.Spec.Template, w.Spec.Template
-		}
-		want.Spec.DNSPolicy = corev1.DNSDefault
-		container := &want.Spec.Containers[0]
-		at := slices.Index(container.Command, "--keepalive-time=30s") + 1
-		container.Command = slices.Insert(container.Command, at, "--kubeconfig=/etc/konnectivity-agent/kubeconfig")
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "kubeconfig", MountPath: "/etc/konnectivity-agent"})
-		want.Spec.Volumes = append(want.Spec.Volumes, corev1.Volume{Name: "kubeconfig", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "konnectivity-agent-kubeconfig"}}}})
-		if !equality.Semantic.DeepEqual(got, want) {
-			g, _ := yaml.Marshal(got)
-			w, _ := yaml.Marshal(want)
-			t.Errorf("%s: the agents' pod template is\n%s\nwant the other modes' with the public path\n%s", agent.kind, g, w)
-		}
+			var got, want corev1.PodTemplateSpec
+			if agent.kind == "DaemonSet" {
+				g, w := &appsv1.DaemonSet{}, &appsv1.DaemonSet{}
+				renderedObject(t, objects, key, g)
+				renderedObject(t, rendered(t, direct), key, w)
+				got, want = g.Spec.Template, w.Spec.Template
+			} else {
+				g, w := &appsv1.Deployment{}, &appsv1.Deployment{}
+				renderedObject(t, objects, key, g)
+				renderedObject(t, rendered(t, direct), key, w)
+				got, want = g.Spec.Template, w.Spec.Template
+			}
+			want.Spec.DNSPolicy = corev1.DNSDefault
+			container := &want.Spec.Containers[0]
+			at := slices.Index(container.Command, "--keepalive-time=30s") + 1
+			container.Command = slices.Insert(container.Command, at, "--kubeconfig=/etc/konnectivity-agent/kubeconfig")
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "kubeconfig", MountPath: "/etc/konnectivity-agent"})
+			want.Spec.Volumes = append(want.Spec.Volumes, corev1.Volume{Name: "kubeconfig", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "konnectivity-agent-kubeconfig"}}}})
+			if !equality.Semantic.DeepEqual(got, want) {
+				g, _ := yaml.Marshal(got)
+				w, _ := yaml.Marshal(want)
+				t.Errorf("%s, %s: the agents' pod template is\n%s\nwant that of an IP host with the public path\n%s", name, agent.kind, g, w)
+			}
 
-		cm := &corev1.ConfigMap{}
-		renderedObject(t, objects, entry{Version: "v1", Kind: "ConfigMap", Namespace: "kube-system", Name: "konnectivity-agent-kubeconfig"}, cm)
-		kubeconfig, err := clientcmd.Load([]byte(cm.Data["kubeconfig"]))
-		if err != nil {
-			t.Fatal(err)
+			cm := &corev1.ConfigMap{}
+			renderedObject(t, objects, entry{Version: "v1", Kind: "ConfigMap", Namespace: "kube-system", Name: "konnectivity-agent-kubeconfig"}, cm)
+			kubeconfig, err := clientcmd.Load([]byte(cm.Data["kubeconfig"]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cluster, user := kubeconfig.Clusters["default"], kubeconfig.AuthInfos["default"]
+			if kubeconfig.CurrentContext != "default" || cluster == nil || user == nil ||
+				cluster.Server != "https://api.dev.example.test:443" ||
+				cluster.CertificateAuthority != "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt" ||
+				user.TokenFile != "/var/run/secrets/kubernetes.io/serviceaccount/token" {
+				t.Errorf("%s, %s: the agents' kubeconfig is %q", name, agent.kind, cm.Data["kubeconfig"])
+			}
+			if cm.Labels[lodiav1alpha1.ManagedByLabel] != lodiav1alpha1.ManagedBy {
+				t.Errorf("%s, %s: the agents' kubeconfig is labelled %v", name, agent.kind, cm.Labels)
+			}
 		}
-		cluster, user := kubeconfig.Clusters["default"], kubeconfig.AuthInfos["default"]
-		if kubeconfig.CurrentContext != "default" || cluster == nil || user == nil ||
-			cluster.Server != "https://api.dev.example.test:443" ||
-			cluster.CertificateAuthority != "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt" ||
-			user.TokenFile != "/var/run/secrets/kubernetes.io/serviceaccount/token" {
-			t.Errorf("the agents' kubeconfig is %q", cm.Data["kubeconfig"])
+	}
+}
+
+func TestOnlyTheTunnelGetsTheClientSecret(t *testing.T) {
+	for name, c := range map[string]struct {
+		cp     *lodiav1alpha1.ControlPlane
+		proxy  bool
+		secret bool
+	}{
+		"gateway":     {gatewayControlPlane("240.0.0.1", "tunnel.dev.example.test"), true, true},
+		"a name host": {proxiedControlPlane(nameHost("api.dev.example.test"), "api.dev.example.test", "240.0.0.1"), true, false},
+		"no host":     {proxiedControlPlane(nameHost(""), "203.0.113.10", "240.0.0.1"), true, false},
+		"an IP host":  {directControlPlane(nameHost("203.0.113.10"), "203.0.113.10"), false, false},
+		"nodePort":    {directControlPlane(lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}, "203.0.113.10"), false, false},
+	} {
+		var proxy, secret bool
+		for _, obj := range rendered(t, c.cp) {
+			switch entryOf(obj) {
+			case entry{Group: "apps", Version: "v1", Kind: "DaemonSet", Namespace: "kube-system", Name: "apiserver-proxy"}:
+				proxy = true
+			case entry{Version: "v1", Kind: "Secret", Namespace: "kube-system", Name: "apiserver-proxy-client"}:
+				secret = true
+			}
 		}
-		if cm.Labels[lodiav1alpha1.ManagedByLabel] != lodiav1alpha1.ManagedBy {
-			t.Errorf("the agents' kubeconfig is labelled %v", cm.Labels)
+		if proxy != c.proxy || secret != c.secret {
+			t.Errorf("%s renders apiserver-proxy %t and its client Secret %t, want %t and %t", name, proxy, secret, c.proxy, c.secret)
 		}
 	}
 }
@@ -435,10 +519,17 @@ func TestAGatewayEndpointWithoutATunnelWaits(t *testing.T) {
 	if reason, waiting := waitsFor(gateway); reason != lodiav1alpha1.ReasonWaitingForEndpoint || waiting == "" {
 		t.Errorf("a gateway endpoint without a tunnel gives %q %q", reason, waiting)
 	}
-	other := gateway.DeepCopy()
-	other.Spec.Endpoint = lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}
-	if reason, waiting := waitsFor(other); waiting != "" {
-		t.Errorf("a nodePort endpoint without a tunnel gives %q %q", reason, waiting)
+	for name, endpoint := range map[string]lodiav1alpha1.Endpoint{
+		"nodePort":    {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
+		"a name host": nameHost("api.dev.example.test"),
+		"no host":     nameHost(""),
+		"an IP host":  nameHost("203.0.113.10"),
+	} {
+		other := gateway.DeepCopy()
+		other.Spec.Endpoint = endpoint
+		if reason, waiting := waitsFor(other); waiting != "" {
+			t.Errorf("%s without a tunnel gives %q %q", name, reason, waiting)
+		}
 	}
 }
 
@@ -475,10 +566,13 @@ func reporting(target, apiServer, controllerManager, scheduler string) *lodiav1a
 	}
 	return &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
-		Spec:       lodiav1alpha1.ControlPlaneSpec{Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}},
+		Spec: lodiav1alpha1.ControlPlaneSpec{
+			Endpoint: lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "203.0.113.10"}},
+			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
+		},
 		Status: lodiav1alpha1.ControlPlaneStatus{
 			Target:     &lodiav1alpha1.Target{Version: target},
-			Endpoint:   &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 6443}},
+			Endpoint:   &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
 			Components: &lodiav1alpha1.ComponentsStatus{APIServer: component(apiServer), ControllerManager: component(controllerManager), Scheduler: component(scheduler)},
 		},
 	}

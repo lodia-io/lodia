@@ -53,7 +53,7 @@ metadata:
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: konnectivity-agent}
 subjects:
 - {kind: ServiceAccount, name: konnectivity-agent, namespace: kube-system}
-{{- if .Gateway }}
+{{- if .NodeProxy }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -112,7 +112,7 @@ spec:
       - operator: Exists
 {{- end }}
       serviceAccountName: konnectivity-agent
-{{- if .Gateway }}
+{{- if .NodeProxy }}
       dnsPolicy: Default
 {{- end }}
       nodeSelector:
@@ -129,7 +129,7 @@ spec:
         - --service-account-token-path=/var/run/secrets/tokens/konnectivity-agent-token
         - --count-server-leases
         - --keepalive-time=30s
-{{- if .Gateway }}
+{{- if .NodeProxy }}
         - --kubeconfig=/etc/konnectivity-agent/kubeconfig
 {{- end }}
 {{- if not .AgentDeployment }}
@@ -154,7 +154,7 @@ spec:
         volumeMounts:
         - name: konnectivity-agent-token
           mountPath: /var/run/secrets/tokens
-{{- if .Gateway }}
+{{- if .NodeProxy }}
         - name: kubeconfig
           mountPath: /etc/konnectivity-agent
 {{- end }}
@@ -166,7 +166,7 @@ spec:
               path: konnectivity-agent-token
               audience: system:konnectivity-server
               expirationSeconds: 3600
-{{- if .Gateway }}
+{{- if .NodeProxy }}
       - name: kubeconfig
         configMap:
           name: konnectivity-agent-kubeconfig

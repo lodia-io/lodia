@@ -53,7 +53,7 @@ The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-upgrade`, `make e2e-hold` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-loadbalancer`, `make e2e-upgrade`, `make e2e-hold` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
 
@@ -289,6 +289,43 @@ The test, in order:
 9. One owner per hostname: `team-gw-b`, with `team-gw-a`'s three hostnames, reports `RoutesReady` False, `HostnameConflict`, naming `team-gw-a`'s `ControlPlane`, by its UID, as their owner, and holds no `TLSRoute`, and each hostname has one route in the cluster.
    `team-gw-c`, with hostnames of its own, then turns `Ready`, which Health's probe through the Gateway proves, while Envoy's `listener_manager.lds.update_rejected`, read through a port-forward from its admin interface on `127.0.0.1:19000` ([bootstrap.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/xds/bootstrap/bootstrap.go#L35-L38)), stays 0 and `update_success` rises; the test fails if either is missing.
    Deleting `team-gw-a` hands the hostnames to `team-gw-b`, whose `RoutesReady` turns True with its three routes, and which turns `Ready`.
+
+## The loadBalancer gate
+
+`TestLoadBalancerGate` checks the `loadBalancer` mode of [api-exposure](../../docs/decisions/api-exposure.md) on every pull request: four tenants, one for each way a balancer's host comes about, each with a joined node and a pod that reaches its API through `kubernetes.default`.
+It sits behind a build tag of its own, `loadbalancer` with `e2e`, since its setup runs before the chart's.
+`make e2e-loadbalancer` runs it on a kind cluster of its own as `make e2e-gateway` runs the gateway gate, and the `e2e-loadbalancer` job of [`ci.yml`](../../.github/workflows/ci.yml) runs that on every pull request.
+
+Before the chart, the suite:
+
+- pulls MetalLB v0.16.2's controller and speaker into the kind node by digest, and installs its chart by digest from `oci://quay.io/metallb/chart` ([publish.yaml](https://github.com/metallb/metallb/blob/v0.16.2/.github/workflows/publish.yaml#L176)), with `frrk8s.enabled=false`, since the chart turns frr-k8s on by default ([values.yaml](https://github.com/metallb/metallb/blob/v0.16.2/charts/metallb/values.yaml#L394-L396)) and the gate needs layer 2 alone;
+- starts a CoreDNS container, `<cluster>-dns`, on the docker network `kind`, as the gateway gate does, forwards `lodia.test` to it from the management cluster's CoreDNS, and gives it to each node container as `--dns`.
+  It serves `lodia.test` from a zone file that the test writes again, with a higher SOA serial, for each record, since the `file` plugin reloads a zone only when its serial changes ([README](https://github.com/coredns/coredns/blob/v1.13.1/plugin/file/README.md#L34-L36)), and it answers an unknown name with NXDOMAIN.
+
+The pool, an IPAddressPool and an L2Advertisement, is a range of the last 55 to the last 5 addresses of the IPv4 subnet of the docker network `kind`, which no container takes, and the test creates it.
+The test process and the node containers reach those addresses over the docker network, as they reach a kind node's, so the suite runs where that network is routable.
+
+The four tenants run in order, each in a feature of its own that deletes the tenant and its node before the next starts:
+
+1. `team-lb-ip`: `host` is an address of the pool, which the Service's annotation `metallb.io/loadBalancerIPs` asks for ([usage](https://github.com/metallb/metallb/blob/v0.16.2/website/content/usage/_index.md?plain=1#L23-L35)).
+   The pool does not exist yet, so MetalLB gives the Service no address ([service.go](https://github.com/metallb/metallb/blob/v0.16.2/controller/service.go#L62-L67)).
+   `status.endpoint` is `host`:443 and `host`:8132, in the cluster `host`:443; certificates, datastore, API server, access and addons are True; `LoadBalancerReady` and `Ready` are False, `WaitingForLoadBalancer`.
+   Once the pool exists the Service reports `host`, `LoadBalancerReady` is True, `Ready`, the tenant is `Ready`, and `status.endpoint` is as it was.
+2. `team-lb-mismatch`: `host` is one address of the pool and the annotation asks for another.
+   The Service reports the other, `LoadBalancerReady` and `Ready` are False, `AddressMismatch`, the message names both addresses, the tenant is built at `host`, and an event `AddressMismatch` of `LoadBalancerReady` names both, of type Normal, since a refusal that replaces a wait is not a Warning ([metrics-are-part-of-the-api](../../docs/decisions/metrics-are-part-of-the-api.md)).
+   The annotation, changed in place on the `ControlPlane`, makes MetalLB give the Service the new address ([service.go](https://github.com/metallb/metallb/blob/v0.16.2/controller/service.go#L143-L156)): `LoadBalancerReady` is True, the tenant is `Ready`, and `status.endpoint`, the API server's pod and the admin kubeconfig are as they were.
+3. `team-lb-name`: `host` is `api.team-lb-name.lodia.test`, with no annotation.
+   `status.endpoint` is the name, in the cluster `240.0.0.1:6443`, before the DNS container has a record, and `LoadBalancerReady` is True, `Ready`, since MetalLB gave the Service an address, while `Reachable` and `Ready` are False, `ExternalProbeFailed`.
+   Once the test points the record at the address MetalLB gave, the tenant is `Ready` and `status.endpoint` is as it was.
+4. `team-lb-discovered`: no `host`, and a `class` no controller serves, so the Service stays without an address and no endpoint is published: `LoadBalancerReady` is False, `WaitingForLoadBalancer`, `APIServerReady` is False, `WaitingForEndpoint`.
+   The test creates a second LoadBalancer Service over the API server's pods, with the ports 443 and 8132, and MetalLB gives it an address.
+   It points the record `api.team-lb-discovered.lodia.test` at that address and writes the name into the first Service's `status.loadBalancer.ingress`, as a cloud's controller would.
+   `status.endpoint` is the name, `LoadBalancerReady` is True, `Ready`, and the tenant turns `Ready`.
+
+In each, a node joins as in the phase 1 gate, at `status.endpoint.apiServer`: the address for the first two, the name, which the node resolves through the DNS container, for the others.
+`default/kubernetes` is `host`:443 and the tenant has no `apiserver-proxy` for the first two; for the others it is `240.0.0.1:6443`, the node's `lo` carries that address under `lo:lodia`, and `lodia-tunnel` holds the socket, from an image the test copies into the node.
+The two loops of the phase 1 gate then run, one in a pod on the node that dials `https://kubernetes.default`, the other in the management cluster dialing `status.endpoint.apiServer`, and each must answer on new and on reused connections.
+`make e2e-loadbalancer` gives the test 40 minutes, and the job 45.
 
 ## Nightly: G6 and conformance behind the Gateway
 

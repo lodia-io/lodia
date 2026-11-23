@@ -1,0 +1,19 @@
+# A ControlPlane behind its own load balancer at an address the platform
+# reserved, which MetalLB's annotation asks for
+# (https://github.com/metallb/metallb/blob/v0.16.2/website/content/usage/_index.md?plain=1#L23-L35):
+# the endpoint exists before the load balancer has it, and pods reach it directly.
+apiVersion: lodia.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: edge
+  namespace: team-a
+spec:
+  version: v1.37.1
+  endpoint:
+    loadBalancer:
+      host: 203.0.113.10
+      annotations:
+        metallb.io/loadBalancerIPs: 203.0.113.10
+  network:
+    serviceCIDRs: [10.96.0.0/16]
+    podCIDRs: [10.244.0.0/16]

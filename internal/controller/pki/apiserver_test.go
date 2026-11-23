@@ -430,7 +430,7 @@ func TestAKeptAccessReadyOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 			"endpoint": map[string]any{
 				"apiServer":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
 				"konnectivity": map[string]any{"host": endpointHost, "port": int64(8132)},
-				"inCluster":    map[string]any{"host": endpointHost, "port": int64(6443)},
+				"inCluster":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
 			},
 			"conditions": []any{map[string]any{
 				"type":               lodiav1alpha1.ConditionAPIServerReady,

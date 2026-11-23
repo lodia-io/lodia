@@ -154,9 +154,11 @@ spec:
                 properties:
                   advertiseAddress:
                     description: |-
-                      AdvertiseAddress is the address apiserver-proxy owns on every node in
-                      gateway mode: 240.0.0.1 by default when the first service range is
-                      IPv4, and required when it is IPv6. It cannot change.
+                      AdvertiseAddress is the address apiserver-proxy owns on every node,
+                      which it does in gateway mode and in loadBalancer mode unless
+                      endpoint.loadBalancer.host is an IP address, and is set nowhere else:
+                      240.0.0.1 by default when the first service range is IPv4, and required
+                      when it is IPv6. It cannot change.
                     maxLength: 45
                     type: string
                     x-kubernetes-validations:
@@ -828,6 +830,21 @@ spec:
                         description: Class is the Service's loadBalancerClass.
                         maxLength: 253
                         type: string
+                      host:
+                        description: |-
+                          Host is the address this tenant is reached at, which the platform owns
+                          and points at its load balancer; absent, the load balancer's own. The
+                          tenant's pods reach an IP address directly and a name through
+                          apiserver-proxy.
+                        maxLength: 253
+                        minLength: 1
+                        type: string
+                        x-kubernetes-validations:
+                        - message: must be a unicast IP address in canonical form,
+                            neither loopback nor link-local, or a lowercase DNS name
+                          rule: isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()
+                            || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
+                            && !self.matches('^[0-9.]+$')
                       sourceRanges:
                         description: SourceRanges limit who may connect.
                         items:
@@ -847,11 +864,21 @@ spec:
                     type: object
                 type: object
                 x-kubernetes-validations:
-                - message: endpoint is immutable in v1alpha1
-                  rule: self == oldSelf
                 - message: set exactly one of gateway, loadBalancer and nodePort
                   rule: '[has(self.gateway), has(self.loadBalancer), has(self.nodePort)].filter(x,
                     x).size() == 1'
+                - message: endpoint is immutable in v1alpha1 but for loadBalancer.annotations
+                    and loadBalancer.sourceRanges
+                  rule: '[has(self.gateway), has(self.loadBalancer), has(self.nodePort),
+                    has(self.certSANs)] == [has(oldSelf.gateway), has(oldSelf.loadBalancer),
+                    has(oldSelf.nodePort), has(oldSelf.certSANs)] && (!has(self.gateway)
+                    || self.gateway == oldSelf.gateway) && (!has(self.loadBalancer)
+                    || [has(self.loadBalancer.host), has(self.loadBalancer.class)]
+                    == [has(oldSelf.loadBalancer.host), has(oldSelf.loadBalancer.class)]
+                    && (!has(self.loadBalancer.host) || self.loadBalancer.host ==
+                    oldSelf.loadBalancer.host) && (!has(self.loadBalancer.class) ||
+                    self.loadBalancer.class == oldSelf.loadBalancer.class)) && (!has(self.certSANs)
+                    || self.certSANs == oldSelf.certSANs)'
               health:
                 description: Health configures how Lodia protects the tenant's workloads.
                 properties:
@@ -1200,30 +1227,49 @@ spec:
             - message: highAvailability runs at least two API servers
               rule: '!has(self.highAvailability) || !has(self.apiServer) || !has(self.apiServer.replicas)
                 || self.apiServer.replicas >= 2'
-            - message: apiServer.advertiseAddress is set only with endpoint.gateway
+            - message: 'apiServer.advertiseAddress is set only where apiserver-proxy
+                runs: with endpoint.gateway, or with endpoint.loadBalancer unless
+                its host is an IP address'
               rule: '!has(self.apiServer) || !has(self.apiServer.advertiseAddress)
-                || has(self.endpoint.gateway)'
+                || (has(self.endpoint.gateway) || has(self.endpoint.loadBalancer)
+                && (!has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host)))'
             - message: apiServer.advertiseAddress must be of the family of the first
                 service range
               rule: '!has(self.apiServer) || !has(self.apiServer.advertiseAddress)
                 || !isIP(self.apiServer.advertiseAddress) || !isCIDR(self.network.serviceCIDRs[0])
                 || ip(self.apiServer.advertiseAddress).family() == cidr(self.network.serviceCIDRs[0]).ip().family()'
-            - message: an IPv6 first service range in gateway mode needs apiServer.advertiseAddress,
-                which has no IPv6 default
-              rule: '!has(self.endpoint.gateway) || has(self.apiServer) && has(self.apiServer.advertiseAddress)
-                || !isCIDR(self.network.serviceCIDRs[0]) || cidr(self.network.serviceCIDRs[0]).ip().family()
+            - message: an IPv6 first service range needs apiServer.advertiseAddress
+                where apiserver-proxy runs, since the address has no IPv6 default
+              rule: '!(has(self.endpoint.gateway) || has(self.endpoint.loadBalancer)
+                && (!has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host)))
+                || has(self.apiServer) && has(self.apiServer.advertiseAddress) ||
+                !isCIDR(self.network.serviceCIDRs[0]) || cidr(self.network.serviceCIDRs[0]).ip().family()
                 == 4'
             - message: the advertise address, apiServer.advertiseAddress or 240.0.0.1
-                in gateway mode, must lie outside the service and pod ranges
+                where apiserver-proxy runs, must lie outside the service and pod ranges
               rule: '(has(self.apiServer) && has(self.apiServer.advertiseAddress)
-                ? [self.apiServer.advertiseAddress] : has(self.endpoint.gateway) ?
-                [''240.0.0.1''] : []).all(a, !isIP(a) || !(self.network.serviceCIDRs
-                + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(a)))'
+                ? [self.apiServer.advertiseAddress] : (has(self.endpoint.gateway)
+                || has(self.endpoint.loadBalancer) && (!has(self.endpoint.loadBalancer.host)
+                || !isIP(self.endpoint.loadBalancer.host))) ? [''240.0.0.1''] : []).all(a,
+                !isIP(a) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c,
+                isCIDR(c) && cidr(c).containsIP(a)))'
             - message: apiServer.advertiseAddress is immutable
-              rule: '!has(self.endpoint.gateway) || (has(self.apiServer) && has(self.apiServer.advertiseAddress)
-                ? has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress)
+              rule: '!(has(self.endpoint.gateway) || has(self.endpoint.loadBalancer)
+                && (!has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host)))
+                || (has(self.apiServer) && has(self.apiServer.advertiseAddress) ?
+                has(oldSelf.apiServer) && has(oldSelf.apiServer.advertiseAddress)
                 && oldSelf.apiServer.advertiseAddress == self.apiServer.advertiseAddress
                 : !has(oldSelf.apiServer) || !has(oldSelf.apiServer.advertiseAddress))'
+            - message: endpoint.loadBalancer.host, an IP address, must be of the family
+                of the first service range
+              rule: '!has(self.endpoint.loadBalancer) || !has(self.endpoint.loadBalancer.host)
+                || !isIP(self.endpoint.loadBalancer.host) || !isCIDR(self.network.serviceCIDRs[0])
+                || ip(self.endpoint.loadBalancer.host).family() == cidr(self.network.serviceCIDRs[0]).ip().family()'
+            - message: endpoint.loadBalancer.host, an IP address, must lie outside
+                the service and pod ranges
+              rule: '!has(self.endpoint.loadBalancer) || !has(self.endpoint.loadBalancer.host)
+                || !isIP(self.endpoint.loadBalancer.host) || !(self.network.serviceCIDRs
+                + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(self.endpoint.loadBalancer.host))'
             - message: restoreFrom can be set only when the ControlPlane is created,
                 and never removed
               rule: has(self.restoreFrom) == has(oldSelf.restoreFrom)

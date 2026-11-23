@@ -68,10 +68,10 @@ type values struct {
 	AddressType              string
 	AgentDeployment          bool
 	AgentReplicas            int32
-	Gateway                  bool
+	NodeProxy, Tunnel        bool
 	TunnelImage              string
-	TunnelListen             string
-	TunnelUpstream           string
+	ProxyListen              string
+	ProxyUpstream            string
 	tunnelCert, tunnelKey    []byte
 	kubeProxy, coreDNS       bool
 }
@@ -137,10 +137,14 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 		v.Domain = "cluster.local"
 	}
 	v.Server = "https://" + v.Endpoint
+	if cp.Spec.Endpoint.NodeProxy() {
+		v.NodeProxy = true
+		v.ProxyListen = net.JoinHostPort(v.InClusterHost, strconv.Itoa(int(endpoint.InCluster.Port)))
+		v.ProxyUpstream = v.Endpoint
+	}
 	if cp.Spec.Endpoint.Gateway != nil {
-		v.Gateway = true
-		v.TunnelListen = net.JoinHostPort(v.InClusterHost, strconv.Itoa(int(endpoint.InCluster.Port)))
-		v.TunnelUpstream = net.JoinHostPort(endpoint.Tunnel.Host, strconv.Itoa(int(endpoint.Tunnel.Port)))
+		v.Tunnel = true
+		v.ProxyUpstream = net.JoinHostPort(endpoint.Tunnel.Host, strconv.Itoa(int(endpoint.Tunnel.Port)))
 	}
 	var services, pods []string
 	for _, cidr := range cp.Spec.Network.ServiceCIDRs {
@@ -247,7 +251,7 @@ func render(v *values) ([]*unstructured.Unstructured, error) {
 	if v.coreDNS {
 		files = append(files, "coredns.yaml")
 	}
-	if v.Gateway {
+	if v.NodeProxy {
 		files = append(files, "apiserver-proxy.yaml")
 	}
 	var objects []*unstructured.Unstructured
@@ -281,7 +285,7 @@ func render(v *values) ([]*unstructured.Unstructured, error) {
 			objects = append(objects, obj)
 		}
 	}
-	if v.Gateway {
+	if v.Tunnel {
 		objects = append(objects, apiserverProxyClient(v.tunnelCert, v.tunnelKey))
 	}
 	return objects, nil

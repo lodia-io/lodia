@@ -337,20 +337,35 @@ func (r unreadSecrets) Get(ctx context.Context, key client.ObjectKey, obj client
 	return r.Reader.Get(ctx, key, obj, opts...)
 }
 
-func otherModes() map[string]lodiav1alpha1.Endpoint {
-	return map[string]lodiav1alpha1.Endpoint{
-		"nodeport":     {NodePort: &lodiav1alpha1.NodePortEndpoint{}},
-		"loadbalancer": {LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}, CertSANs: []lodiav1alpha1.Hostname{certSAN}},
+type otherMode struct {
+	endpoint          lodiav1alpha1.Endpoint
+	public, inCluster string
+	port, inClusterAt int64
+}
+
+func (m otherMode) status() map[string]any {
+	return map[string]any{
+		"apiServer":    hostPort(m.public, m.port),
+		"konnectivity": hostPort(m.public, 8132),
+		"inCluster":    hostPort(m.inCluster, m.inClusterAt),
+	}
+}
+
+func otherModes() map[string]otherMode {
+	return map[string]otherMode{
+		"nodeport":          {lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}, endpointHost, endpointHost, 31443, 31443},
+		"loadbalancer-ip":   {lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: endpointHost}, CertSANs: []lodiav1alpha1.Hostname{certSAN}}, endpointHost, endpointHost, 443, 443},
+		"loadbalancer-name": {lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: apiHost}, CertSANs: []lodiav1alpha1.Hostname{certSAN}}, apiHost, lodiav1alpha1.DefaultAdvertiseAddress, 443, 6443},
 	}
 }
 
 func TestAnotherModeLeavesTheTunnelsNamesAlone(t *testing.T) {
-	for mode, endpoint := range otherModes() {
-		t.Run(mode, func(t *testing.T) {
+	for name, mode := range otherModes() {
+		t.Run(name, func(t *testing.T) {
 			ctx := t.Context()
 			r := newReconciler(time.Hour)
-			cp := controlPlaneAt(t, "pki-other-mode-"+mode, endpoint)
-			publishEndpoint(t, cp)
+			cp := controlPlaneAt(t, "pki-other-mode-"+name, mode.endpoint)
+			applyStatus(t, cp, map[string]any{"endpoint": mode.status()})
 			reconcile(t, r, cp)
 			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 			expectCondition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable, metav1.ConditionTrue, lodiav1alpha1.ReasonValid)
@@ -390,15 +405,12 @@ func TestAnotherModeLeavesTheTunnelsNamesAlone(t *testing.T) {
 				t.Errorf("a foreign Secret under a tunnel's name changed: %v, then %v", before, after)
 			}
 
-			applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
-				"apiServer":    hostPort(endpointHost, endpointPort),
-				"konnectivity": hostPort(endpointHost, 8132),
-				"inCluster":    hostPort("203.0.113.99", 6443),
-				"tunnel":       hostPort(tunnelHost, 443),
-			}})
+			status := mode.status()
+			status["tunnel"] = hostPort(tunnelHost, 443)
+			applyStatus(t, cp, map[string]any{"endpoint": status})
 			reconcile(t, r, cp)
 			if after := namespaceSecrets(t, cp.Namespace); !maps.Equal(before, after) {
-				t.Errorf("an endpoint naming a tunnel and another in-cluster host changed the Secrets: %v, then %v", before, after)
+				t.Errorf("an endpoint naming a tunnel changed the Secrets: %v, then %v", before, after)
 			}
 		})
 	}
@@ -418,25 +430,27 @@ func TestARestoreInAnotherModeIgnoresTheTunnelsNames(t *testing.T) {
 }
 
 func TestAnotherModesSecretsKeepTheirBytes(t *testing.T) {
-	for mode, endpoint := range otherModes() {
-		t.Run(mode, func(t *testing.T) {
+	for name, mode := range otherModes() {
+		t.Run(name, func(t *testing.T) {
 			r := longLived()
-			cp := controlPlaneAt(t, "pki-other-mode-bytes-"+mode, endpoint)
-			publishEndpoint(t, cp)
+			cp := controlPlaneAt(t, "pki-other-mode-bytes-"+name, mode.endpoint)
+			applyStatus(t, cp, map[string]any{"endpoint": mode.status()})
 			reconcile(t, r, cp)
 			secrets := secretsOf(t, cp)
 			cluster := parseTLS(t, secrets["dev-cakey-cluster"])
-			api := []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local",
-				"dev-kube-apiserver", "dev-kube-apiserver." + cp.Namespace, "dev-kube-apiserver." + cp.Namespace + ".svc", "localhost"}
-			if endpoint.LoadBalancer != nil {
-				api = append(api, certSAN)
+			api := certs.Profile{CommonName: "kube-apiserver", Usages: serverAuth}
+			for _, san := range []string{"kubernetes", "kubernetes.default", "kubernetes.default.svc", "kubernetes.default.svc.cluster.local",
+				"dev-kube-apiserver", "dev-kube-apiserver." + cp.Namespace, "dev-kube-apiserver." + cp.Namespace + ".svc", "localhost", "10.96.0.1", "127.0.0.1", mode.public, mode.inCluster} {
+				api.SAN(san)
 			}
-			for name, p := range map[string]certs.Profile{
-				"dev-apiserver-serving": {CommonName: "kube-apiserver", DNSNames: api,
-					IPAddresses: []net.IP{net.ParseIP("10.96.0.1"), net.ParseIP("127.0.0.1"), net.ParseIP(endpointHost)}, Usages: serverAuth},
-				"dev-konnectivity-server": {CommonName: "konnectivity-server", DNSNames: []string{"localhost"},
-					IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP(endpointHost)}, Usages: serverAuth},
-			} {
+			for _, san := range mode.endpoint.CertSANs {
+				api.SAN(string(san))
+			}
+			konnectivity := certs.Profile{CommonName: "konnectivity-server", Usages: serverAuth}
+			for _, san := range []string{"localhost", "127.0.0.1", mode.public} {
+				konnectivity.SAN(san)
+			}
+			for name, p := range map[string]certs.Profile{"dev-apiserver-serving": api, "dev-konnectivity-server": konnectivity} {
 				issued, err := cluster.Issue(p, time.Now(), r.LeafLifetime)
 				if err != nil {
 					t.Fatal(err)

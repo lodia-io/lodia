@@ -72,7 +72,7 @@ Of the operator, without a tenant's labels:
 ## Why
 
 - Platforms build their own rules and dashboards on these names, as on `status`; a rename breaks them silently, so it gets the care of an API change.
-- A tenant label on controller-runtime's reconcile histogram, 40 buckets, would be 40 × 10 controllers × 200 tenants, 80,000 series; Lodia's metrics are 94 series per tenant in `gateway` mode and 89 in the others, up to 3 more while a change rolls or waits and 2 while etcd alarms are armed.
+- A tenant label on controller-runtime's reconcile histogram, 40 buckets, would be 40 × 10 controllers × 200 tenants, 80,000 series; Lodia's metrics are 94 series per tenant in `gateway` and `loadBalancer` mode and 89 in `nodePort` mode, up to 3 more while a change rolls or waits and 2 while etcd alarms are armed.
 - Built at scrape time, the metrics cannot drift from `status`, and a new leader has them at its first scrape once its informers sync.
 
 ## Rejected

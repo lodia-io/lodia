@@ -19,10 +19,6 @@ spec:
     port: 443
     protocol: TCP
     targetPort: https
-  - name: kubernetes
-    port: 6443
-    protocol: TCP
-    targetPort: https
   - name: konnectivity
     port: 8132
     protocol: TCP
@@ -147,7 +143,7 @@ spec:
       containers:
       - command:
         - kube-apiserver
-        - --advertise-address=203.0.113.10
+        - --advertise-address=240.0.0.1
         - --allow-privileged=true
         - --authentication-config=/etc/lodia/authentication/authentication-config.yaml
         - --authorization-mode=Node,RBAC

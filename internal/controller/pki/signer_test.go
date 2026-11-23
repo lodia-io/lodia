@@ -970,8 +970,8 @@ func TestAPendingSignerAnotherOwnerKeepsIsLeftAlone(t *testing.T) {
 
 func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	ctx := t.Context()
-	cp := controlPlane(t, "signer-quota")
-	publishEndpoint(t, cp)
+	cp := discoveredControlPlane(t, "signer-quota")
+	publishDiscovered(t, cp, endpointHost)
 	settle := newReconciler(time.Hour)
 	reconcile(t, settle, cp)
 	due := dueSigner(t, cp)
@@ -1011,7 +1011,7 @@ func TestASecretQuotaHoldsTheStagedSignerUntilItGoes(t *testing.T) {
 	})
 
 	const moved = "203.0.113.11"
-	publishEndpointAt(t, cp, moved)
+	publishDiscovered(t, cp, moved)
 	waitFor(t, 30*time.Second, func() bool {
 		c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
 		secrets := secretsOf(t, cp)

@@ -32,8 +32,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From deciding the design (2026-10-25)
 
-- A `loadBalancer` Service that reports only a host name (AWS NLB and CLB) is `LoadBalancerHostnameUnsupported`; `--advertise-address` takes an IP, so the `kubernetes` endpoint needs another source there.
-  Decide whether such a provider is supported, and how.
 - client-go reloads a kubeconfig's CA file only with `ClientsAllowCARotation`, on by default since 1.36 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)): on 1.35 a trust anchor rotation restarts every component whose kubeconfig names the CA file; plan it into the phase 3 rotation.
 - Phase 2: Argo CD has no generic health check for custom resources ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83)), and kstatus, through which Flux waits, keeps a permanently failing object InProgress until a timeout unless it reports `Stalled` ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)); Lodia writes no kstatus `Reconciling`, so the docs ship an Argo CD Lua health check and a Flux `healthCheckExprs` entry ([kustomizations.md](https://github.com/fluxcd/kustomize-controller/blob/v1.10.1/docs/spec/v1/kustomizations.md#L351-L374)) for `ControlPlane`, both reading `status.observedGeneration` and `Ready`.
 
@@ -85,7 +83,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - The NetworkPolicies isolate each component's ingress alone; the default-deny set and egress, the README's arrows, come later.
 - The control plane pods set no securityContext: give them one that passes Pod Security `restricted`, the API server and the signer under one user (From lodia-signer, above).
 - Workloads lists the management nodes uncached on every pass of a `nodePort` `ControlPlane`; an informer on Nodes, which carry no control-plane label and so need a cache rule of their own, would serve them from memory.
-- In `nodePort` mode the Service takes a node port for 443 as well, which nothing dials: the endpoint names the node ports of 6443 and 8132, and in-namespace clients use the cluster IP.
 - Workloads finds another owner's objects under its names in the cache, which holds only labelled ones.
   An unlabelled object it applied for a predecessor is taken over silently, with the `OwnerReferencesPermissionEnforcement` plugin as without it, now that Workloads may delete (before, the plugin refused the apply); one that only refers to another `ControlPlane` is applied over once and then held; one with another controller is refused by validation, which `APIServerReady` reports as `Refused`.
   Reading the targets uncached, as PKI reads its Secrets, would see them all.
@@ -106,7 +103,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the lossless rollouts (2026-10-27)
 
 - Deleting a `ControlPlane` waits out the API server's 90 s grace period, since its etcd goes at the same moment and the requests in flight wait for it; the Datastore controller should delete the `Etcd` only after Workloads' API server pods are gone, which also brings the per-pull-request e2e job back under its budget (its overrun is accepted for now).
-- `--endpoint-reconciler-type=none` skips kube-apiserver's check that the advertise address has the service range's family ([validation.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-apiserver/app/options/validation.go#L111-L127)); Workloads should pick `inCluster` in the family of `serviceCIDRs[0]`, or report `WaitingForEndpoint` naming the family.
 - Requests through the tunnel (logs, exec, webhooks, aggregated APIs) can fail for 1–3 s after a new API server pod turns ready: the agents reach its konnectivity-server through the Service, which sends them to ready pods only, so they connect only once the pod already takes requests, and a webhook with `failurePolicy: Fail` turns that into refused writes.
   The agents should connect before the pod turns ready, through an agent port that reaches pods not yet ready, and the pod's readiness should wait for them; konnectivity-server's `/readyz` waits for one agent ([readiness_manager.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/readiness_manager.go#L28-L33)), which a tenant without nodes never has.
   The gate's loop should send such a request too.
@@ -114,7 +110,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the phase 2 contracts (2026-10-27)
 
 - The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- An IPv6 advertise address Lodia draws: once gateway mode has users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
+- An IPv6 advertise address Lodia draws: once tenants where `apiserver-proxy` runs, in gateway mode or behind a load balancer without an IP `host`, have users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
   `apiServer.advertiseAddress` then becomes optional, which breaks no manifest (api-exposure).
 
 ## From the docs review (2026-10-27)
@@ -255,11 +251,11 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - `Ready` at a generation says that the authentication configuration is written and valid, not that every API server replica has loaded it: an issuer that does not answer holds a load back with nothing in the status ([structured-authentication](docs/decisions/structured-authentication.md)).
   A condition outside `Ready` could compare each replica's `apiserver_authentication_config_controller_last_config_info` with a hash Workloads writes on the ConfigMap.
-- In `gateway` mode the konnectivity agents resolve names through the node's DNS, so a JWT issuer inside the tenant is reached by a name the nodes resolve or by its ClusterIP in `issuer.discoveryURL` ([operations](docs/operations.md#logging-in-with-an-oidc-provider)); decide whether the agents of that mode should resolve the tenant's Services too.
+- Where `apiserver-proxy` runs the konnectivity agents resolve names through the node's DNS, so a JWT issuer inside the tenant is reached by a name the nodes resolve or by its ClusterIP in `issuer.discoveryURL` ([operations](docs/operations.md#logging-in-with-an-oidc-provider)); decide whether those agents should resolve the tenant's Services too.
 
 ## From the rehearsal (2026-11-20)
 
-- From 1.36 every API server writes a peer lease with `--advertise-address`, which Workloads renders as `status.endpoint.inCluster.host` for every replica, and builds the mixed-version proxy only with `--peer-ca-file` ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/config.go#L331-L354)); `extraArgs` refuses neither `peer-ca-file`, `peer-advertise-ip` nor `peer-advertise-port`, so a tenant that sets the first turns the proxy on with one address for every peer, the load balancer, a management node's port in `nodePort` mode, or an address no management pod reaches in `gateway` mode.
+- From 1.36 every API server writes a peer lease with `--advertise-address`, which Workloads renders as `status.endpoint.inCluster.host` for every replica, and builds the mixed-version proxy only with `--peer-ca-file` ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/config.go#L331-L354)); `extraArgs` refuses neither `peer-ca-file`, `peer-advertise-ip` nor `peer-advertise-port`, so a tenant that sets the first turns the proxy on with one address for every peer: an IP `endpoint.loadBalancer.host`, a management node's address in `nodePort` mode, or an address no management pod reaches wherever `apiserver-proxy` runs.
   Refuse the three flags, or render each replica's pod IP as `--peer-advertise-ip` with the cluster CA as `--peer-ca-file` and turn the proxy on, which is a decision of its own.
 - The copy's etcd runs `versions.EtcdImage` from `gcr.io/etcd-development` by digest; move it under the configured registry once the `registry` key is read ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "The operator revision").
 - The rehearsal's verdict names no snapshot size: the etcd image has no shell, so the size reaches the operator only through the `snapshot` container's log or the copy's `apiserver_storage_size_bytes`, a read of the copy's whole `/metrics`.
@@ -282,6 +278,14 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the first release (2026-11-22)
 
 - An upgrade e2e from the previous release's chart, once a second release exists.
-- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway, the charts `gateway-helm` and `gateway-crds-helm` and CoreDNS (`test/e2e/gateway_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
+- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
 - An attested SBOM: ko pushes an SPDX SBOM beside each image, which `release.yml` neither signs nor attests.
 - etcd-druid's CRDs on a chart upgrade (the item on its chart's `crds/` directory, above) decide what a release that bumps etcd-druid says; the first release only installs.
+
+## From a balancer's host (2026-11-23)
+
+- Health probes the konnectivity server only in `gateway` mode, through its SNI route: a `loadBalancer` or `nodePort` tenant's `endpoint.konnectivity` is never probed (`internal/controller/health/health.go`, `probes`).
+- No probe takes the pods' path through `apiserver-proxy`, which runs in `loadBalancer` mode unless `host` is an IP too: `Reachable` proves the public endpoint and, in `gateway` mode, the tunnel from the management cluster, never the proxy on a node.
+- `endpoint.certSANs` stays immutable with the rest of `endpoint` but `annotations` and `sourceRanges`, although PKI issues the serving certificate again when its names change (`certs.Matches`, `internal/certs/certs.go`): a name added in front of a living tenant's address needs a new tenant.
+  Let it change beside them, in the transition rule of `Endpoint` (`api/v1alpha1/controlplane_types.go`), when someone needs it.
+- Audit by source address in `loadBalancer` mode needs `externalTrafficPolicy: Local`, which Lodia does not set on the Service: with the default `Cluster` kube-proxy masquerades the traffic of a load balancer ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1104-L1110)), so the API server sees a management node and audit `sourceIPs` name no client, while `Local` keeps the source address in most cases ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1111-L1114)).

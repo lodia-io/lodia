@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"net/netip"
 	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
@@ -139,9 +140,37 @@ const (
 	// it.
 	RehearsalComponent = "rehearsal"
 
-	// DefaultAdvertiseAddress is the API server's advertise address in
-	// gateway mode when apiServer.advertiseAddress names none and the first
-	// service range is IPv4, which Workloads renders and publishes as
+	// DefaultAdvertiseAddress is the API server's advertise address where
+	// apiserver-proxy runs, when apiServer.advertiseAddress names none and the
+	// first service range is IPv4, which Workloads renders and publishes as
 	// status.endpoint.inCluster; the schema names it too.
 	DefaultAdvertiseAddress = "240.0.0.1"
 )
+
+// NodeProxy is whether apiserver-proxy runs on the tenant's nodes for its
+// pods: in gateway mode, and in loadBalancer mode unless host is an IP
+// address. The schema spells it from the spec in apiServer.advertiseAddress's
+// rules.
+func (e Endpoint) NodeProxy() bool {
+	if e.Gateway != nil {
+		return true
+	}
+	if e.LoadBalancer == nil {
+		return false
+	}
+	_, err := netip.ParseAddr(string(e.LoadBalancer.Host))
+	return err != nil
+}
+
+// AdvertiseAddress is the address apiserver-proxy owns on every node where
+// it runs: apiServer.advertiseAddress, else DefaultAdvertiseAddress; empty
+// where it does not run.
+func (s ControlPlaneSpec) AdvertiseAddress() string {
+	if !s.Endpoint.NodeProxy() {
+		return ""
+	}
+	if s.APIServer != nil && s.APIServer.AdvertiseAddress != "" {
+		return s.APIServer.AdvertiseAddress
+	}
+	return DefaultAdvertiseAddress
+}
