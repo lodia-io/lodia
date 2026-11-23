@@ -1,7 +1,7 @@
 # The management cluster is the platform's and no tenant reaches its API; a tenant's administrator is untrusted inside the tenant
 
 Decided 2026-11-12.
-The bounded reads of a tenant, Health's, Tenant's and PKI's, and the chart's policies that refuse the delete of a `ControlPlane`, and of the CRD that holds them, without a confirmation are built; the Cluster API provider's confirmation is not.
+The bounded reads of a tenant, Health's, Tenant's and PKI's, and the chart's policies that refuse the delete of a `ControlPlane`, and of the CRD that holds them, without a confirmation are built, and so is the Cluster API provider's confirmation, given only for its `Cluster`'s deletion ([lodia-io/cluster-api-provider-lodia#46](https://github.com/lodia-io/cluster-api-provider-lodia/pull/46)).
 
 ## Decision
 
