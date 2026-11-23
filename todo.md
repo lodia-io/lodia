@@ -275,13 +275,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   When #1045 and #1046 are fixed and released: bump the etcd-backup-restore image that etcd-druid's image vector names, lower the 1h floor in `api/v1alpha1/controlplane_types.go` to refuse 0 and below, since with 0 Events never expire, and drop the cases between 0 and 1h from `test/api/validation_test.go` and the restore's clause from `docs/api/controlplane.md`.
   Nothing in Lodia works around #1043 and #1044; the bump is all they take.
 
-## From the CI of etcd-druid behind a seam (2026-11-21)
-
-- `TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable/a_held_pass_that_counts_a_report_outside_the_table` (`internal/controller/workloads/authentication_test.go:571`) failed in the `verify` job of run [44937552607](https://github.com/lodia-io/lodia/actions/runs/44937552607), job 136947402314, at 494960f of #99, a pull request that touches nothing in `internal/controller/workloads`:
-  `context deadline exceeded: the API server reports "v1.37.1"`, while it waited for `v1.33.2`, the image the test had set.
-  The rerun of the job passed.
-  The cause is not found.
-
 ## From the first release (2026-11-22)
 
 - An upgrade e2e from the previous release's chart, once a second release exists.
@@ -296,3 +289,10 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - `endpoint.certSANs` stays immutable with the rest of `endpoint` but `annotations` and `sourceRanges`, although PKI issues the serving certificate again when its names change (`certs.Matches`, `internal/certs/certs.go`): a name added in front of a living tenant's address needs a new tenant.
   Let it change beside them, in the transition rule of `Endpoint` (`api/v1alpha1/controlplane_types.go`), when someone needs it.
 - Audit by source address in `loadBalancer` mode needs `externalTrafficPolicy: Local`, which Lodia does not set on the Service: with the default `Cluster` kube-proxy masquerades the traffic of a load balancer ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1104-L1110)), so the API server sees a management node and audit `sourceIPs` name no client, while `Local` keeps the source address in most cases ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1111-L1114)).
+
+## From the flake of a held pass's report (2026-11-23)
+
+- Two more tests move `status.target` with `setTargetAt` and then cause a pass that can read the target from before the move out of Workloads' cache, which decides a hold from it (`held`, `internal/controller/workloads/workloads.go`): `TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves/a_held_pass` and `TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes` (`internal/controller/workloads/authentication_test.go`), where `setIngress` lands 16 to 19 ms after the target.
+  A pass on the old target, run by hand through the suite's stale client, writes the authentication ConfigMap and gives the next held pass another `APIServerReady`, which each test's checks refuse; no CI run has failed on either yet.
+  A write cannot be undone as the image of `TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable` is set again, so each needs a deterministic setup: `pause`, then the passes it means, by hand.
+- No test catches a held pass that rewrites the API server's Deployment while its report is outside the running table: a held pass that force-applies the render there passes the whole package, since `TestAHeldPassOutsideTheRunningTableReportsWhatRuns/a_reported` (`internal/controller/workloads/revision_test.go`) keeps a Deployment equal to the render.
