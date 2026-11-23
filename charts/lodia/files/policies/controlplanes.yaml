@@ -1,0 +1,29 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: controlplanes.lodia.io
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [lodia.io]
+        apiVersions: ["*"]
+        operations: [DELETE]
+        resources: [controlplanes]
+  validations:
+    - expression: >-
+        has(namespaceObject.metadata.deletionTimestamp) ||
+        oldObject.metadata.?annotations['lodia.io/deletion-confirmed'].orValue('') == 'true'
+      messageExpression: >-
+        'ControlPlane ' + oldObject.metadata.namespace + '/' + oldObject.metadata.name +
+        ' is deleted only once confirmed: kubectl annotate controlplane ' + oldObject.metadata.name +
+        ' --namespace ' + oldObject.metadata.namespace + ' lodia.io/deletion-confirmed=true'
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: controlplanes.lodia.io
+spec:
+  policyName: controlplanes.lodia.io
+  validationActions: [Deny]

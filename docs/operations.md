@@ -26,10 +26,11 @@ Installation is in [`README.md`](README.md#installation).
 | Turn the controller manager hold off for a cluster | `spec.health.holdControllerManager: false`; a hold in progress is released at once |
 | Change a `DatastoreClass` | edit it; [what the class refuses and what an edit rolls](README.md#a-tenant-namespace); the edit reaches each tenant's `Etcd` in its window, within the fleet limit, or at once on `lodia.io/maintain-requested-at`, and `Progressing` says when; the storage fields, the reclaim policy, the credentials' `secretRef` and the region roll nothing ([dedicated-etcd-by-default](decisions/dedicated-etcd-by-default.md#consequences)) |
 | Rotate a backup store's credentials | create a new Secret with the new keys and point the class's `backup.store.secretRef` at it: the new keys reach every tenant on the class at once, and the class edit, which rolls nothing, reaches each `Etcd` in its window; the keys that name the store ([which](api/controlplane.md#backup)) stay as they were, since a `Backup` taken meanwhile fails on a change of them; an application credential of another Swift project, or keys of another tenant of the store, are a store move that no `Backup` sees ([the two cases](api/controlplane.md#backup)), so make that change while no `Backup` is in progress, and start the next one only once that tenant's sidecar has uploaded with the new keys, as below, since a `Backup`'s full snapshot then goes to the store its copy reads; revoke the old keys only once every tenant's sidecar has uploaded with the new ones, since the kubelet updates its files some time after `<cp>-etcd-backup` changes ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)): in the `backup-restore` container of a `<cp>-etcd` pod, `Updated the snapstore object with new credentials` is followed by `Successfully saved delta snapshot` or `Successfully saved full snapshot` ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/snapshotter/snapshotter.go#L313-L326), [the copy](README.md#a-tenant-namespace)) |
+| Keep a namespace that holds tenants from being deleted by accident | refuse its deletion without a confirmation with [a policy](#deleting-a-namespace-that-holds-tenants) |
 | Keep tenants off each other's hostnames on a shared Gateway | bind each `ControlPlane`'s hostnames to its namespace with [a policy](#hostnames-on-a-shared-gateway) |
 | Give a tenant an address known in advance | reserve it with the provider, name it in `spec.endpoint.loadBalancer.host` and ask the load balancer for it in `annotations`: [a recipe per provider](#an-address-known-in-advance); for a name, [make the record first](#a-name) |
 | Narrow who may connect to a tenant's load balancer | edit `endpoint.loadBalancer.sourceRanges`, which a living tenant takes, and keep [the management cluster among them](#who-may-connect) |
-| Delete a cluster | delete the `ControlPlane` ([what deletion does](README.md#deletion)); `kubectl get pvc -L lodia.io/control-plane-uid` shows whose each claim is; a lifecycle rule of the bucket expires old prefixes, but never `<prefix>/<namespace UID>/backups/<Backup UID>` while that `Backup` exists: a restore of an emptied copy fails its seal check |
+| Delete a cluster | confirm the `ControlPlane`, then delete it ([steps](#delete-a-cluster), [what deletion does](README.md#deletion)); `kubectl get pvc -L lodia.io/control-plane-uid` shows whose each claim is; a lifecycle rule of the bucket expires old prefixes, but never `<prefix>/<namespace UID>/backups/<Backup UID>` while that `Backup` exists: a restore of an emptied copy fails its seal check |
 
 ### Hostnames on a shared Gateway
 
@@ -86,6 +87,65 @@ data:
 ```
 
 It checks creation alone: `endpoint.gateway` is immutable, and a refused update would also refuse the removal of a finalizer.
+
+### Delete a cluster
+
+The API server admits a delete of a `ControlPlane` only while it carries the annotation `lodia.io/deletion-confirmed: "true"`, or while its namespace is being deleted ([who-is-trusted](decisions/who-is-trusted.md)):
+
+```sh
+kubectl -n team-a annotate controlplane prod-eu lodia.io/deletion-confirmed=true
+kubectl -n team-a delete controlplane prod-eu
+```
+
+Without it the delete answers `Forbidden`, with the `annotate` command in its message.
+Any other value, `--dry-run=server` and each object of a deleted collection are refused alike, since the API server admits a collection's objects one by one ([store.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/registry/generic/registry/store.go#L1353)).
+One set when the `ControlPlane` is created confirms every delete of it, since nothing clears it.
+
+The garbage collector's delete of a `ControlPlane` whose owner is gone is refused like anyone's.
+The `ControlPlane` stays, and the garbage collector retries for as long as it does: the kube-controller-manager logs `error syncing item` and requeues it ([garbagecollector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/garbagecollector/garbagecollector.go#L354-L368)), after a delay that doubles from 5 ms to 1000 s ([default_rate_limiters.go](https://github.com/kubernetes/client-go/blob/v0.37.1/util/workqueue/default_rate_limiters.go#L50-L56)).
+It records no event: the one it records is `OwnerRefInvalidNamespace` ([graph_builder.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/garbagecollector/graph_builder.go#L534)).
+A new annotation wakes nothing in it, since only a deletion that has begun does ([graph_builder.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/garbagecollector/graph_builder.go#L667-L681)), so a confirmed `ControlPlane` goes at its next retry, within 1000 seconds.
+
+### Deleting a namespace that holds tenants
+
+Deleting a namespace deletes everything in it ([namespaces](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/administer-cluster/namespaces.md#L127-L137)), its `ControlPlane`s with their CA keys, and the chart's policy lets those deletes through ([why](decisions/who-is-trusted.md)).
+A platform that labels its tenant namespaces refuses the deletion of a labelled one unless it carries the same annotation:
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: tenant-namespaces.example.com
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: [""]
+      apiVersions: [v1]
+      operations: [DELETE]
+      resources: [namespaces]
+  validations:
+  - expression: "oldObject.metadata.?annotations['lodia.io/deletion-confirmed'].orValue('') == 'true'"
+    messageExpression: >-
+      'namespace ' + oldObject.metadata.name + ' holds tenants: kubectl annotate namespace ' +
+      oldObject.metadata.name + ' lodia.io/deletion-confirmed=true'
+    reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: tenant-namespaces.example.com
+spec:
+  policyName: tenant-namespaces.example.com
+  validationActions: [Deny]
+  matchResources:
+    objectSelector:
+      matchExpressions:
+      - key: example.com/tenant
+        operator: Exists
+```
+
+`example.com/tenant` is the label the platform sets on its tenant namespaces.
 
 ### Access as a person
 
@@ -313,10 +373,10 @@ Both rows ran in `gateway` mode; `TestLoadBalancerGate` runs the path without th
 | `Progressing=True`, `RollingOut` for long, or `APIServerReady=True`, `ProgressDeadlineExceeded` | the events of the Deployment the message names, or of the etcd's StatefulSet, and the `Etcd`'s `status.lastErrors` when its updated members are not reported; a new replica failing `/readyz` (often a flag in `extraArgs` that the new minor removed); the old replicas keep serving meanwhile |
 | a `Backup` `Snapshotting` for long | its message: an etcd that refuses the seal at its quota ([runbook](#etcd-space-quota)), or the full snapshot Lease `<cp>-etcd-full-snap` short of the seal; then the `EtcdOpsTask` `backup-<Backup UID>`, which etcd-druid rejects while another task of the `Etcd` runs ([reconcile_task.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcdopstask/reconcile_task.go#L101-L117)), such as its own snapshot before a roll ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/statefulset.go#L273-L300)), and the source's `BackupReady` |
 | a `Backup` `Failed` or `SealLost` | final: the message says why; the `EtcdCopyBackupsTask` `backup-<Backup UID>` of a failed copy stays for its `status.lastError`; create another `Backup` |
-| `DatastoreReady=False`, `WaitingForBackup` or `BackupNotFound`; `CertificatesReady=False`, `WaitingForBackup` | the `Backup` `restoreFrom.backupRef` names is not sealed yet or does not exist, the message saying which; the restore starts once it is sealed, `Ready`, `Completed`. A sealed `Backup` being deleted still restores: its finalizer keeps it and its keys until every restore that names it is complete, while one deleted before it is `Completed` goes at once. A restore without the keys holds it only while they exist ([Backup](api/controlplane.md#backup)): one created after a foreground deletion let them go reads `BackupNotFound` when the `Backup` is gone; delete that `ControlPlane` and restore another `Backup`. Never delete a `Backup` a restore names with `--cascade=orphan`: its keys `<backup>.encryption-config` lose their controller reference ([garbagecollector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/garbagecollector/garbagecollector.go#L683-L719)), which PKI requires, and `CertificatesReady`'s message names them until a person puts that reference back; the `Backup` waits for that restore meanwhile |
+| `DatastoreReady=False`, `WaitingForBackup` or `BackupNotFound`; `CertificatesReady=False`, `WaitingForBackup` | the `Backup` `restoreFrom.backupRef` names is not sealed yet or does not exist, the message saying which; the restore starts once it is sealed, `Ready`, `Completed`. A sealed `Backup` being deleted still restores: its finalizer keeps it and its keys until every restore that names it is complete, while one deleted before it is `Completed` goes at once. A restore without the keys holds it only while they exist ([Backup](api/controlplane.md#backup)): one created after a foreground deletion let them go reads `BackupNotFound` when the `Backup` is gone; [delete](#delete-a-cluster) that `ControlPlane` and restore another `Backup`. Never delete a `Backup` a restore names with `--cascade=orphan`: its keys `<backup>.encryption-config` lose their controller reference ([garbagecollector.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/pkg/controller/garbagecollector/garbagecollector.go#L683-L719)), which PKI requires, and `CertificatesReady`'s message names them until a person puts that reference back; the `Backup` waits for that restore meanwhile |
 | `CertificatesReady=False`, `SecretsExist` | a restored `ControlPlane` adopts no Secret under PKI's names: the message names those that exist; delete them |
 | `DatastoreReady=False`, `Restoring` for long | the message names the step: the copy, the `EtcdCopyBackupsTask` `restore-<ControlPlane UID>` and its `status.lastError`, made again a minute after it fails; an etcd that refuses the cleanup at its quota ([runbook](#etcd-space-quota)); the full snapshot after the cleanup, the `EtcdOpsTask` `restore-<ControlPlane UID>` and the Lease `<cp>-etcd-full-snap`; or an etcd that does not answer yet. No API server starts meanwhile |
-| `DatastoreReady=False`, `RestoreFailed` | the message says which ([reason](api/controlplane.md#conditions-and-their-reasons)): the class no longer names the store the `Backup` was sealed in, which pointing the class back at that store mends; or the `Backup` will never complete, its `Ready` reason being final, which another `Backup` mends; or the `Backup` is `ObjectsControlledElsewhere` until a person deletes the Secret it names; or, for good, the restored etcd lacks the `Backup`'s seal key, or the cleanup would delete 10240 keys or more. Nothing is cleaned up and no API server starts; delete the `ControlPlane` and restore another `Backup` |
+| `DatastoreReady=False`, `RestoreFailed` | the message says which ([reason](api/controlplane.md#conditions-and-their-reasons)): the class no longer names the store the `Backup` was sealed in, which pointing the class back at that store mends; or the `Backup` will never complete, its `Ready` reason being final, which another `Backup` mends; or the `Backup` is `ObjectsControlledElsewhere` until a person deletes the Secret it names; or, for good, the restored etcd lacks the `Backup`'s seal key, or the cleanup would delete 10240 keys or more. Nothing is cleaned up and no API server starts; [delete](#delete-a-cluster) the `ControlPlane` and restore another `Backup` |
 | `DatastoreReady=False`, `BackupIncompatible` | the `Backup`'s Kubernetes minor or network (`status.kubernetesVersion`, `status.network`) differs from the `ControlPlane`'s, or the class's etcd quota is below the one the `Backup` was sealed with (`status.seal.quotaBackendBytes`), the message naming which; create the `ControlPlane` again with the `Backup`'s version and network, or on a class with at least that quota |
 | `DatastoreReady=False`, `CAPredatesControlPlane` | the etcd is empty while the cluster CA PKI adopted is older than the `ControlPlane`: Secrets came back, the data did not. Restore the management cluster from a backup that keeps UIDs, or delete `<cp>-ca-bundle` and `<cp>-cakey-cluster` for a new identity |
 | `ControllersLeading=False`, `AwaitingRelease` or `SourceExists` | a restored `ControlPlane` waits for `spec.restoreFrom.release: Released`, the message listing what will act outside the cluster then, or for its source `ControlPlane` to be deleted |
@@ -425,7 +485,7 @@ Once the source is gone, the provider can give the address to the new load balan
 With the new `ControlPlane`'s admin kubeconfig:
 
 1. Confirm that no other `ControlPlane` names the source's hostnames on its Gateway, in any namespace: one older than the new `ControlPlane` takes them once the source is gone (`kubectl get controlplanes -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.spec.endpoint.gateway.hostnames}{"\n"}{end}'`).
-2. Stop the source first: delete its `ControlPlane`, for which the release waits (`SourceExists`), or stop it wherever Lodia cannot see it.
+2. Stop the source first: [delete](#delete-a-cluster) its `ControlPlane`, for which the release waits (`SourceExists`), or stop it wherever Lodia cannot see it.
 3. Delete the controllers that act outside the cluster with credentials of their own, such as a cloud controller manager, CSI controllers and external-dns, and their credentials: a cloud controller manager's route controller, for one, deletes every route of its cluster name that none of its nodes has ([route_controller.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/cloud-provider/controllers/route/route_controller.go#L383-L406)).
 4. Set every PersistentVolume's reclaim policy to `Retain`: deleting a `Delete` one deletes its disk ([persistent volumes](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/storage/persistent-volumes.md#L201-L210)), and the CSI provisioner drops its finalizer from a `Retain` one ([controller.go](https://github.com/kubernetes-csi/external-provisioner/blob/v6.4.0/vendor/sigs.k8s.io/sig-storage-lib-external-provisioner/v13/controller/controller.go#L1215-L1218)).
 5. Never delete a PersistentVolume with the `Delete` policy, nor a namespace, whose deletion deletes everything in it ([namespaces](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/administer-cluster/namespaces.md#L127-L137)).
@@ -464,7 +524,7 @@ A clone restores through the API, as Velero does, which gives every object a new
 4. API server step failing: what a rehearsal does not reach, a webhook of the tenant that refuses the next minor's start writes among them, or a removed flag or feature gate while rehearsals are off; fix the cause, the step retries.
 5. In-tenant step failing: an object the tenant refuses, named in `AddonsApplied`; the addons' pods roll on the owner's nodes afterwards, and an image they cannot pull (air gap, registry mirror missing) shows in `AddonsAvailable`, not here.
 6. `MaintenanceFailed`: a new operator revision the tenant failed in its slot of the fleet, `Progressing`'s message saying what; the tenant keeps the slot, through an edit of its spec or a pause, and takes the next release at once, and the slot is free once the cause is gone and `Ready` has been True for the settling time.
-7. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so delete the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
+7. Rollback of a minor: create a new `ControlPlane` with `restoreFrom` the `Backup` `<cp>-pre-upgrade-v<minor>-<ControlPlane UID>` and the old `spec.version`; it replaces the cluster, so [delete](#delete-a-cluster) the old one, or create the new one `Released` once the old one is gone ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
    A downgrade in place is not supported by Kubernetes.
 
 Pre-upgrade `Backup`s have no owner, so they outlive their `ControlPlane`, one per minor per tenant, and deleting them is the owner's ([restore-replaces-the-source](decisions/restore-replaces-the-source.md)).
