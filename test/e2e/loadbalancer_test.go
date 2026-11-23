@@ -524,7 +524,7 @@ func (b *balanced) close(ctx context.Context, t *testing.T, k8s client.Client) {
 			t.Error(err)
 		}
 	}
-	if err := client.IgnoreNotFound(k8s.Delete(ctx, &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: b.key.Namespace, Name: b.key.Name}})); err != nil {
+	if err := client.IgnoreNotFound(deleteControlPlane(ctx, k8s, b.key)); err != nil {
 		t.Error(err)
 		return
 	}

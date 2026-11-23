@@ -480,7 +480,7 @@ func TestRestoreGate(t *testing.T) {
 			return ctx
 		}).
 		Assess("8. the source deleted, b runs its controller manager, turns Ready and publishes its own CA", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if err := k8s.Delete(ctx, &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}); err != nil {
+			if err := deleteControlPlane(ctx, k8s, key); err != nil {
 				t.Fatal(err)
 			}
 			until(ctx, t, 3*time.Minute, "a is gone", func(ctx context.Context) error {

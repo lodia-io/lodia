@@ -75,7 +75,7 @@ func TestAPIServerOnKind(t *testing.T) {
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			if k8s != nil {
-				if err := client.IgnoreNotFound(k8s.Delete(ctx, &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: apiTenant}})); err != nil {
+				if err := client.IgnoreNotFound(deleteControlPlane(ctx, k8s, key)); err != nil {
 					t.Error(err)
 				}
 				until(ctx, t, 3*time.Minute, "the ControlPlane is gone", func(ctx context.Context) error {
