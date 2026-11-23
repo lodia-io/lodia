@@ -196,7 +196,15 @@ func TestExamplesOnAKindCluster(t *testing.T) {
 			return ctx
 		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if err := decoder.DecodeEachFile(ctx, os.DirFS(examples), "*.yaml", decoder.DeleteIgnoreNotFound(cfg.Client().Resources())); err != nil {
+			cl := newClient(t, cfg)
+			deleteIgnoreNotFound := decoder.DeleteIgnoreNotFound(cfg.Client().Resources())
+			deleteExample := func(ctx context.Context, obj k8s.Object) error {
+				if obj.GetObjectKind().GroupVersionKind().Kind == "ControlPlane" {
+					return client.IgnoreNotFound(deleteControlPlane(ctx, cl, client.ObjectKeyFromObject(obj)))
+				}
+				return deleteIgnoreNotFound(ctx, obj)
+			}
+			if err := decoder.DecodeEachFile(ctx, os.DirFS(examples), "*.yaml", deleteExample); err != nil {
 				t.Fatal(err)
 			}
 			return ctx

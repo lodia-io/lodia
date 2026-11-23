@@ -1,7 +1,7 @@
 # Lodia runs no admission webhooks: validation and defaults live in the CRD schema, and the requester's check in an admission policy
 
 Decided 2026-10-25.
-The schema rules, the defaults, the controllers' conditions and the chart's admission policy for `KubeconfigRequest`s are built; the tenant write lock is not, and phase 3 does not build it ([roadmap](../roadmap.md)).
+The schema rules, the defaults, the controllers' conditions and the chart's admission policies for `KubeconfigRequest`s and for the delete of a `ControlPlane` and of its CRD are built; the tenant write lock is not, and phase 3 does not build it ([roadmap](../roadmap.md)).
 
 ## Decision
 
@@ -9,6 +9,7 @@ The schema rules, the defaults, the controllers' conditions and the chart's admi
 - Defaults are schema defaults.
 - What a schema cannot check (a `DatastoreClass` that does not exist, a Gateway that lacks a listener) is reported as a condition on the object with a reason, not rejected at admission.
 - What a schema cannot see, the requester, is checked in the management cluster by an admission policy the API server evaluates, shipped with the chart: the `ValidatingAdmissionPolicy` `kubeconfigrequests.lodia.io` ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
+  So is the delete itself, which a schema cannot see since `object` is null on `DELETE` ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/api/admissionregistration/v1/types.go#L318)): `controlplanes.lodia.io` and `controlplanes-crd.lodia.io` read the confirmation, an annotation, from the stored object ([who-is-trusted](who-is-trusted.md)).
 - Inside a tenant cluster, a write lock (for migration or maintenance) is a `ValidatingAdmissionPolicy` the Tenant controller applies, not a webhook that calls back into the operator.
 - `v1alpha1` is the only served and stored version; a later version is added only with a schema that converts with `strategy: None`, or with a conversion webhook as a deliberate, separately decided exception.
 
@@ -32,6 +33,7 @@ The schema rules, the defaults, the controllers' conditions and the chart's admi
 - The CEL cost budget bounds rule complexity; rules are kept per field.
 - A later version that converts with `strategy: None` has the schema of `v1alpha1`, since that conversion changes only `apiVersion` ([versioning](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definition-versioning.md#L44-L50)).
   So once `v1alpha1` is frozen its shape is permanent but for additions, unless a conversion webhook is decided as the exception ([one-controlplane-per-cluster](one-controlplane-per-cluster.md#consequences)).
+- A management cluster administrator can delete or weaken any policy of the chart, which no policy created through the API, as the chart's are, can protect ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/api/admissionregistration/v1/types.go#L224-L228)); only a policy the API server loads from a manifest can, which 1.37 turns on as a beta ([kube_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/features/kube_features.go#L415-L418), [plugin.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/admission/plugin/policy/generic/plugin.go#L317-L327)); such an administrator reads every tenant's CA keys anyway.
 - An admission policy without its binding, or a binding without its policy, admits everything ([policy_source.go](https://github.com/kubernetes/kubernetes/blob/v1.35.10/staging/src/k8s.io/apiserver/pkg/admission/plugin/policy/generic/policy_source.go#L296-L322)), so the controller that relies on one refuses to act while it is not in place ([short-lived-kubeconfigs](short-lived-kubeconfigs.md)).
 
 ## Code

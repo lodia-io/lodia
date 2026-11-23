@@ -80,6 +80,13 @@ const (
 	// each new value once, recorded in status.maintenance.lastHandled.
 	MaintainRequestedAtAnnotation = "lodia.io/maintain-requested-at"
 
+	// DeletionConfirmedAnnotation "true", set by the platform on a
+	// ControlPlane or on the CustomResourceDefinition controlplanes.lodia.io,
+	// confirms its deletion: the chart's admission policies
+	// controlplanes.lodia.io and controlplanes-crd.lodia.io refuse a delete of
+	// either without it, and no controller of Lodia reads or writes it.
+	DeletionConfirmedAnnotation = "lodia.io/deletion-confirmed"
+
 	// OperatorRevisionAnnotation, written by Workloads on its Deployments and
 	// by the Datastore controller on the Etcd, records the operator revision
 	// they were rendered with.

@@ -41,6 +41,7 @@ The suite leaves the chart installed.
   Each loop prints each failure, numbered, and, every second, its counts.
   Between the counts before the change and the first each loop reports more than 6 seconds after the old pod is gone, past the 5 seconds a request may take, the suite wants no request failed, no answer with an empty slice, and answers to at least 95% of the requests the rate sends, and it logs how many followed a `Retry-After`.
   Disabling `addons.coreDNS` removes CoreDNS's objects from the tenant and from the inventory, and enabling it brings them back.
+  Deleting the `ControlPlane` without `lodia.io/deletion-confirmed` is refused as `Forbidden`, with the `annotate` command in its message, and the tenant stays `Ready` ([who-is-trusted](../../docs/decisions/who-is-trusted.md)); every delete of a `ControlPlane` in the suite confirms first, through `deleteControlPlane`.
   Deleting the `ControlPlane` leaves in its namespace, of every namespaced kind the API server serves, Events aside, which outlive their objects, only the etcd's claim, which the class's `Retain` keeps, and what every namespace holds: the ConfigMap `kube-root-ca.crt` and the ServiceAccount `default`.
 
 The suite reaches the tenant's API server through `status.endpoint`, as `<cp>-admin-kubeconfig`, whose server it is, and, as the platform, creates a bootstrap token Secret there ([nodes-join-with-kubeadm](../../docs/decisions/nodes-join-with-kubeadm.md)).

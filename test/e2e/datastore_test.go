@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -154,7 +155,7 @@ func TestDatastoreOnKind(t *testing.T) {
 		}).
 		Assess("deleting the ControlPlane removes the Etcd, the member's claim and the etcd's NetworkPolicy", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: controlPlane, Namespace: tenant}}
-			if err := k8s.Delete(ctx, cp); err != nil {
+			if err := deleteControlPlane(ctx, k8s, client.ObjectKeyFromObject(cp)); err != nil {
 				t.Fatal(err)
 			}
 			until(ctx, t, 3*time.Minute, "the ControlPlane is gone", func(ctx context.Context) error {
@@ -193,6 +194,15 @@ func create(ctx context.Context, t *testing.T, k8s client.Client, obj client.Obj
 	if err := k8s.Create(ctx, obj); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func deleteControlPlane(ctx context.Context, k8s client.Client, key client.ObjectKey) error {
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name}}
+	confirm := client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.DeletionConfirmedAnnotation+`":"true"}}}`))
+	if err := k8s.Patch(ctx, cp, confirm); err != nil {
+		return err
+	}
+	return k8s.Delete(ctx, cp)
 }
 
 func issued(ctx context.Context, k8s client.Client, generation int) error {

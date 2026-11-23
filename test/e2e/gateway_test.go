@@ -328,7 +328,7 @@ func TestGatewayGate(t *testing.T) {
 			return ctx
 		}).
 		Assess("B1: deleting the first ControlPlane hands the routes to the second", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			if err := k8s.Delete(ctx, &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: a.Namespace, Name: a.Name}}); err != nil {
+			if err := deleteControlPlane(ctx, k8s, a); err != nil {
 				t.Fatal(err)
 			}
 			until(ctx, t, 3*time.Minute, a.Namespace+" is gone", func(ctx context.Context) error {
