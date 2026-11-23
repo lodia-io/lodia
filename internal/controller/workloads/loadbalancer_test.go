@@ -258,6 +258,38 @@ func TestARestartBetweenTheServiceAndTheStatusLeavesThePassToTheNext(t *testing.
 	}
 }
 
+func TestAHeldPassKeepsARefusalOfAServiceItDidNotApply(t *testing.T) {
+	cp := running(t, atLBAddress)
+	testenv.Eventually(t, func() error {
+		return expectBalancer(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, of+" reports endpoint.loadBalancer.host "+lbAddress)
+	})
+	pause(t, cp)
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.Endpoint.LoadBalancer.SourceRanges = []lodiav1alpha1.CIDR{"198.51.100.0/24"}
+	})
+	refusing := interceptor.NewClient(unpaused(), interceptor.Funcs{Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+		if kindOf(t, obj) == "Service" {
+			return apierrors.NewForbidden(corev1.Resource("services"), lodiav1alpha1.APIServerServiceName(cp.Name), errors.New("denied by a policy"))
+		}
+		return c.Apply(ctx, obj, opts...)
+	}})
+	if _, err := operatorAt(refusing, revision).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
+		t.Fatalf("the refused pass returned %v", err)
+	}
+	refused := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
+	if refused.Reason != lodiav1alpha1.ReasonRefused {
+		t.Fatalf("after the refused pass LoadBalancerReady is %+v", refused)
+	}
+	passOf(t, operatorAt(unpaused(), next), cp)
+	if svc := getService(t, cp); len(svc.Spec.LoadBalancerSourceRanges) != 0 {
+		t.Fatalf("a held pass applied %v", svc.Spec.LoadBalancerSourceRanges)
+	}
+	held := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
+	if held.Status != refused.Status || held.Reason != refused.Reason || held.Message != refused.Message || held.ObservedGeneration != refused.ObservedGeneration {
+		t.Errorf("a held pass that left the Service as stored wrote LoadBalancerReady %+v over the refusal %+v", held, refused)
+	}
+}
+
 func TestAHeldPassLeavesLoadBalancerReadyAtTheGenerationItDescribes(t *testing.T) {
 	cp := running(t, atLBAddress)
 	testenv.Eventually(t, func() error {
