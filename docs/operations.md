@@ -162,7 +162,6 @@ Lodia's gates run on Envoy Gateway v1.9.3 ([the gate](../test/e2e/README.md#the-
 
 Requests through the tunnel reach the API server from `127.0.0.1`, since the sidecar dials it on loopback, and external requests from the Gateway's address, so audit `sourceIPs` and the request log carry no client address ([request.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/audit/request.go#L55-L59)).
 In gateway mode requests are attributed by identity: a bound ServiceAccount token carries its pod and node into the user's extra fields, which the audit event records ([util.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/authentication/serviceaccount/util.go#L40-L47)).
-Where audit must rest on the source address, use `loadBalancer` mode with an IP `host`: wherever `apiserver-proxy` runs, a pod's request is a new connection from its node and carries no pod address.
 
 ## The platform under the load balancer mode
 
@@ -246,7 +245,8 @@ external-dns writes it only after the load balancer has an address, so with it k
 
 `LoadBalancerReady` reads `AddressMismatch` when `host` is an IP address, the Service reports IP addresses, and `host` is not among them; the message names both.
 The tenant is built at `host` and nothing moves; `Ready` waits on `LoadBalancerReady`, and Health's probe, which goes to `host`, fails until the load balancer holds it.
-Look at the annotation that asks for `host` (missing, misspelt, or not read by the controller that serves the Service's `class`) and at the address itself (not reserved where the provider looks, or held by another load balancer).
+Look at the annotation that asks for `host`: missing, misspelt, or not read by the controller that serves the Service's `class`, it leaves the load balancer to take an address of its own, and on GKE so does a name that no reserved address bears.
+An address that another load balancer holds, or that is not reserved where the provider looks, gives no address on MetalLB and Azure, and `LoadBalancerReady` reads `WaitingForLoadBalancer` ([the recipes](#an-address-known-in-advance)).
 A platform that translates a public address into its load balancer's private one reports an address that no IP `host` can name: use a DNS name ([the field](api/controlplane.md#spec)).
 
 Repair it in place: edit `endpoint.loadBalancer.annotations`, which with `sourceRanges` is what a living tenant's `endpoint` still lets change.
@@ -258,9 +258,7 @@ Whether a provider moves a live load balancer to another address is its own: Met
 `sourceRanges` become the Service's `loadBalancerSourceRanges`, which restrict who may reach its load balancer, 443 and 8132 alike, where the provider supports them ([types.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/api/core/v1/types.go#L6376-L6382)); a living tenant takes a change.
 Everything that connects must be inside them: the tenant's nodes (the kubelets, `kubeadm join`, `apiserver-proxy` and the konnectivity agents), the people and automation that hold a kubeconfig, the pods when `host` is an IP address, and Lodia's Health.
 
-Health dials the public endpoint from the management cluster.
-There kube-proxy captures traffic to an IP address that a LoadBalancer Service reports in `VIP` mode and delivers it without leaving the node ([serviceport.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/serviceport.go#L222-L235)), and lets it through only from the Service's source ranges ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1169-L1196)): the management cluster's pod range must be among them, or the probe is dropped and `Reachable` reads `ExternalProbeFailed`.
-A probe that leaves the cluster, to a load balancer that reports a host name or an address in `Proxy` mode, arrives from the cluster's egress address, which must be among them too ([what the probe proves](README.md#health)).
+Health's probe dials the public endpoint from the management cluster, so `sourceRanges` must hold what it comes from, or it is dropped and `Reachable` reads `ExternalProbeFailed`: the management cluster's pod range where kube-proxy delivers it on the node, and the cluster's egress address where it leaves the cluster ([what the probe proves](README.md#health)).
 
 ## The node's proxy
 
@@ -268,12 +266,12 @@ A probe that leaves the cluster, to a load balancer that reports a host name or 
 
 ### What a tenant's cluster must allow
 
-An IP `host` is the way out of all of it but the NetworkPolicy: the pods dial the load balancer directly and no proxy runs.
+An IP `host` is the way out of all of it but the NetworkPolicy and the HTTP egress proxies: the pods dial the load balancer through kube-proxy and no proxy runs.
 
 - **Pod Security:** `kube-system` has to admit `apiserver-proxy`, whose `hostNetwork` and `NET_ADMIN` the Baseline level forbids ([pod-security-standards](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/security/pod-security-standards.md#baseline)), so a namespace label enforcing `baseline` or `restricted` there stops in-cluster API access.
 - **NetworkPolicy:** a tenant's egress policies must allow pods the advertise address and 6443, `240.0.0.1:6443` by default, which is what connections to the `kubernetes` Service resolve to ([api-exposure](decisions/api-exposure.md)); with an IP `host`, `host` and 443.
 - **Windows and virtual-kubelet nodes:** they run no `apiserver-proxy`, so a pod there gets no in-cluster API path through `kubernetes.default`.
-- **HTTP egress proxies:** `apiserver-proxy` dials the tunnel in `gateway` mode and the load balancer otherwise, directly, so a node that reaches either only through an HTTP proxy gets no in-cluster API path; support for that is undecided.
+- **HTTP egress proxies:** the in-cluster path ends in a direct connection, `apiserver-proxy`'s to the tunnel in `gateway` mode and to the load balancer otherwise, and the pods' to an IP `host`, so a node that reaches that address only through an HTTP proxy gets no in-cluster API path; support for that is undecided.
 - **IPv6:** a tenant whose first service range is IPv6 names the advertise address, from a /48 its platform drew ([the field](api/controlplane.md#spec)).
 - **Connections:** a node's proxy carries at most 1000 connections and 128 from one source address, which for every host-network client of the node is the node's own; it closes the connection that is over a cap.
 - **The proxy's pod:** each change of the `lodia-tunnel` image rolls the DaemonSet and ends the connections through it, and on a fresh node a CNI that reaches the API through the `kubernetes` Service waits for the proxy's pod.
