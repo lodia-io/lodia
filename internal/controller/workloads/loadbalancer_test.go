@@ -310,6 +310,9 @@ func TestAHeldPassAfterTheServiceIsReleasedReportsItsLoadBalancer(t *testing.T) 
 		t.Fatalf("LoadBalancerReady is %+v, want ObjectsControlledElsewhere", elsewhere)
 	}
 	setOwners(nil)
+	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.Endpoint.LoadBalancer.SourceRanges = []lodiav1alpha1.CIDR{"198.51.100.0/24"}
+	})
 	passOf(t, operatorAt(unpaused(), next), cp)
 	if svc := getService(t, cp); len(svc.OwnerReferences) != 0 {
 		t.Fatalf("the held pass wrote the Service: owners %v", svc.OwnerReferences)
