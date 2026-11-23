@@ -110,7 +110,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the phase 2 contracts (2026-10-27)
 
 - The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- An IPv6 advertise address Lodia draws: once gateway mode has users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
+- An IPv6 advertise address Lodia draws: once tenants where `apiserver-proxy` runs, in gateway mode or behind a load balancer without an IP `host`, have users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
   `apiServer.advertiseAddress` then becomes optional, which breaks no manifest (api-exposure).
 
 ## From the docs review (2026-10-27)
@@ -251,7 +251,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - `Ready` at a generation says that the authentication configuration is written and valid, not that every API server replica has loaded it: an issuer that does not answer holds a load back with nothing in the status ([structured-authentication](docs/decisions/structured-authentication.md)).
   A condition outside `Ready` could compare each replica's `apiserver_authentication_config_controller_last_config_info` with a hash Workloads writes on the ConfigMap.
-- In `gateway` mode the konnectivity agents resolve names through the node's DNS, so a JWT issuer inside the tenant is reached by a name the nodes resolve or by its ClusterIP in `issuer.discoveryURL` ([operations](docs/operations.md#logging-in-with-an-oidc-provider)); decide whether the agents of that mode should resolve the tenant's Services too.
+- Where `apiserver-proxy` runs the konnectivity agents resolve names through the node's DNS, so a JWT issuer inside the tenant is reached by a name the nodes resolve or by its ClusterIP in `issuer.discoveryURL` ([operations](docs/operations.md#logging-in-with-an-oidc-provider)); decide whether those agents should resolve the tenant's Services too.
 
 ## From the rehearsal (2026-11-20)
 

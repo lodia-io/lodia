@@ -28,8 +28,8 @@ Built; `internal/tenantclient` and `internal/secretcache` hold it.
   A pass sends its requests one after another and ends at controller-runtime's minute, and the status write has `internal/statusapply`'s own 10 s after it, so a pass that is not held still reports after the minute, and a held pass that a deadline cuts, in its reads or its applies, returns its error and writes no status.
   A pass that a deadline cuts stops where a failed request stops it, which the inventory allows anywhere ([tenant-resources-by-inventory](tenant-resources-by-inventory.md#consequences)).
   A pass completes while the tenant answers each request in under 60 s over the requests it sends.
-  At rest the defaults send 39 (the inventory's read, 35 applies, 3 reads of workloads), so 1.54 s each; a gateway tenant sends 45 (the delivery's 2, then 1, 38 and 4), so 1.33 s.
-  A fresh tenant's first pass writes the inventory with its request 37, or 41 with the delivery's, and its second is a pass at rest: it converges in two passes within the same figures.
+  At rest the defaults send 39 where the tenant's pods dial an IP `host` or a node port (the inventory's read, 35 applies, 3 reads of workloads), so 1.54 s each; 42 where `apiserver-proxy` runs without the tunnel (1, 37 and 4), so 1.43 s; a gateway tenant sends 45 (the delivery's 2, then 1, 38 and 4), so 1.33 s.
+  A fresh tenant's first pass writes the inventory with its request 37, 39 with `apiserver-proxy`, or 41 with the delivery's too, and its second is a pass at rest: it converges in two passes within the same figures.
   A tenant slower than that has every pass cut at the same object, since the render's order is fixed, so the objects after it are never applied, and a True `AddonsApplied` stays as it was.
   `TestAPassSendsTheRequestsTheTimeoutsAreSizedFor` holds the counts.
 

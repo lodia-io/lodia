@@ -88,8 +88,8 @@ var written = []lodiav1alpha1.Secret{
 // names are PKI's Secrets of a ControlPlane, <cp>-<name>, beside the etcd
 // generations <cp>-etcd-<role>-<g>. They are reserved: PKI finds them by name,
 // labelled or not. The tunnel's are reserved in gateway mode only, so that a
-// foreign Secret under a name a ControlPlane can never use, as endpoint is
-// immutable, stops none of its issuance.
+// foreign Secret under a name a ControlPlane can never use, as the endpoint's
+// mode is immutable, stops none of its issuance.
 func names(cp *lodiav1alpha1.ControlPlane) []string {
 	names := []string{"cakey-cluster", "cakey-client", "cakey-front-proxy", "cakey-etcd", "cakey-kubeconfig-requests", kubeletSignerNext}
 	for _, s := range written {
@@ -831,11 +831,8 @@ func (t *tenant) servingProfile() certs.Profile {
 			p.SAN(prefix.Masked().Addr().Next().String())
 		}
 	}
-	for _, name := range []string{api, api + "." + cp.Namespace, api + "." + cp.Namespace + ".svc", "localhost", "127.0.0.1", t.endpoint.host} {
+	for _, name := range []string{api, api + "." + cp.Namespace, api + "." + cp.Namespace + ".svc", "localhost", "127.0.0.1", t.endpoint.host, cp.Status.Endpoint.InCluster.Host} {
 		p.SAN(name)
-	}
-	if cp.Spec.Endpoint.Gateway != nil {
-		p.SAN(cp.Status.Endpoint.InCluster.Host)
 	}
 	for _, san := range cp.Spec.Endpoint.CertSANs {
 		p.SAN(string(san))

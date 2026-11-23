@@ -479,13 +479,13 @@ func TestAnUnchangedControlPlaneWritesNothing(t *testing.T) {
 
 func TestAMovedEndpointReissuesExactlyWhatNamesIt(t *testing.T) {
 	r := newReconciler(time.Hour)
-	cp := controlPlane(t, "pki-endpoint")
-	publishEndpoint(t, cp)
+	cp := discoveredControlPlane(t, "pki-endpoint")
+	publishDiscovered(t, cp, endpointHost)
 	reconcile(t, r, cp)
 	before, _ := resourceVersions(t, cp)
 
 	const moved = "203.0.113.11"
-	publishEndpointAt(t, cp, moved)
+	publishDiscovered(t, cp, moved)
 	reconcile(t, r, cp)
 	after, _ := resourceVersions(t, cp)
 	var changed []string
@@ -852,7 +852,12 @@ func newReconciler(leafLifetime time.Duration) *pki.Reconciler {
 
 func controlPlane(t *testing.T, namespace string, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	return controlPlaneAt(t, namespace, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}, CertSANs: []lodiav1alpha1.Hostname{certSAN}}, change...)
+	return controlPlaneAt(t, namespace, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: endpointHost}, CertSANs: []lodiav1alpha1.Hostname{certSAN}}, change...)
+}
+
+func discoveredControlPlane(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
+	t.Helper()
+	return controlPlaneAt(t, namespace, lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}, CertSANs: []lodiav1alpha1.Hostname{certSAN}})
 }
 
 func controlPlaneAt(t *testing.T, namespace string, endpoint lodiav1alpha1.Endpoint, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
@@ -959,7 +964,7 @@ func TestTheKonnectivityCertificateNamesTheKonnectivityHost(t *testing.T) {
 	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
 		"konnectivity": map[string]any{"host": konnectivity, "port": int64(8132)},
-		"inCluster":    map[string]any{"host": endpointHost, "port": int64(6443)},
+		"inCluster":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
 	}})
 	reconcile(t, r, cp)
 	secrets := secretsOf(t, cp)
@@ -993,15 +998,19 @@ func TestAGatewayControlPlaneWaitsForItsEndpoint(t *testing.T) {
 
 func publishEndpoint(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	publishEndpointAt(t, cp, endpointHost)
+	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
+		"apiServer":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
+		"konnectivity": map[string]any{"host": endpointHost, "port": int64(8132)},
+		"inCluster":    map[string]any{"host": endpointHost, "port": int64(endpointPort)},
+	}})
 }
 
-func publishEndpointAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, host string) {
+func publishDiscovered(t *testing.T, cp *lodiav1alpha1.ControlPlane, host string) {
 	t.Helper()
 	applyStatus(t, cp, map[string]any{"endpoint": map[string]any{
 		"apiServer":    map[string]any{"host": host, "port": int64(endpointPort)},
 		"konnectivity": map[string]any{"host": host, "port": int64(8132)},
-		"inCluster":    map[string]any{"host": host, "port": int64(6443)},
+		"inCluster":    map[string]any{"host": lodiav1alpha1.DefaultAdvertiseAddress, "port": int64(6443)},
 	}})
 }
 

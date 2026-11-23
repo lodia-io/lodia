@@ -123,8 +123,8 @@ Workloads validates the file as kube-apiserver of the minor the operator links, 
 
 The API server fetches the issuer's discovery document and keys through konnectivity, from the tenant's nodes:
 
-- in `loadBalancer` and `nodePort` mode an issuer inside the tenant is named by its Service, `https://dex.dex.svc`, once CoreDNS runs, and one outside is reached through the nodes' route out;
-- in `gateway` mode the agents resolve names with the node's DNS (`dnsPolicy: Default`), so a Service's name does not resolve: name the issuer by a name the nodes resolve, or put its ClusterIP into `issuer.discoveryURL` with a serving certificate for that address, and serve a `jwks_uri` reachable the same way;
+- with an IP `endpoint.loadBalancer.host` and in `nodePort` mode an issuer inside the tenant is named by its Service, `https://dex.dex.svc`, once CoreDNS runs, and one outside is reached through the nodes' route out;
+- wherever `apiserver-proxy` runs, in `gateway` mode and in `loadBalancer` mode without an IP `host`, the agents resolve names with the node's DNS (`dnsPolicy: Default`), so a Service's name does not resolve: name the issuer by a name the nodes resolve, or put its ClusterIP into `issuer.discoveryURL` with a serving certificate for that address, and serve a `jwks_uri` reachable the same way;
 - before the first node joins no agent is connected, so tokens do not log in and an edit does not load; a `KubeconfigRequest` works meanwhile.
 
 An edit reaches the API server in stages: the kubelet updates the mounted ConfigMap within its sync period, a minute by default, plus its cache's delay ([ConfigMaps](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/configmap.md?plain=1#L191-L203)); kube-apiserver sees the file change, or reads it at its own minute's poll, and loads it once every issuer in it answers, asked every 10 seconds for at most a minute and again at the next change or poll ([authentication.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/kubeapiserver/options/authentication.go#L760-L815)).
