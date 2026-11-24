@@ -463,11 +463,15 @@ func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
 			}
 
 			reconcile(t, r, cp)
+			says := "Backup " + backupName + " has UID " + string(second.UID) + ", and the restore was of UID " + string(first.UID) + ", whose keys the restored data needs; restore another Backup"
+			if c.copied {
+				says = "dev-encryption-config holds the keys of Backup " + backupName + " with UID " + string(second.UID) + ", and the restore was of UID " + string(first.UID) + ", whose keys the restored data needs; restore another Backup"
+			}
 			mismatch := func() {
 				t.Helper()
 				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
-				if got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonWaitingForBackup || !strings.Contains(got.Message, string(first.UID)) || !strings.Contains(got.Message, string(second.UID)) {
-					t.Errorf("CertificatesReady is %s %s: %q, want WaitingForBackup naming UIDs %s and %s", got.Status, got.Reason, got.Message, first.UID, second.UID)
+				if got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonWaitingForBackup || got.Message != says {
+					t.Errorf("CertificatesReady is %s %s: %q, want WaitingForBackup %q", got.Status, got.Reason, got.Message, says)
 				}
 			}
 			mismatch()
@@ -542,14 +546,22 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 			}
 			reconcile(t, r, cp)
 			wait := "dev-encryption-config holds the keys of Backup " + backupName + " with UID " + string(first.UID) + ", and the Backup of that name now has UID " + string(second.UID) +
-				"; PKI checks the Backup's UID and not its keys, and waits until status.restore names UID " + string(first.UID) + "; DatastoreReady says how the restore goes"
+				"; PKI checks the Backup's UID and not its keys, and waits while the Backup of that name exists, until status.restore names UID " + string(first.UID) + "; DatastoreReady says how the restore goes"
 			mismatch("before status.restore", wait)
 
 			switch c.restores {
 			case "successor":
 				restored(t, cp, second)
 				reconcile(t, r, cp)
-				mismatch("once status.restore names the successor", "dev-encryption-config holds the keys of Backup "+backupName+" with UID "+string(first.UID)+", and the restore was of UID "+string(second.UID)+", whose keys the restored data needs; restore another Backup")
+				held := "dev-encryption-config holds the keys of Backup " + backupName + " with UID " + string(first.UID) + ", and the restore was of UID " + string(second.UID) + ", whose keys the restored data needs; restore another Backup"
+				mismatch("once status.restore names the successor", held)
+				for _, gone := range []client.Object{second, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: backupKeys, Namespace: cp.Namespace}}} {
+					if err := k8s.Delete(t.Context(), gone); err != nil {
+						t.Fatal(err)
+					}
+				}
+				reconcile(t, r, cp)
+				mismatch("once the successor the restore was of is deleted", held)
 			case "predecessor":
 				restored(t, cp, first)
 				reconcile(t, r, cp)
