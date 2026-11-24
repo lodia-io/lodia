@@ -346,7 +346,7 @@ func TestATransientErrorReadingTheBackupWritesNothing(t *testing.T) {
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForBackup)
-	seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+	first := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
 	secrets, status := resourceVersions(t, cp)
 	for _, down := range []struct {
 		name   string
@@ -367,6 +367,19 @@ func TestATransientErrorReadingTheBackupWritesNothing(t *testing.T) {
 	r.Client, r.Reader = controller, apiReader
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+
+	removedByHand(t, first)
+	seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForBackup)
+	secrets, status = resourceVersions(t, cp)
+	r.Client = noBackupReads{controller}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil || err.Error() != "the API server is down" {
+		t.Errorf("a pass that cannot read the Backup after its keys were copied returned %v, want the read's error", err)
+	}
+	if after, afterStatus := resourceVersions(t, cp); !maps.Equal(after, secrets) || afterStatus != status {
+		t.Error("a pass that cannot read the Backup after its keys were copied wrote")
+	}
 }
 
 func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
