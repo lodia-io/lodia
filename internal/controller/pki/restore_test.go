@@ -536,19 +536,20 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 			mismatch := func(when, says string) {
 				t.Helper()
 				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
-				if got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonWaitingForBackup || !strings.Contains(got.Message, string(first.UID)) || !strings.Contains(got.Message, string(second.UID)) || !strings.HasSuffix(got.Message, says) {
-					t.Errorf("%s: CertificatesReady is %s %s: %q, want WaitingForBackup naming UIDs %s and %s and ending %q", when, got.Status, got.Reason, got.Message, first.UID, second.UID, says)
+				if got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonWaitingForBackup || got.Message != says {
+					t.Errorf("%s: CertificatesReady is %s %s: %q, want WaitingForBackup %q", when, got.Status, got.Reason, got.Message, says)
 				}
 			}
 			reconcile(t, r, cp)
-			wait := "they fit the restore only if it restores UID " + string(first.UID) + ", which status.restore then names; DatastoreReady says how the restore goes"
+			wait := "dev-encryption-config holds the keys of Backup " + backupName + " with UID " + string(first.UID) + ", and the Backup of that name now has UID " + string(second.UID) +
+				"; PKI checks the Backup's UID and not its keys, and waits until status.restore names UID " + string(first.UID) + "; DatastoreReady says how the restore goes"
 			mismatch("before status.restore", wait)
 
 			switch c.restores {
 			case "successor":
 				restored(t, cp, second)
 				reconcile(t, r, cp)
-				mismatch("once status.restore names the successor", "and the restore was of UID "+string(second.UID)+", whose keys the restored data needs; restore another Backup")
+				mismatch("once status.restore names the successor", "dev-encryption-config holds the keys of Backup "+backupName+" with UID "+string(first.UID)+", and the restore was of UID "+string(second.UID)+", whose keys the restored data needs; restore another Backup")
 			case "predecessor":
 				restored(t, cp, first)
 				reconcile(t, r, cp)

@@ -51,7 +51,7 @@ Once the copy has succeeded, and before the `Backup` is `Completed`, the backup 
 PKI keeps every provider it ever wrote there, so it holds every key that encrypted anything in the copy.
 The reconciler never puts a key in the bucket, whose credentials sit in every tenant namespace on the class.
 PKI copies those providers once into the restored `ControlPlane`'s configuration, behind a new key of its own, and never reads the `Backup`'s keys again; while it has not, PKI reports `CertificatesReady=False`, `WaitingForBackup`.
-It records that `Backup`'s UID on the configuration and reports `WaitingForBackup` with both UIDs when `status.restore` names another: a person who removed the finalizer below and created a successor of the same name would give the restore keys that cannot read its data.
+It records that `Backup`'s UID on the configuration and reports `WaitingForBackup` with both UIDs when `status.restore` names another: a person who removed the finalizer below and created a successor of the same name would give the restore the keys of another `Backup` than the one it restores; PKI checks the UID and not the keys, so a restore of another UID is refused even where its keys would read the data.
 Until `status.restore` is set, it reports the same wait while the `Backup` of that name has another UID than the configuration records, so that no API server starts on keys the restore may not match; the wait ends once `status.restore` names the recorded UID.
 Whether it will, PKI cannot tell: which `Backup` the restore copied shows in no status PKI reads, so the message names no outcome and points to `DatastoreReady`.
 PKI never replaces the configuration: a lost `status.restore` is rebuilt while the API server may already run on it.
