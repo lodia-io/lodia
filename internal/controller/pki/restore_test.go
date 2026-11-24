@@ -521,6 +521,7 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 	}{
 		{"a sealed successor before the copy", sealed, "successor"},
 		{"a sealed successor after the copy and before the cleanup", sealed, ""},
+		{"a sealed successor being deleted, held by its finalizer", sealed, "deleted"},
 		{"a sealed successor after the cleanup", sealed, "predecessor"},
 		{"a failed successor before the copy", at(lodiav1alpha1.ReasonNoBackupStore), ""},
 		{"a failed successor after the cleanup", at(lodiav1alpha1.ReasonNoBackupStore), "predecessor"},
@@ -562,6 +563,26 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 				}
 				reconcile(t, r, cp)
 				mismatch("once the successor the restore was of is deleted", held)
+			case "deleted":
+				if err := k8s.Patch(t.Context(), second, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":["`+lodiav1alpha1.RestoreSourceFinalizer+`"]}}`))); err != nil {
+					t.Fatal(err)
+				}
+				if err := k8s.Delete(t.Context(), second); err != nil {
+					t.Fatal(err)
+				}
+				if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(second), second); err != nil || second.DeletionTimestamp.IsZero() {
+					t.Fatalf("the successor is not being deleted: %v", err)
+				}
+				reconcile(t, r, cp)
+				mismatch("while the successor is being deleted", wait)
+				if err := k8s.Patch(t.Context(), second, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":null}}`))); err != nil {
+					t.Fatal(err)
+				}
+				reconcile(t, r, cp)
+				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+				if freshControlPlane(t, cp).Status.Restore != nil {
+					t.Error("status.restore is set once the successor is gone")
+				}
 			case "predecessor":
 				restored(t, cp, first)
 				reconcile(t, r, cp)
