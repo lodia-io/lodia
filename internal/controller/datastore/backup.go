@@ -649,9 +649,10 @@ func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Ba
 }
 
 // restoring says whether a ControlPlane in the Backup's namespace that is
-// not being deleted and restores from it lacks an encryption configuration of
-// its own while the Backup's keys exist, or has one and lacks a completed
-// restore. One without its own once the keys are gone can never get them, and
+// not being deleted and restores from it, by name until its restore is
+// complete and then by the UID status.restore names, lacks an encryption
+// configuration of its own while the Backup's keys exist, or has one and lacks
+// a completed restore. One without its own once the keys are gone can never get them, and
 // would hold the Backup for good. The ControlPlanes and their Secrets are read
 // from the API server: a ControlPlane the cache does not hold yet would find
 // no Backup to restore.
@@ -662,7 +663,8 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 	}
 	for i := range controlPlanes.Items {
 		cp := &controlPlanes.Items[i]
-		if !cp.DeletionTimestamp.IsZero() || cp.Spec.RestoreFrom == nil || cp.Spec.RestoreFrom.BackupRef.Name != backup.Name {
+		if !cp.DeletionTimestamp.IsZero() || cp.Spec.RestoreFrom == nil || cp.Spec.RestoreFrom.BackupRef.Name != backup.Name ||
+			cp.Status.Restore != nil && cp.Status.Restore.Backup.UID != backup.UID {
 			continue
 		}
 		keys := &metav1.PartialObjectMetadata{}
