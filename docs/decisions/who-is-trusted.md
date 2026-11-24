@@ -20,7 +20,7 @@ The bounded reads of a tenant, Health's, Tenant's and PKI's, and the chart's pol
 ## Why
 
 - **The management cluster holds every tenant.**
-  A tenant namespace holds that tenant's CA keys and its class's backup credentials, which read every tenant's snapshots on the class ([Identity and tenancy](../README.md#identity-and-tenancy)).
+  A tenant namespace holds that tenant's CA keys and its class's backup credentials, which read and delete every tenant's snapshots on the class ([Identity and tenancy](../README.md#identity-and-tenancy)).
   A `ControlPlane` names the `Backup` whose data it restores, the class whose bucket it writes and flags of its API server ([the fields](../api/controlplane.md#spec)), so whoever writes one reaches what its namespace reaches.
 - **The threats need no access to Lodia.**
   `cluster-admin` inside a tenant is enough: its administrator writes the Nodes and Leases Health counts, and an APIService naming a Service of their own puts their server in place of a built-in group ([controller-manager-hold](controller-manager-hold.md)), so a read of the tenant can return anything, of any length.

@@ -51,8 +51,9 @@ The key set's timestamp changes only when the published set does, and a Secret t
 The three stages of the ServiceAccount key rotation below are three states of this Secret: (1) `signing.key` K₁, `verify-k2.pub` K₂; (2) `signing.key` K₂, `verify-k1.pub` K₁; (3) `signing.key` K₂.
 
 **Leaf certificates** renew at two thirds of their lifetime.
-The API server reloads its serving certificate, client CA bundles, kubelet client certificate and, per handshake, its etcd client certificate; components read their kubeconfigs' certificates from mounted files, which client-go reloads; etcd reloads its certificates per connection.
-A renewal therefore rolls nothing except two, both in the maintenance window: the konnectivity server's certificate, until a reload is proven, and the certificate of etcd's backup-restore sidecar, which keeps serving its first one.
+The API server reloads its serving certificate, client CA bundles, kubelet client certificate and, per handshake, its etcd client certificate; the controller manager and the scheduler read their kubeconfigs' certificates from mounted files, which client-go reloads; etcd reloads its certificates per connection.
+A renewal therefore rolls only what reads a certificate once: the API server pod, for `front-proxy-client`, `konnectivity-server` and `konnectivity-kubeconfig` (`restartOnly` in `internal/controller/workloads/render.go`), and etcd's backup-restore sidecar, which keeps serving its first one.
+When each rolls is the table of [upgrades-and-maintenance-windows](upgrades-and-maintenance-windows.md).
 etcd-druid rolls the members only when the `Etcd` names a new Secret, so the PKI controller renews etcd's certificates together, under new names: one roll, no API outage with three members, about 20 s with one ([etcd spike](../etcd-spike-2026-10.md), finding 3).
 Each renewal is a generation of five Secrets ([A tenant namespace](../README.md#a-tenant-namespace)); Datastore points the `Etcd` at the newest complete generation, and PKI keeps the previous one and deletes older ones, so neither controller reads the other's state.
 

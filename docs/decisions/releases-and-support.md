@@ -21,6 +21,7 @@ The chart, the release workflow that builds, signs, attests and publishes the im
   Each item of the list is a squash-merged pull request's title, a conventional commit, and the list shows no commit footer, so a breaking change is a title with `!`, as `feat!:`.
 - Renovate keeps current the Go modules of `.` and `test/monitoring/`, GitHub Actions by digest, the base image of `.ko.yaml` by digest, etcd-druid, and the version table's kube-apiserver `latest` and konnectivity ([Renovate docker](https://docs.renovatebot.com/docker/)).
   etcd-druid's chart dependency, its image tag and its Go module move in one pull request, never apart.
+  A bump of that chart does not upgrade etcd-druid's CRDs, since Helm applies a chart's `crds/` only when it installs a release ([Installation](../README.md#installation)); the step that carries them waits for the first release that bumps etcd-druid ([todo](../../todo.md#releases-and-tooling)).
   A row of the table stays in its minor, and CoreDNS, which is kubeadm's pin for the minor, moves by hand ([versions.go](../../internal/versions/versions.go)).
   Renovate does nothing until its GitHub App is installed on lodia-io for this repository ([installing](https://github.com/renovatebot/renovate/blob/44.257.9/docs/usage/getting-started/installing-onboarding.md?plain=1#L26-L40)).
 
