@@ -9,6 +9,8 @@ package e2e
 import (
 	"errors"
 	"fmt"
+	"os"
+	"slices"
 	"strings"
 
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,12 +21,21 @@ import (
 // lodia-e2e-<something>.
 const ContextPrefix = "kind-lodia-e2e"
 
+// helmKubePrefix starts the variables helm lays over its --kubeconfig:
+// HELM_KUBECONTEXT, HELM_KUBEAPISERVER, HELM_KUBETOKEN and the others
+// (https://github.com/helm/helm/blob/v4.3.1/pkg/cli/environment.go#L102-L109).
+const helmKubePrefix = "HELM_KUBE"
+
 // RequireNamedCluster refuses any kubeconfig but one with a single context
-// whose name starts with ContextPrefix, so the suite never reaches a cluster
-// through someone's current context.
+// whose name starts with ContextPrefix, and any HELM_KUBE variable, so the
+// suite never reaches a cluster through someone's current context or past
+// the kubeconfig it checked.
 func RequireNamedCluster(path string) error {
 	if path == "" {
 		return errors.New("E2E_KUBECONFIG is not set: the e2e suite runs only against a cluster named on the command line; make e2e creates one")
+	}
+	if names := helmKubeVariables(); len(names) > 0 {
+		return fmt.Errorf("the environment sets %s: helm lays its HELM_KUBE variables over --kubeconfig, so the chart would reach a cluster other than the one %s names", strings.Join(names, ", "), path)
 	}
 	cfg, err := clientcmd.LoadFromFile(path)
 	if err != nil {
@@ -40,4 +51,15 @@ func RequireNamedCluster(path string) error {
 		return fmt.Errorf("context %q does not start with %q: the e2e suite runs only against its own kind cluster", cfg.CurrentContext, ContextPrefix)
 	}
 	return nil
+}
+
+func helmKubeVariables() []string {
+	var names []string
+	for _, kv := range os.Environ() {
+		if name, value, _ := strings.Cut(kv, "="); strings.HasPrefix(name, helmKubePrefix) && value != "" {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }

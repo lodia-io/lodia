@@ -6,7 +6,7 @@ The refusal, `make e2e`, kubeadm workers, the nightly conformance run and the su
 ## Decision
 
 - `make e2e` runs against `E2E_KUBECONFIG=<path>`, or creates its own kind cluster (`lodia-e2e-local`, or the name in `E2E_CLUSTER`) and deletes it afterwards.
-  The suite refuses to start when the variable is unset, when the kubeconfig has more than one context, or when the context name does not start with `kind-lodia-e2e`.
+  The suite refuses to start when the variable is unset, when the kubeconfig has more than one context, when the context name does not start with `kind-lodia-e2e`, or when a `HELM_KUBE*` variable is set, which helm lays over `--kubeconfig` ([environment.go](https://github.com/helm/helm/blob/v4.3.1/pkg/cli/environment.go#L102-L109)).
 - Unit tests use fakes; controller tests use envtest (a real API server and etcd, no kubelet, so no garbage collection) for every controller and every CEL rule; e2e uses kind with real `kubeadm join` workers, written with `sigs.k8s.io/e2e-framework`, whose configuration takes an explicit kubeconfig and context ([e2e-framework](https://github.com/kubernetes-sigs/e2e-framework)).
   The guard is ours: neither the kubebuilder scaffold nor the framework checks that the context is a kind cluster.
 - Upgrades are tested by bumping `spec.version` across kind node images (1.35 → 1.36 → 1.37) with workers one minor behind, inside the skew policy; kind itself does not upgrade a cluster ([version skew policy](https://kubernetes.io/releases/version-skew-policy/)).
