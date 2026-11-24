@@ -24,12 +24,15 @@ import (
 type ControlPlane struct {
 	metav1.TypeMeta `json:",inline"`
 
+	// metadata is the standard object metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// spec is the desired state of the control plane.
 	// +required
 	Spec ControlPlaneSpec `json:"spec"`
 
+	// status is what Lodia observed and did.
 	// +optional
 	Status ControlPlaneStatus `json:"status,omitzero"`
 }
@@ -59,7 +62,7 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="self.network.podCIDRs.all(c, !isCIDR(c) || (cidr(c).ip().family() == 4 ? cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv4']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 24) : cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) && (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) - cidr(c).prefixLength() <= 16))",message="kube-controller-manager refuses a pod range narrower than the node mask of its family, 24 for IPv4 and 64 for IPv6 unless controllerManager.extraArgs sets it, and an IPv6 range more than 16 bits wider than it"
 // +kubebuilder:validation:XValidation:rule="!has(self.serviceAccount) || !has(self.serviceAccount.issuer) || !has(self.apiServer) || !has(self.apiServer.authentication) || !has(self.apiServer.authentication.jwt) || !self.apiServer.authentication.jwt.exists(a, a.issuer.url == self.serviceAccount.issuer)",message="kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer"
 type ControlPlaneSpec struct {
-	// Version is the Kubernetes version, vMAJOR.MINOR.PATCH, any patch of a
+	// version is the Kubernetes version, vMAJOR.MINOR.PATCH, any patch of a
 	// minor Lodia runs. The minor never decreases; Lodia upgrades one minor
 	// at a time towards it.
 	// +required
@@ -68,63 +71,63 @@ type ControlPlaneSpec struct {
 	// +kubebuilder:validation:XValidation:rule="int(self.split('.')[1]) >= int(oldSelf.split('.')[1])",message="the Kubernetes minor version cannot decrease"
 	Version string `json:"version"`
 
-	// HighAvailability runs every component with more than one replica,
+	// highAvailability runs every component with more than one replica,
 	// spread by FailureTolerance, and etcd with three members.
 	// +optional
 	HighAvailability *HighAvailability `json:"highAvailability,omitempty"`
 
-	// Datastore is where the cluster's data lives: an etcd of the tenant's
+	// datastore is where the cluster's data lives: an etcd of the tenant's
 	// own.
 	// +optional
 	Datastore DatastoreSettings `json:"datastore,omitzero"`
 
-	// Endpoint is how nodes, people and pods reach the API server.
+	// endpoint is how nodes, people and pods reach the API server.
 	// +required
 	Endpoint Endpoint `json:"endpoint"`
 
-	// Network holds the tenant cluster's address ranges.
+	// network holds the tenant cluster's address ranges.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="network is immutable"
 	Network Network `json:"network"`
 
-	// APIServer configures kube-apiserver.
+	// apiServer configures kube-apiserver.
 	// +optional
 	APIServer *APIServer `json:"apiServer,omitempty"`
 
-	// ControllerManager configures kube-controller-manager.
+	// controllerManager configures kube-controller-manager.
 	// +optional
 	ControllerManager *Component `json:"controllerManager,omitempty"`
 
-	// Scheduler configures kube-scheduler.
+	// scheduler configures kube-scheduler.
 	// +optional
 	Scheduler *Scheduler `json:"scheduler,omitempty"`
 
-	// Addons configures what Lodia runs inside the tenant cluster.
+	// addons configures what Lodia runs inside the tenant cluster.
 	// +optional
 	Addons *Addons `json:"addons,omitempty"`
 
-	// Placement says where this control plane's pods run.
+	// placement says where this control plane's pods run.
 	// +optional
 	Placement *Placement `json:"placement,omitempty"`
 
-	// Maintenance is when Lodia may roll changes it initiates.
+	// maintenance is when Lodia may roll changes it initiates.
 	// +optional
 	Maintenance *Maintenance `json:"maintenance,omitempty"`
 
-	// Health configures how Lodia protects the tenant's workloads.
+	// health configures how Lodia protects the tenant's workloads.
 	// +optional
 	Health *Health `json:"health,omitempty"`
 
-	// ServiceAccount configures the tokens the API server issues.
+	// serviceAccount configures the tokens the API server issues.
 	// +optional
 	ServiceAccount *ServiceAccount `json:"serviceAccount,omitempty"`
 
-	// RestoreFrom starts the datastore from a Backup, whose source this
+	// restoreFrom starts the datastore from a Backup, whose source this
 	// ControlPlane replaces; set only at creation.
 	// +optional
 	RestoreFrom *RestoreFrom `json:"restoreFrom,omitempty"`
 
-	// Paused stops reconciliation; everything keeps running. In gateway mode
+	// paused stops reconciliation; everything keeps running. In gateway mode
 	// nothing renews the tunnel's client certificate meanwhile: 30 days after
 	// its renewal time every pod of the tenant loses its API.
 	// +optional
@@ -133,7 +136,7 @@ type ControlPlaneSpec struct {
 
 // HighAvailability is the failure a control plane survives.
 type HighAvailability struct {
-	// FailureTolerance is Node, replicas spread over nodes by
+	// failureTolerance is Node, replicas spread over nodes by
 	// kubernetes.io/hostname, or Zone, over nodes and over zones by
 	// topology.kubernetes.io/zone too. It cannot change once set, since
 	// etcd's volumes stay where they were spread; highAvailability can be
@@ -149,7 +152,7 @@ type FailureTolerance string
 
 // DatastoreSettings is how the tenant's etcd is built.
 type DatastoreSettings struct {
-	// ClassName names the DatastoreClass the etcd is built from; empty
+	// className names the DatastoreClass the etcd is built from; empty
 	// means the default class.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
@@ -161,19 +164,19 @@ type DatastoreSettings struct {
 // +kubebuilder:validation:XValidation:rule="[has(self.gateway), has(self.loadBalancer), has(self.nodePort)].filter(x, x).size() == 1",message="set exactly one of gateway, loadBalancer and nodePort"
 // +kubebuilder:validation:XValidation:rule="[has(self.gateway), has(self.loadBalancer), has(self.nodePort), has(self.certSANs)] == [has(oldSelf.gateway), has(oldSelf.loadBalancer), has(oldSelf.nodePort), has(oldSelf.certSANs)] && (!has(self.gateway) || self.gateway == oldSelf.gateway) && (!has(self.loadBalancer) || [has(self.loadBalancer.host), has(self.loadBalancer.class)] == [has(oldSelf.loadBalancer.host), has(oldSelf.loadBalancer.class)] && (!has(self.loadBalancer.host) || self.loadBalancer.host == oldSelf.loadBalancer.host) && (!has(self.loadBalancer.class) || self.loadBalancer.class == oldSelf.loadBalancer.class)) && (!has(self.certSANs) || self.certSANs == oldSelf.certSANs)",message="endpoint is immutable in v1alpha1 but for loadBalancer.annotations and loadBalancer.sourceRanges"
 type Endpoint struct {
-	// Gateway attaches routes to a shared Gateway that routes by SNI.
+	// gateway attaches routes to a shared Gateway that routes by SNI.
 	// +optional
 	Gateway *GatewayEndpoint `json:"gateway,omitempty"`
 
-	// LoadBalancer creates a Service of type LoadBalancer for this control plane.
+	// loadBalancer creates a Service of type LoadBalancer for this control plane.
 	// +optional
 	LoadBalancer *LoadBalancerEndpoint `json:"loadBalancer,omitempty"`
 
-	// NodePort creates a Service of type NodePort; for development.
+	// nodePort creates a Service of type NodePort; for development.
 	// +optional
 	NodePort *NodePortEndpoint `json:"nodePort,omitempty"`
 
-	// CertSANs are extra names on the API server's serving certificate.
+	// certSANs are extra names on the API server's serving certificate.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=16
@@ -182,30 +185,30 @@ type Endpoint struct {
 
 // GatewayEndpoint is a shared Gateway and the hostnames this control plane takes on it.
 type GatewayEndpoint struct {
-	// ParentRef is the Gateway with a TLS passthrough listener.
+	// parentRef is the Gateway with a TLS passthrough listener.
 	// +required
 	ParentRef ParentReference `json:"parentRef"`
 
-	// Hostnames are the names routed to this control plane.
+	// hostnames are the names routed to this control plane.
 	// +required
 	Hostnames GatewayHostnames `json:"hostnames"`
 }
 
 // ParentReference names a Gateway and one of its listeners.
 type ParentReference struct {
-	// Name of the Gateway.
+	// name of the Gateway.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// Namespace of the Gateway.
+	// namespace of the Gateway.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	Namespace string `json:"namespace"`
 
-	// SectionName is the listener's name, required since a route without it
+	// sectionName is the listener's name, required since a route without it
 	// lands on every listener its hostname fits.
 	// +required
 	// +kubebuilder:validation:MinLength=1
@@ -217,15 +220,15 @@ type ParentReference struct {
 // GatewayHostnames are the SNI names of one control plane.
 // +kubebuilder:validation:XValidation:rule="self.apiServer != self.konnectivity && (!has(self.tunnel) || self.apiServer != self.tunnel && self.konnectivity != self.tunnel)",message="apiServer, konnectivity and tunnel must be three different hostnames"
 type GatewayHostnames struct {
-	// APIServer is the public API hostname.
+	// apiServer is the public API hostname.
 	// +required
 	APIServer Hostname `json:"apiServer"`
 
-	// Konnectivity is where konnectivity agents connect.
+	// konnectivity is where konnectivity agents connect.
 	// +required
 	Konnectivity Hostname `json:"konnectivity"`
 
-	// Tunnel is the hostname apiserver-proxy on every node dials, inside
+	// tunnel is the hostname apiserver-proxy on every node dials, inside
 	// TLS, for the tenant's pods to reach their API server.
 	// +required
 	Tunnel Hostname `json:"tunnel"`
@@ -233,25 +236,25 @@ type GatewayHostnames struct {
 
 // LoadBalancerEndpoint configures the control plane's LoadBalancer Service.
 type LoadBalancerEndpoint struct {
-	// Host is the address this tenant is reached at, which the platform owns
+	// host is the address this tenant is reached at, which the platform owns
 	// and points at its load balancer; absent, the load balancer's own. The
 	// tenant's pods reach an IP address directly and a name through
 	// apiserver-proxy.
 	// +optional
 	Host EndpointHost `json:"host,omitempty"`
 
-	// Class is the Service's loadBalancerClass.
+	// class is the Service's loadBalancerClass.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	Class string `json:"class,omitempty"`
 
-	// SourceRanges limit who may connect.
+	// sourceRanges limit who may connect.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=32
 	SourceRanges []CIDR `json:"sourceRanges,omitempty"`
 
-	// Annotations are added to the Service.
+	// annotations are added to the Service.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=32
 	Annotations map[string]string `json:"annotations,omitempty"`
@@ -269,7 +272,7 @@ type NodePortEndpoint struct{}
 
 // Network holds the tenant cluster's address ranges.
 type Network struct {
-	// ServiceCIDRs are the ranges Services get addresses from; the first
+	// serviceCIDRs are the ranges Services get addresses from; the first
 	// address of the first range is the kubernetes Service, the tenth CoreDNS.
 	// +required
 	// +listType=atomic
@@ -277,14 +280,14 @@ type Network struct {
 	// +kubebuilder:validation:MaxItems=2
 	ServiceCIDRs []CIDR `json:"serviceCIDRs"`
 
-	// PodCIDRs are the ranges node CIDRs are allocated from.
+	// podCIDRs are the ranges node CIDRs are allocated from.
 	// +required
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
 	PodCIDRs []CIDR `json:"podCIDRs"`
 
-	// ClusterDomain is the cluster's DNS domain.
+	// clusterDomain is the cluster's DNS domain.
 	// +optional
 	// +kubebuilder:default=cluster.local
 	ClusterDomain Hostname `json:"clusterDomain,omitempty"`
@@ -292,13 +295,13 @@ type Network struct {
 
 // APIServer configures kube-apiserver.
 type APIServer struct {
-	// Replicas of the API server; 1 by default, 2 with high availability.
+	// replicas of the API server; 1 by default, 2 with high availability.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=5
 	Replicas *int32 `json:"replicas,omitempty"`
 
-	// AdvertiseAddress is the address apiserver-proxy owns on every node,
+	// advertiseAddress is the address apiserver-proxy owns on every node,
 	// which it does in gateway mode and in loadBalancer mode unless
 	// endpoint.loadBalancer.host is an IP address, and is set nowhere else:
 	// 240.0.0.1 by default when the first service range is IPv4, and required
@@ -308,16 +311,16 @@ type APIServer struct {
 	// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()",message="must be a unicast IP address in canonical form, neither loopback nor link-local"
 	AdvertiseAddress string `json:"advertiseAddress,omitempty"`
 
-	// Authentication configures structured authentication; the anonymous
+	// authentication configures structured authentication; the anonymous
 	// section is Lodia's.
 	// +optional
 	Authentication *Authentication `json:"authentication,omitempty"`
 
-	// Encryption configures encryption of Secrets at rest.
+	// encryption configures encryption of Secrets at rest.
 	// +optional
 	Encryption *Encryption `json:"encryption,omitempty"`
 
-	// ExtraArgs are flags passed to kube-apiserver, each under its name as
+	// extraArgs are flags passed to kube-apiserver, each under its name as
 	// kube-apiserver spells it. The flags Lodia sets, those whose defaults it
 	// relies on, those that conflict with either and those that end the
 	// process are refused, but for enable-admission-plugins, whose entries
@@ -337,21 +340,21 @@ type APIServer struct {
 	// +kubebuilder:validation:XValidation:rule="!('event-ttl' in self) || duration(self['event-ttl']) >= duration('1h')",message="event-ttl is at least 1h, kube-apiserver's default: with 0 Events never expire and fill the tenant's etcd to its quota, and an Event's lease that expires during a restore through deltas aborts it or drops a write (etcd-backup-restore#1045, #1046)"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
-	// FeatureGates are passed to kube-apiserver.
+	// featureGates are passed to kube-apiserver.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="!('ExternalServiceAccountTokenSigner' in self) || self['ExternalServiceAccountTokenSigner']",message="kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
 	// +kubebuilder:validation:XValidation:rule="!('StructuredAuthenticationConfigurationEgressSelector' in self) || self['StructuredAuthenticationConfigurationEgressSelector']",message="kube-apiserver refuses the egressSelectorType Lodia renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
-	// Resources override the operator's defaults.
+	// resources override the operator's defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // Encryption is how Secrets are encrypted in the datastore.
 type Encryption struct {
-	// Provider is None, secretbox or aescbc.
+	// provider is None, secretbox or aescbc.
 	// +optional
 	// +kubebuilder:default=secretbox
 	Provider EncryptionProvider `json:"provider,omitempty"`
@@ -363,7 +366,7 @@ type EncryptionProvider string
 
 // Component configures kube-controller-manager.
 type Component struct {
-	// ExtraArgs are flags passed to the component, each under its name as the
+	// extraArgs are flags passed to the component, each under its name as the
 	// component spells it. The flags Lodia sets, those whose defaults it
 	// relies on, those that conflict with either and those that end the
 	// process are refused, but for controllers, whose entries follow Lodia's;
@@ -378,19 +381,19 @@ type Component struct {
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version'])",message="this flag makes the component exit, or report another version than the one it runs"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
-	// FeatureGates are passed to the component.
+	// featureGates are passed to the component.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
-	// Resources override the operator's defaults.
+	// resources override the operator's defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // Scheduler configures kube-scheduler.
 type Scheduler struct {
-	// ExtraArgs are flags passed to kube-scheduler, each under its name as
+	// extraArgs are flags passed to kube-scheduler, each under its name as
 	// kube-scheduler spells it. The flags Lodia sets, those whose defaults it
 	// relies on, those that conflict with either and those that end the
 	// process are refused; featureGates sets feature-gates.
@@ -403,53 +406,53 @@ type Scheduler struct {
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version', 'write-config-to'])",message="this flag makes the component exit, or report another version than the one it runs"
 	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
 
-	// FeatureGates are passed to kube-scheduler.
+	// featureGates are passed to kube-scheduler.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
-	// Resources override the operator's defaults.
+	// resources override the operator's defaults.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
 
 // Addons are the components Lodia runs inside the tenant cluster.
 type Addons struct {
-	// Konnectivity configures the tunnel between the control plane and the nodes.
+	// konnectivity configures the tunnel between the control plane and the nodes.
 	// +optional
 	Konnectivity *Konnectivity `json:"konnectivity,omitempty"`
 
-	// KubeProxy configures kube-proxy.
+	// kubeProxy configures kube-proxy.
 	// +optional
 	KubeProxy *KubeProxy `json:"kubeProxy,omitempty"`
 
-	// CoreDNS configures cluster DNS.
+	// coreDNS configures cluster DNS.
 	// +optional
 	CoreDNS *CoreDNS `json:"coreDNS,omitempty"`
 }
 
 // Konnectivity configures konnectivity-server and its agents.
 type Konnectivity struct {
-	// Version pins the konnectivity version across a Kubernetes upgrade;
+	// version pins the konnectivity version across a Kubernetes upgrade;
 	// empty follows the version table.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^v0\.[0-9]+\.[0-9]+$`
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// Agent configures the agents in the tenant.
+	// agent configures the agents in the tenant.
 	// +optional
 	Agent *KonnectivityAgent `json:"agent,omitempty"`
 }
 
 // KonnectivityAgent configures how agents run.
 type KonnectivityAgent struct {
-	// Mode is DaemonSet, an agent per node, or Deployment.
+	// mode is DaemonSet, an agent per node, or Deployment.
 	// +optional
 	// +kubebuilder:default=DaemonSet
 	Mode AgentMode `json:"mode,omitempty"`
 
-	// Replicas of the Deployment mode.
+	// replicas of the Deployment mode.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=10
@@ -462,31 +465,31 @@ type AgentMode string
 
 // KubeProxy configures kube-proxy.
 type KubeProxy struct {
-	// Enabled is false for CNIs that replace kube-proxy.
+	// enabled is false for CNIs that replace kube-proxy.
 	// +optional
 	// +kubebuilder:default=true
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Mode is iptables, nftables or ipvs.
+	// mode is iptables, nftables or ipvs.
 	// +optional
 	// +kubebuilder:default=iptables
 	Mode ProxyMode `json:"mode,omitempty"`
 
-	// HealthzBindAddress is the IP address kube-proxy serves its health port,
+	// healthzBindAddress is the IP address kube-proxy serves its health port,
 	// 10256, on: beyond loopback for cloud load balancers; loopback by default.
 	// +optional
 	// +kubebuilder:validation:MaxLength=45
 	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="must be an IP address"
 	HealthzBindAddress string `json:"healthzBindAddress,omitempty"`
 
-	// Conntrack configures kube-proxy's connection tracking.
+	// conntrack configures kube-proxy's connection tracking.
 	// +optional
 	Conntrack *KubeProxyConntrack `json:"conntrack,omitempty"`
 }
 
 // KubeProxyConntrack is kube-proxy's conntrack configuration.
 type KubeProxyConntrack struct {
-	// MaxPerCore is kube-proxy's conntrack.maxPerCore, the connections tracked
+	// maxPerCore is kube-proxy's conntrack.maxPerCore, the connections tracked
 	// per CPU core; 0 leaves the node's nf_conntrack_max as it is. Unset
 	// means kube-proxy's default.
 	// +optional
@@ -500,12 +503,12 @@ type ProxyMode string
 
 // CoreDNS configures cluster DNS.
 type CoreDNS struct {
-	// Enabled is false when the tenant brings its own DNS.
+	// enabled is false when the tenant brings its own DNS.
 	// +optional
 	// +kubebuilder:default=true
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Replicas of CoreDNS.
+	// replicas of CoreDNS.
 	// +optional
 	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=1
@@ -515,18 +518,18 @@ type CoreDNS struct {
 
 // Placement says where a control plane's pods run.
 type Placement struct {
-	// NodeSelector for every control plane pod.
+	// nodeSelector for every control plane pod.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=16
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
-	// Tolerations for every control plane pod.
+	// tolerations for every control plane pod.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=16
 	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
 
-	// PriorityClassName for every control plane pod.
+	// priorityClassName for every control plane pod.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	PriorityClassName string `json:"priorityClassName,omitempty"`
@@ -534,11 +537,11 @@ type Placement struct {
 
 // Maintenance is when Lodia may roll the changes it initiates.
 type Maintenance struct {
-	// Window is the daily maintenance window; without one, any time.
+	// window is the daily maintenance window; without one, any time.
 	// +optional
 	Window *MaintenanceWindow `json:"window,omitempty"`
 
-	// AutoUpdate opts into updates Lodia applies in the window.
+	// autoUpdate opts into updates Lodia applies in the window.
 	// +optional
 	AutoUpdate *AutoUpdate `json:"autoUpdate,omitempty"`
 }
@@ -547,17 +550,17 @@ type Maintenance struct {
 // crosses midnight when End is before Begin.
 // +kubebuilder:validation:XValidation:rule="self.begin != self.end",message="begin and end must differ"
 type MaintenanceWindow struct {
-	// Begin is HH:MM.
+	// begin is HH:MM.
 	// +required
 	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
 	Begin string `json:"begin"`
 
-	// End is HH:MM.
+	// end is HH:MM.
 	// +required
 	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
 	End string `json:"end"`
 
-	// TimeZone is an IANA time zone; UTC by default. One the operator's
+	// timeZone is an IANA time zone; UTC by default. One the operator's
 	// embedded zone database lacks is TimeZoneUnsupported.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
@@ -566,7 +569,7 @@ type MaintenanceWindow struct {
 
 // AutoUpdate lists the updates Lodia applies on its own.
 type AutoUpdate struct {
-	// KubernetesPatch moves to the newest patch of the running minor that
+	// kubernetesPatch moves to the newest patch of the running minor that
 	// the operator's version table names, in the window.
 	// +optional
 	KubernetesPatch bool `json:"kubernetesPatch,omitempty"`
@@ -574,7 +577,7 @@ type AutoUpdate struct {
 
 // Health configures the protection of the tenant's workloads.
 type Health struct {
-	// HoldControllerManager holds the controller manager's leader lease while
+	// holdControllerManager holds the controller manager's leader lease while
 	// most nodes cannot reach the API, so nothing evicts their pods.
 	// +optional
 	// +kubebuilder:default=true
@@ -583,7 +586,7 @@ type Health struct {
 
 // ServiceAccount configures ServiceAccount tokens.
 type ServiceAccount struct {
-	// Issuer is the tokens' issuer and the OIDC discovery URL; the public API
+	// issuer is the tokens' issuer and the OIDC discovery URL; the public API
 	// URL by default.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
@@ -596,13 +599,13 @@ type ServiceAccount struct {
 // controller manager until it is released and no ControlPlane with the
 // Backup's source UID exists in the namespace.
 type RestoreFrom struct {
-	// BackupRef names a Backup in the ControlPlane's namespace, never another
+	// backupRef names a Backup in the ControlPlane's namespace, never another
 	// tenant's.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="restoreFrom.backupRef is immutable"
 	BackupRef LocalReference `json:"backupRef"`
 
-	// Release is Pending until the owner has made sure nothing outside the
+	// release is Pending until the owner has made sure nothing outside the
 	// cluster acts on the restored objects, then Released, for good.
 	// +optional
 	// +kubebuilder:default=Pending
@@ -624,12 +627,7 @@ const (
 
 // ControlPlaneStatus is what Lodia observed and did.
 type ControlPlaneStatus struct {
-	// ObservedGeneration is the newest generation every readiness condition
-	// has been reported for.
-	// +optional
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
-
-	// Conditions, each written by the one controller that owns its type, and
+	// conditions are each written by the one controller that owns its type, and
 	// Progressing and Ready by Lifecycle.
 	// +optional
 	// +listType=map
@@ -637,61 +635,66 @@ type ControlPlaneStatus struct {
 	// +kubebuilder:validation:MaxItems=16
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// Target is what Lifecycle rolls now.
+	// observedGeneration is the newest generation every readiness condition
+	// has been reported for.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// target is what Lifecycle rolls now.
 	// +optional
 	Target *Target `json:"target,omitempty"`
 
-	// Kubernetes is the version every component runs and the upgrade in progress.
+	// kubernetes is the version every component runs and the upgrade in progress.
 	// +optional
 	Kubernetes *KubernetesStatus `json:"kubernetes,omitempty"`
 
-	// Rehearsal is the minor step the condition Rehearsed is about.
+	// rehearsal is the minor step the condition Rehearsed is about.
 	// +optional
 	Rehearsal *RehearsalStatus `json:"rehearsal,omitempty"`
 
-	// Components are the rollouts of the API server, the controller manager
+	// components are the rollouts of the API server, the controller manager
 	// and the scheduler.
 	// +optional
 	Components *ComponentsStatus `json:"components,omitempty"`
 
-	// Addons is what Tenant last applied in full inside the tenant.
+	// addons is what Tenant last applied in full inside the tenant.
 	// +optional
 	Addons *Rendered `json:"addons,omitempty"`
 
-	// Endpoint is where the control plane is reachable.
+	// endpoint is where the control plane is reachable.
 	// +optional
 	Endpoint *EndpointStatus `json:"endpoint,omitempty"`
 
-	// Credentials are the Secrets clients need.
+	// credentials are the Secrets clients need.
 	// +optional
 	Credentials *CredentialsStatus `json:"credentials,omitempty"`
 
-	// Datastore is the store in use.
+	// datastore is the store in use.
 	// +optional
 	Datastore *DatastoreStatus `json:"datastore,omitempty"`
 
-	// Restore is the restore this ControlPlane's data came from. The Datastore
+	// restore is the restore this ControlPlane's data came from. The Datastore
 	// controller writes it and keeps it for the ControlPlane's life, with or
 	// without a store.
 	// +optional
 	Restore *RestoreStatus `json:"restore,omitempty"`
 
-	// Nodes summarise the tenant's nodes.
+	// nodes summarise the tenant's nodes.
 	// +optional
 	Nodes *NodesStatus `json:"nodes,omitempty"`
 
-	// Health is present while Lodia holds the controller manager.
+	// health is present while Lodia holds the controller manager.
 	// +optional
 	Health *HealthStatus `json:"health,omitempty"`
 
-	// Maintenance is the maintenance Lodia was asked for and did.
+	// maintenance is the maintenance Lodia was asked for and did.
 	// +optional
 	Maintenance *MaintenanceStatus `json:"maintenance,omitempty"`
 }
 
 // Target is the state Lifecycle rolls towards now.
 type Target struct {
-	// Version is the Kubernetes version the API server rolls to now: one
+	// version is the Kubernetes version the API server rolls to now: one
 	// minor at a time towards spec.version, and with
 	// maintenance.autoUpdate.kubernetesPatch the newest patch of that minor,
 	// moved in the window.
@@ -699,21 +702,21 @@ type Target struct {
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// OperatorRevision is the operator revision this tenant may be rendered
+	// operatorRevision is the operator revision this tenant may be rendered
 	// with: the operator's build version and a digest of its rendering
 	// configuration, compared for equality only.
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
 
-	// DatastoreClass is the UID and generation of the DatastoreClass that
+	// datastoreClass is the UID and generation of the DatastoreClass that
 	// status.datastore.class names which the Etcd may run: an edit of the
 	// class, or a class created again under its name, reaches the Etcd once
 	// Lifecycle grants it, in the window.
 	// +optional
 	DatastoreClass *DatastoreClassGeneration `json:"datastoreClass,omitempty"`
 
-	// ScheduledFor is when a change Lodia initiates may roll: while it waits
+	// scheduledFor is when a change Lodia initiates may roll: while it waits
 	// for the window, the window's next start; while it waits for a slot of
 	// the fleet, when it became eligible, in its window and Ready, which
 	// orders the queue.
@@ -723,13 +726,13 @@ type Target struct {
 
 // KubernetesStatus is the running version and the upgrade in progress.
 type KubernetesStatus struct {
-	// Version is the oldest of the versions the components and the addons
+	// version is the oldest of the versions the components and the addons
 	// report, and absent until all of them do.
 	// +optional
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// Upgrade is present from the moment a version change starts, a patch
+	// upgrade is present from the moment a version change starts, a patch
 	// moving the target or a minor step passing its preflight, until every
 	// component and the addons run target.version.
 	// +optional
@@ -738,7 +741,7 @@ type KubernetesStatus struct {
 
 // RehearsalStatus names the minor step a rehearsal ran for.
 type RehearsalStatus struct {
-	// Version is the Kubernetes version the step goes to.
+	// version is the Kubernetes version the step goes to.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
@@ -747,14 +750,14 @@ type RehearsalStatus struct {
 
 // UpgradeStatus is the version change in progress.
 type UpgradeStatus struct {
-	// Step is Rehearsal while a minor step is rehearsed on a copy of the
+	// step is Rehearsal while a minor step is rehearsed on a copy of the
 	// API server, then Backup while its pre-upgrade Backup is taken, both
 	// before the target moves, then the first of the others not at the
 	// target yet.
 	// +required
 	Step UpgradeStep `json:"step"`
 
-	// StartedAt is when the version change started.
+	// startedAt is when the version change started.
 	// +required
 	StartedAt metav1.Time `json:"startedAt"`
 }
@@ -776,10 +779,13 @@ const (
 
 // ComponentsStatus is the rollout of each control plane component.
 type ComponentsStatus struct {
+	// apiServer is the rollout of the API server.
 	// +optional
 	APIServer *ComponentStatus `json:"apiServer,omitempty"`
+	// controllerManager is the rollout of the controller manager.
 	// +optional
 	ControllerManager *ComponentStatus `json:"controllerManager,omitempty"`
+	// scheduler is the rollout of the scheduler.
 	// +optional
 	Scheduler *ComponentStatus `json:"scheduler,omitempty"`
 }
@@ -796,12 +802,12 @@ type ComponentStatus struct {
 // template once every replica is updated and ready, the previous one until
 // then; for the addons, the render last applied whole.
 type Rendered struct {
-	// Version is the Kubernetes version of that render.
+	// version is the Kubernetes version of that render.
 	// +optional
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
-	// OperatorRevision is the operator revision of that render, which the
+	// operatorRevision is the operator revision of that render, which the
 	// annotation lodia.io/operator-revision on its objects records.
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
@@ -812,22 +818,22 @@ type Rendered struct {
 // management cluster and from the tenant's pods. Workloads writes it whole
 // once the public address exists; until then it is absent.
 type EndpointStatus struct {
-	// APIServer is the API server's public endpoint.
+	// apiServer is the API server's public endpoint.
 	// +required
 	APIServer HostPort `json:"apiServer"`
 
-	// Konnectivity is where konnectivity agents reach the konnectivity
+	// konnectivity is where konnectivity agents reach the konnectivity
 	// server.
 	// +required
 	Konnectivity HostPort `json:"konnectivity"`
 
-	// InCluster is where the tenant's pods reach the API server: the
+	// inCluster is where the tenant's pods reach the API server: the
 	// endpoint of its kubernetes Service, which Tenant writes.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="isIP(self.host)",message="must be an IP address"
 	InCluster HostPort `json:"inCluster"`
 
-	// Tunnel is where apiserver-proxy reaches the API server for the
+	// tunnel is where apiserver-proxy reaches the API server for the
 	// tenant's pods; in gateway mode only.
 	// +optional
 	Tunnel *HostPort `json:"tunnel,omitempty"`
@@ -835,7 +841,7 @@ type EndpointStatus struct {
 
 // HostPort is a host and a port.
 type HostPort struct {
-	// Host is an IP address, an IPv6 one without brackets, or a lowercase DNS
+	// host is an IP address, an IPv6 one without brackets, or a lowercase DNS
 	// name: labels of at most 63 characters, and not digits and dots alone.
 	// +required
 	// +kubebuilder:validation:MinLength=1
@@ -843,7 +849,7 @@ type HostPort struct {
 	// +kubebuilder:validation:XValidation:rule="isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$') && !self.matches('^[0-9.]+$')",message="must be an IP address or a lowercase DNS name"
 	Host string `json:"host"`
 
-	// Port is a TCP port.
+	// port is a TCP port.
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
@@ -852,15 +858,15 @@ type HostPort struct {
 
 // CredentialsStatus names the Secrets clients need.
 type CredentialsStatus struct {
-	// AdminKubeconfigSecretRef names the admin kubeconfig Secret.
+	// adminKubeconfigSecretRef names the admin kubeconfig Secret.
 	// +optional
 	AdminKubeconfigSecretRef *LocalReference `json:"adminKubeconfigSecretRef,omitempty"`
 
-	// CABundleSecretRef names the CAs a client must trust now.
+	// caBundleSecretRef names the CAs a client must trust now.
 	// +optional
 	CABundleSecretRef *LocalReference `json:"caBundleSecretRef,omitempty"`
 
-	// NotAfter is the earliest expiry among the certificates PKI's Secrets
+	// notAfter is the earliest expiry among the certificates PKI's Secrets
 	// hold for this ControlPlane, its CAs among them. It counts each Secret's
 	// own certificate and the newest complete etcd generation, and leaves out
 	// the replaced certificates in the CA bundles, the staged kubelet signer
@@ -872,26 +878,26 @@ type CredentialsStatus struct {
 // DatastoreStatus is the store the API server uses. The Datastore
 // controller writes it whole once the store exists.
 type DatastoreStatus struct {
-	// Endpoints are where the API server reaches etcd.
+	// endpoints are where the API server reaches etcd.
 	// +required
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=9
 	Endpoints []HostPort `json:"endpoints"`
 
-	// Class is the DatastoreClass a dedicated etcd was built from.
+	// class is the DatastoreClass a dedicated etcd was built from.
 	// +optional
 	Class *DatastoreClassStatus `json:"class,omitempty"`
 
-	// Members counts the etcd members.
+	// members counts the etcd members.
 	// +required
 	Members RolloutCount `json:"members"`
 
-	// Snapshots is where the etcd's continuous snapshots go.
+	// snapshots is where the etcd's continuous snapshots go.
 	// +optional
 	Snapshots *SnapshotLocation `json:"snapshots,omitempty"`
 
-	// OperatorRevision is the operator revision the Etcd was rendered with.
+	// operatorRevision is the operator revision the Etcd was rendered with.
 	// +optional
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
@@ -900,19 +906,22 @@ type DatastoreStatus struct {
 // SnapshotLocation is where snapshots are: a store, a bucket in it and a
 // prefix in the bucket.
 type SnapshotLocation struct {
+	// provider is the object store's kind.
 	// +required
 	Provider StoreProvider `json:"provider"`
 
-	// Endpoint of an S3-compatible store; empty for the provider's own.
+	// endpoint of an S3-compatible store; empty for the provider's own.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	Endpoint string `json:"endpoint,omitempty"`
 
+	// bucket is the bucket in the store.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	Bucket string `json:"bucket"`
 
+	// prefix is the prefix in the bucket.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
@@ -923,17 +932,17 @@ type SnapshotLocation struct {
 // controller writes it once the restored data is cleaned up and a full
 // snapshot of it is in the store.
 type RestoreStatus struct {
-	// Backup is the Backup restored.
+	// backup is the Backup restored.
 	// +required
 	Backup UIDReference `json:"backup"`
 
-	// Source is the ControlPlane the Backup was taken of, which this one
+	// source is the ControlPlane the Backup was taken of, which this one
 	// replaces: while one with its UID exists in the namespace, the
 	// controller manager does not run.
 	// +required
 	Source UIDReference `json:"source"`
 
-	// CompletedAt is when the restored data was cleaned up and snapshotted.
+	// completedAt is when the restored data was cleaned up and snapshotted.
 	// +required
 	CompletedAt metav1.Time `json:"completedAt"`
 }
@@ -944,7 +953,7 @@ type RestoreStatus struct {
 type RolloutCount struct {
 	Count `json:",inline"`
 
-	// Updated run the current spec and are available; absent until the
+	// updated run the current spec and are available; absent until the
 	// controllers that roll them out have observed that spec.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
@@ -954,6 +963,7 @@ type RolloutCount struct {
 // DatastoreClassStatus is a DatastoreClass at the generation an etcd was
 // built from.
 type DatastoreClassStatus struct {
+	// name is the DatastoreClass's name.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
@@ -966,13 +976,14 @@ type DatastoreClassStatus struct {
 // deleted and created again under its name has another UID, and starts again
 // at generation 1.
 type DatastoreClassGeneration struct {
-	// UID of the class.
+	// uid of the class.
 	// +required
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=36
 	UID types.UID `json:"uid"`
 
+	// generation is the class's generation.
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	Generation int64 `json:"generation"`
@@ -980,11 +991,12 @@ type DatastoreClassGeneration struct {
 
 // Count is how many there are and how many of them are ready.
 type Count struct {
+	// total is how many there are.
 	// +required
 	// +kubebuilder:validation:Minimum=0
 	Total int32 `json:"total"`
 
-	// Ready never exceeds Total.
+	// ready never exceeds Total.
 	// +required
 	// +kubebuilder:validation:Minimum=0
 	Ready int32 `json:"ready"`
@@ -994,16 +1006,16 @@ type Count struct {
 type NodesStatus struct {
 	Count `json:",inline"`
 
-	// OutdatedKubelets run an older minor than the control plane.
+	// outdatedKubelets run an older minor than the control plane.
 	// +optional
 	OutdatedKubelets int32 `json:"outdatedKubelets,omitempty"`
 
-	// OldestKubelet is the oldest version a node's kubelet reports.
+	// oldestKubelet is the oldest version a node's kubelet reports.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	OldestKubelet string `json:"oldestKubelet,omitempty"`
 
-	// Truncated is true when Health stopped listing the Nodes at a bound: total
+	// truncated is true when Health stopped listing the Nodes at a bound: total
 	// and ready count what it read, and outdatedKubelets and oldestKubelet are
 	// absent.
 	// +optional
@@ -1012,27 +1024,27 @@ type NodesStatus struct {
 
 // HealthStatus reports the controller manager hold.
 type HealthStatus struct {
-	// ControllerManagerHold is present while the hold lasts.
+	// controllerManagerHold is present while the hold lasts.
 	// +optional
 	ControllerManagerHold *ControllerManagerHold `json:"controllerManagerHold,omitempty"`
 }
 
 // MaintenanceStatus is the maintenance Lodia was asked for and did.
 type MaintenanceStatus struct {
-	// LastHandled is the value of the annotation
+	// lastHandled is the value of the annotation
 	// lodia.io/maintain-requested-at that Lifecycle acted on last; a value
 	// longer than this field holds is not handled.
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
 	LastHandled string `json:"lastHandled,omitempty"`
 
-	// SettlingSince is when Lifecycle first found the change it started in
+	// settlingSince is when Lifecycle first found the change it started in
 	// the tenant's slot of the fleet no longer rolling; the slot is kept for a
 	// settling time after it.
 	// +optional
 	SettlingSince *metav1.Time `json:"settlingSince,omitempty"`
 
-	// SlotSince is when the change Lifecycle started took a slot of the
+	// slotSince is when the change Lifecycle started took a slot of the
 	// fleet: the tenant holds the slot while this is present, until the change
 	// settles or the ControlPlane is deleted.
 	// +optional
@@ -1041,10 +1053,13 @@ type MaintenanceStatus struct {
 
 // ControllerManagerHold is one hold of the controller manager's leader lease.
 type ControllerManagerHold struct {
+	// since is the Lease's acquireTime.
 	// +optional
 	Since *metav1.Time `json:"since,omitempty"`
+	// silentNodes is how many of the counted nodes are silent.
 	// +optional
 	SilentNodes int32 `json:"silentNodes,omitempty"`
+	// countedNodes is how many nodes the hold counts.
 	// +optional
 	CountedNodes int32 `json:"countedNodes,omitempty"`
 }

@@ -11,9 +11,16 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the maintainers.
 
-## From the skeleton (2026-10-24)
+## From kube-api-linter (2026-11-24)
 
-- kube-api-linter on `api/`, as `releases-and-support` lists: the header of `.golangci.yml` says the file is identical in every Segla repository, so the linter needs a run of its own, not a line in that file.
+- `.kube-api-linter.yml` leaves six of kube-api-linter's rules off, since a fix of each finding changes the API's types or the JSON they marshal to; the count is of the findings at `0bc29d5`:
+  - `requiredfields` (67) and `optionalfields` (60): 32 required fields lack `omitempty`, 17 required structs lack `omitzero`, 18 required fields should be pointers, and 60 optional fields should be pointers.
+    A pointer changes the Go type that an importer compiles against, such as the Cluster API provider.
+  - `nomaps` (3): `featureGates` of `apiServer`, `controllerManager` and `scheduler` are `map[string]bool`, and the rule wants a list of named elements.
+  - `notimestamp` (1): `status.expirationTimestamp` of a `KubeconfigRequest` would be `expirationTime`.
+  - `nodurations` (1): `spec.backup.deltaSnapshotPeriod` of a `DatastoreClass` is a `metav1.Duration`, and the rule wants an integer with its unit in its name.
+  - `arrayofstruct` (1): `claimValidationRules` of a JWT authenticator hold structs with no required field, since each sets one of `claim` and `expression`, which a CEL rule checks.
+  Decide each one with the API before it freezes, and switch the rule on in the change that fixes it.
 
 ## From lodia-signer (2026-10-23)
 
@@ -276,7 +283,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the first release (2026-11-22)
 
 - An upgrade e2e from the previous release's chart, once a second release exists.
-- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
+- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, kube-api-linter, which has no tag and is pinned by a pseudo-version, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
 - An attested SBOM: ko pushes an SPDX SBOM beside each image, which `release.yml` neither signs nor attests.
 - etcd-druid's CRDs on a chart upgrade (the item on its chart's `crds/` directory, above) decide what a release that bumps etcd-druid says; the first release only installs.
 

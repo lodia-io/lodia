@@ -6,7 +6,7 @@ package v1alpha1
 // Authentication is the part of kube-apiserver's AuthenticationConfiguration
 // a tenant sets; the anonymous section is Lodia's.
 type Authentication struct {
-	// JWT are JWT authenticators, kube-apiserver's apiserver.config.k8s.io/v1
+	// jwt are JWT authenticators, kube-apiserver's apiserver.config.k8s.io/v1
 	// JWTAuthenticator field for field.
 	// +optional
 	// +listType=atomic
@@ -18,11 +18,11 @@ type Authentication struct {
 
 // JWTAuthenticator accepts the tokens of one issuer.
 type JWTAuthenticator struct {
-	// Issuer is where the tokens come from and whom they are for.
+	// issuer is where the tokens come from and whom they are for.
 	// +required
 	Issuer Issuer `json:"issuer"`
 
-	// ClaimValidationRules are claims a token must hold, or CEL expressions on
+	// claimValidationRules are claims a token must hold, or CEL expressions on
 	// its claims that must be true.
 	// +optional
 	// +listType=atomic
@@ -31,11 +31,11 @@ type JWTAuthenticator struct {
 	// +kubebuilder:validation:XValidation:rule="self.all(r, !has(r.expression) || self.exists_one(s, has(s.expression) && s.expression == r.expression))",message="each expression appears once"
 	ClaimValidationRules []ClaimValidationRule `json:"claimValidationRules,omitempty"`
 
-	// ClaimMappings say which claims become the user.
+	// claimMappings say which claims become the user.
 	// +required
 	ClaimMappings ClaimMappings `json:"claimMappings"`
 
-	// UserValidationRules are CEL expressions on the user that must be true.
+	// userValidationRules are CEL expressions on the user that must be true.
 	// +optional
 	// +listType=map
 	// +listMapKey=expression
@@ -47,26 +47,26 @@ type JWTAuthenticator struct {
 // +kubebuilder:validation:XValidation:rule="size(self.audiences) == 1 || has(self.audienceMatchPolicy) && self.audienceMatchPolicy == 'MatchAny'",message="audienceMatchPolicy must be MatchAny for multiple audiences"
 // +kubebuilder:validation:XValidation:rule="!has(self.discoveryURL) || self.discoveryURL != self.url",message="discoveryURL must differ from url"
 type Issuer struct {
-	// URL is the issuer, the iss claim of its tokens.
+	// url is the issuer, the iss claim of its tokens.
 	// +required
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.matches('^[hH][tT][tT][pP][sS]://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
 	URL string `json:"url"`
 
-	// DiscoveryURL is where the discovery document is fetched from, when not
+	// discoveryURL is where the discovery document is fetched from, when not
 	// under url.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="size(self) == 0 || self.matches('^[hH][tT][tT][pP][sS]://[^/?#@]*([/?#].*)?$') && !self.matches('[?][^#]') && !self.matches('#.')",message="must be an https URL without a user, a query or a fragment"
 	DiscoveryURL *string `json:"discoveryURL,omitempty"`
 
-	// CertificateAuthority is the PEM bundle the issuer's serving certificate
+	// certificateAuthority is the PEM bundle the issuer's serving certificate
 	// is verified against; the API server image's roots when empty.
 	// +optional
 	// +kubebuilder:validation:MaxLength=16384
 	CertificateAuthority string `json:"certificateAuthority,omitempty"`
 
-	// Audiences are the aud values a token may carry.
+	// audiences are the aud values a token may carry.
 	// +required
 	// +listType=set
 	// +kubebuilder:validation:MinItems=1
@@ -75,12 +75,12 @@ type Issuer struct {
 	// +kubebuilder:validation:items:MaxLength=512
 	Audiences []string `json:"audiences"`
 
-	// AudienceMatchPolicy is MatchAny, required with more than one audience.
+	// audienceMatchPolicy is MatchAny, required with more than one audience.
 	// +optional
 	// +kubebuilder:validation:Enum="";MatchAny
 	AudienceMatchPolicy string `json:"audienceMatchPolicy,omitempty"`
 
-	// EgressSelectorType is cluster: the API server reaches the issuer
+	// egressSelectorType is cluster: the API server reaches the issuer
 	// through konnectivity, from the tenant's nodes.
 	// +optional
 	// +kubebuilder:default=cluster
@@ -94,17 +94,21 @@ type Issuer struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.claim) || !has(self.message) || size(self.message) == 0",message="message is set only with expression"
 // +kubebuilder:validation:XValidation:rule="!has(self.expression) || !has(self.requiredValue) || size(self.requiredValue) == 0",message="requiredValue is set only with claim"
 type ClaimValidationRule struct {
+	// claim is the name of a required claim.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Claim string `json:"claim,omitempty"`
+	// requiredValue is the value of a required claim.
 	// +optional
 	// +kubebuilder:validation:MaxLength=1024
 	RequiredValue string `json:"requiredValue,omitempty"`
+	// expression is a CEL expression on the token's claims that must return true.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
 	Expression string `json:"expression,omitempty"`
+	// message is the error message when expression returns false.
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
 	Message string `json:"message,omitempty"`
@@ -112,14 +116,18 @@ type ClaimValidationRule struct {
 
 // ClaimMappings say which claims become the user.
 type ClaimMappings struct {
+	// username is where the user's name comes from.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="has(self.claim) != has(self.expression)",message="set exactly one of claim and expression"
 	Username PrefixedClaimOrExpression `json:"username"`
+	// groups is where the user's groups come from.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="!(has(self.claim) && has(self.expression))",message="set at most one of claim and expression"
 	Groups PrefixedClaimOrExpression `json:"groups,omitzero"`
+	// uid is where the user's uid comes from.
 	// +optional
 	UID ClaimOrExpression `json:"uid,omitzero"`
+	// extra are the user's extra attributes, each from a CEL expression.
 	// +optional
 	// +listType=map
 	// +listMapKey=key
@@ -131,13 +139,16 @@ type ClaimMappings struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.claim) || has(self.prefix)",message="prefix is required with claim; it may be empty"
 // +kubebuilder:validation:XValidation:rule="!has(self.expression) || !has(self.prefix)",message="prefix is set only with claim"
 type PrefixedClaimOrExpression struct {
+	// claim is the JWT claim to use.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Claim string `json:"claim,omitempty"`
+	// prefix is prepended to the claim's value; required with claim, and it may be empty.
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
 	Prefix *string `json:"prefix,omitempty"`
+	// expression is a CEL expression on the token's claims.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
@@ -147,10 +158,12 @@ type PrefixedClaimOrExpression struct {
 // ClaimOrExpression is a claim or a CEL expression.
 // +kubebuilder:validation:XValidation:rule="!(has(self.claim) && has(self.expression))",message="set at most one of claim and expression"
 type ClaimOrExpression struct {
+	// claim is the JWT claim to use.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Claim string `json:"claim,omitempty"`
+	// expression is a CEL expression on the token's claims.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
@@ -159,11 +172,13 @@ type ClaimOrExpression struct {
 
 // ExtraMapping is an extra attribute of the user, from a CEL expression.
 type ExtraMapping struct {
+	// key is the extra attribute's key, a lowercase domain-prefixed path.
 	// +required
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.matches(r'^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[-a-z0-9/._~%!$&\\x27()*+,;=:]+$')",message="must be a lowercase domain-prefixed path, such as example.org/foo"
 	// +kubebuilder:validation:XValidation:rule="!self.split('/')[0].matches('(^|[.])(k8s|kubernetes)[.]io$')",message="k8s.io, kubernetes.io and their subdomains are reserved"
 	Key string `json:"key"`
+	// valueExpression is a CEL expression that produces the attribute's string or string array value.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
@@ -172,10 +187,12 @@ type ExtraMapping struct {
 
 // UserValidationRule is a CEL expression on the user that must be true.
 type UserValidationRule struct {
+	// expression is a CEL expression on the user that must return true.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=2048
 	Expression string `json:"expression"`
+	// message is the error message when expression returns false.
 	// +optional
 	// +kubebuilder:validation:MaxLength=256
 	Message string `json:"message,omitempty"`

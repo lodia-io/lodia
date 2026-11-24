@@ -51,17 +51,15 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              DatastoreClassSpec describes a dedicated etcd. Members follow the
-              ControlPlane: one, or three with high availability.
+            description: spec is how the etcd is built.
             properties:
               backup:
-                description: Backup is where and how often snapshots go; without it,
+                description: backup is where and how often snapshots go; without it,
                   no backups.
                 properties:
                   deltaSnapshotPeriod:
                     default: 5m
-                    description: DeltaSnapshotPeriod is how often a delta snapshot
+                    description: deltaSnapshotPeriod is how often a delta snapshot
                       is taken.
                     pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
                     type: string
@@ -71,7 +69,7 @@ spec:
                   fullSnapshotSchedule:
                     default: 0 0 * * *
                     description: |-
-                      FullSnapshotSchedule is a cron expression as defragmentation.schedule
+                      fullSnapshotSchedule is a cron expression as defragmentation.schedule
                       takes it.
                     maxLength: 64
                     pattern: ^(\*|[1-5]?[0-9]|[1-5]?[0-9]-[1-5]?[0-9]|(?:[1-9]|[1-4][0-9]|5[0-9])\/(?:[1-9]|[1-4][0-9]|5[0-9]|60)|\*\/(?:[1-9]|[1-4][0-9]|5[0-9]|60))\s+(\*|[0-9]|1[0-9]|2[0-3]|[0-9]-(?:[0-9]|1[0-9]|2[0-3])|1[0-9]-(?:1[0-9]|2[0-3])|2[0-3]-2[0-3]|(?:[1-9]|1[0-9]|2[0-3])\/(?:[1-9]|1[0-9]|2[0-4])|\*\/(?:[1-9]|1[0-9]|2[0-4]))\s+(\*|[1-9]|[12][0-9]|3[01]|[1-9]-(?:[1-9]|[12][0-9]|3[01])|[12][0-9]-(?:[12][0-9]|3[01])|3[01]-3[01]|(?:[1-9]|[12][0-9]|30)\/(?:[1-9]|[12][0-9]|3[01])|\*\/(?:[1-9]|[12][0-9]|3[01]))\s+(\*|[1-9]|1[0-2]|[1-9]-(?:[1-9]|1[0-2])|1[0-2]-1[0-2]|(?:[1-9]|1[0-2])\/(?:[1-9]|1[0-2])|\*\/(?:[1-9]|1[0-2]))\s+(\*|[1-7]|[1-6]-[1-7]|[1-6]\/[1-7]|\*\/[1-7])$
@@ -85,12 +83,12 @@ spec:
                     - message: the day of the week cannot be 7
                       rule: self.split(' ').size() != 5 || !self.split(' ')[4].matches('^(7|[1-6]-7)$')
                   retention:
-                    description: Retention is how long snapshots are kept.
+                    description: retention is how long snapshots are kept.
                     properties:
                       fullSnapshots:
                         default: 30
                         description: |-
-                          FullSnapshots is how many full snapshots a running ControlPlane keeps,
+                          fullSnapshots is how many full snapshots a running ControlPlane keeps,
                           the newest: days, at the default schedule. Only the newest keeps the
                           delta snapshots after it, since no delta retention period is set, so an
                           older one restores to its own revision.
@@ -100,15 +98,15 @@ spec:
                         type: integer
                     type: object
                   store:
-                    description: Store is the bucket.
+                    description: store is the bucket.
                     properties:
                       bucket:
-                        description: Bucket name.
+                        description: bucket name.
                         maxLength: 63
                         pattern: ^[a-zA-Z0-9][a-zA-Z0-9._-]{1,61}[a-zA-Z0-9]$
                         type: string
                       endpoint:
-                        description: Endpoint for S3-compatible stores.
+                        description: endpoint for S3-compatible stores.
                         maxLength: 512
                         type: string
                         x-kubernetes-validations:
@@ -118,7 +116,7 @@ spec:
                           rule: isURL(self)
                       prefix:
                         description: |-
-                          Prefix inside the bucket; each ControlPlane's snapshots go under
+                          prefix inside the bucket; each ControlPlane's snapshots go under
                           <prefix>/<namespace UID>/controlplanes/<ControlPlane UID>. It neither
                           contains v1/ nor ends in v1, which etcd-backup-restore would misread.
                         maxLength: 253
@@ -129,8 +127,7 @@ spec:
                             and would ignore every snapshot under this prefix'
                           rule: '!(self + ''/'').contains(''v1/'')'
                       provider:
-                        description: 'StoreProvider is the kind of an object store:
-                          S3, GCS, ABS or Swift.'
+                        description: provider is the object store's kind.
                         enum:
                         - S3
                         - GCS
@@ -138,19 +135,19 @@ spec:
                         - Swift
                         type: string
                       region:
-                        description: Region of the bucket.
+                        description: region of the bucket.
                         maxLength: 64
                         type: string
                       secretRef:
-                        description: SecretRef names the credentials.
+                        description: secretRef names the credentials.
                         properties:
                           name:
-                            description: Name of the Secret.
+                            description: name of the Secret.
                             maxLength: 253
                             minLength: 1
                             type: string
                           namespace:
-                            description: Namespace of the Secret.
+                            description: namespace of the Secret.
                             maxLength: 63
                             minLength: 1
                             type: string
@@ -167,14 +164,14 @@ spec:
                 - store
                 type: object
               etcd:
-                description: Etcd configures the members.
+                description: etcd configures the members.
                 properties:
                   autoCompaction:
-                    description: AutoCompaction is etcd's own compaction.
+                    description: autoCompaction is etcd's own compaction.
                     properties:
                       mode:
                         default: periodic
-                        description: Mode is periodic or revision.
+                        description: mode is periodic or revision.
                         enum:
                         - periodic
                         - revision
@@ -182,7 +179,7 @@ spec:
                       retention:
                         default: 15m
                         description: |-
-                          Retention is a number of hours or a duration in periodic mode, a
+                          retention is a number of hours or a duration in periodic mode, a
                           revision count in revision mode; etcd refuses to start with anything
                           else.
                         maxLength: 32
@@ -194,12 +191,12 @@ spec:
                         || ((!has(self.mode) || self.mode == ''periodic'') && duration(self.retention)
                         >= duration(''0s''))'
                   defragmentation:
-                    description: Defragmentation runs followers first, the leader
+                    description: defragmentation runs followers first, the leader
                       last.
                     properties:
                       schedule:
                         description: |-
-                          Schedule is a cron expression of five fields separated by single
+                          schedule is a cron expression of five fields separated by single
                           spaces, without lists, whose ranges ascend and whose days of the week
                           run from 1 to 6, since etcd-druid refuses 0 and the backup sidecar 7;
                           */7 selects Sunday.
@@ -223,7 +220,7 @@ spec:
                     - type: string
                     default: 4Gi
                     description: |-
-                      QuotaBackendBytes is the database size limit, above zero: the backup
+                      quotaBackendBytes is the database size limit, above zero: the backup
                       sidecar refuses to start with zero or less.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
@@ -231,7 +228,7 @@ spec:
                     - message: must be greater than zero
                       rule: quantity(string(self)).isGreaterThan(quantity('0'))
                   resources:
-                    description: Resources of each member.
+                    description: resources of each member.
                     properties:
                       claims:
                         description: |-
@@ -291,20 +288,20 @@ spec:
                     type: object
                 type: object
               placement:
-                description: Placement says where members run.
+                description: placement says where members run.
                 properties:
                   nodeSelector:
                     additionalProperties:
                       type: string
-                    description: NodeSelector for every control plane pod.
+                    description: nodeSelector for every control plane pod.
                     maxProperties: 16
                     type: object
                   priorityClassName:
-                    description: PriorityClassName for every control plane pod.
+                    description: priorityClassName for every control plane pod.
                     maxLength: 253
                     type: string
                   tolerations:
-                    description: Tolerations for every control plane pod.
+                    description: tolerations for every control plane pod.
                     items:
                       description: |-
                         The pod this Toleration is attached to tolerates any taint that matches
@@ -347,16 +344,16 @@ spec:
                     x-kubernetes-list-type: atomic
                 type: object
               storage:
-                description: Storage is the members' volumes.
+                description: storage is the members' volumes.
                 properties:
                   className:
-                    description: ClassName is the StorageClass; empty means the cluster's
+                    description: className is the StorageClass; empty means the cluster's
                       default.
                     maxLength: 253
                     type: string
                   reclaimPolicy:
                     default: Retain
-                    description: ReclaimPolicy is what happens to the volumes of a
+                    description: reclaimPolicy is what happens to the volumes of a
                       deleted ControlPlane.
                     enum:
                     - Delete
@@ -366,7 +363,7 @@ spec:
                     anyOf:
                     - type: integer
                     - type: string
-                    description: Size of each member's volume.
+                    description: size of each member's volume.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                 required:
