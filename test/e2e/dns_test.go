@@ -23,7 +23,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	kindcluster "sigs.k8s.io/kind/pkg/cluster"
 )
 
@@ -85,7 +84,7 @@ func runDNS(ctx context.Context, cluster string, files map[string]string, probe 
 	defer func() { _ = os.RemoveAll(dir) }()
 	steps := [][]string{
 		{"rm", "--force", "--volumes", name},
-		{"create", "--name", name, "--network", "kind", "--restart=on-failure:3", gatewayDNSImage, "-conf", "/Corefile"},
+		{"create", "--name", name, "--network", "kind", "--label", containerLabel + "=" + cluster, "--restart=on-failure:3", gatewayDNSImage, "-conf", "/Corefile"},
 	}
 	for path, content := range files {
 		local := filepath.Join(dir, filepath.Base(path))
@@ -163,13 +162,4 @@ func eventually(ctx context.Context, timeout time.Duration, what string, check f
 		return fmt.Errorf("%s: %w", what, errors.Join(err, last))
 	}
 	return nil
-}
-
-func removeDNS(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
-	cluster, err := kindCluster(cfg.KubeconfigFile())
-	if err != nil {
-		return ctx, err
-	}
-	_, err = docker(ctx, "rm", "--force", "--volumes", dnsContainer(cluster))
-	return ctx, err
 }

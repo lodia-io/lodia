@@ -3,6 +3,7 @@
 The suite runs only against a kind cluster whose kubeconfig is named on the command line, in `E2E_KUBECONFIG` ([decision](../../docs/decisions/e2e-on-a-named-cluster.md)).
 
 `make e2e` creates the kind cluster `lodia-e2e-local` (`E2E_CLUSTER` changes the name), runs the suite against it and deletes it.
+Its kubeconfig and the test's artifacts are in `work/e2e/<cluster>`, so two runs of one checkout under different `E2E_CLUSTER`s share no kubeconfig.
 
 To keep a cluster between runs:
 
@@ -54,7 +55,8 @@ The suite starts a container of kind's node image, `<cluster>-tenant-node-1`, on
 `--ignore-preflight-errors` names the one check a container fails, `SystemVerification`: on GitHub's runners it finds the host kernel's configuration in none of the places it looks, and `modprobe configs` fails ([kernel_validator.go](https://github.com/kubernetes/system-validators/blob/v1.12.1/validators/kernel_validator.go#L191-L245), the version kubeadm v1.37.0 uses).
 Ignoring it skips kubeadm's OS and cgroups validators too, which run under the same name; a check's name is the finest grain kubeadm ignores by ([checks.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks.go#L573-L588), [checks_linux.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/cmd/kubeadm/app/preflight/checks_linux.go#L48-L54)).
 The CNI is kindnet from the node image's manifest, with the tenant's pod range.
-The suite removes the containers it started when it ends, pass or fail, and each one before it starts it; `make e2e`, `make e2e-ha`, `make e2e-restore`, `make e2e-gateway`, `make e2e-loadbalancer`, `make e2e-upgrade`, `make e2e-hold` and `make conformance` remove them as well, since a `go test` timeout or a panic never reaches the suite's end.
+Each container the suite starts, a node or the DNS container, carries the label `io.lodia.e2e.cluster=<cluster>`.
+The suite removes the containers of its cluster by that label when it ends, pass or fail, and each node before it starts it; every `make` target that creates a cluster removes them by the label as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 `make e2e` gives the suite 30 minutes.
 
@@ -399,7 +401,7 @@ make conformance E2E_CLUSTER=lodia-e2e-conformance
 make conformance E2E_CLUSTER=lodia-e2e-conformance CONFORMANCE_FOCUS='Pods should support retrieving logs from the container over websockets'
 ```
 
-`go test -artifacts` keeps what the test writes in a directory under `work/e2e/_artifacts/`, which the log's `=== ARTIFACTS TestConformance` line names ([ArtifactDir](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1325-L1342); Go 1.26 leaves the test's name out of it, [testing.go](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1380-L1387)): the table of the idle control plane, `idle-control-plane.txt`, and hydrophone's `e2e.log` and `junit_01.xml`; the workflow uploads them.
+`go test -artifacts` keeps what the test writes in a directory under `work/e2e/<cluster>/_artifacts/`, which the log's `=== ARTIFACTS TestConformance` line names ([ArtifactDir](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1325-L1342); Go 1.26 leaves the test's name out of it, [testing.go](https://github.com/golang/go/blob/go1.26.0/src/testing/testing.go#L1380-L1387)): the table of the idle control plane, `idle-control-plane.txt`, and hydrophone's `e2e.log` and `junit_01.xml`; the workflow uploads them.
 
 The tenant has the gate's shape, and two containers of kind's node image, `<cluster>-tenant-node-1` and `-2`, join it as the gate's one does.
 Once the `ControlPlane` is `Ready`, both nodes are `Ready` with a ready konnectivity agent and CoreDNS is available, the test leaves the tenant idle for 3 minutes, then reads the resource metrics of the management kubelets, `/metrics/resource`, through the management API server's node proxy, twice, 5 minutes apart, for every container of the control plane's pods.

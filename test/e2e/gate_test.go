@@ -700,10 +700,9 @@ func waitForAgents(ctx context.Context, t *testing.T, access *tenantAccess, coun
 }
 
 var (
-	startedNodes []string
-	nodeDNS      string
-	nodeImage    = defaults.Image
-	nodeImages   []reference.NamedTagged
+	nodeDNS    string
+	nodeImage  = defaults.Image
+	nodeImages []reference.NamedTagged
 )
 
 func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) string {
@@ -713,13 +712,10 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 		t.Fatal(err)
 	}
 	name := cluster + "-tenant-node-" + strconv.Itoa(i)
-	if !slices.Contains(startedNodes, name) {
-		startedNodes = append(startedNodes, name)
-	}
 	if _, err := docker(ctx, "rm", "--force", "--volumes", name); err != nil {
 		t.Fatal(err)
 	}
-	run := []string{"run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind",
+	run := []string{"run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind", "--label", containerLabel + "=" + cluster,
 		"--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
 		"--cgroupns=private", "--tmpfs", "/tmp", "--tmpfs", "/run", "--volume", "/var",
 		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false"}
@@ -748,15 +744,24 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	return name
 }
 
-func removeNodes(ctx context.Context, _ *envconf.Config) (context.Context, error) {
-	if len(startedNodes) == 0 {
+func removeContainers(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+	cluster, err := kindCluster(cfg.KubeconfigFile())
+	if err != nil {
+		return ctx, err
+	}
+	out, err := docker(ctx, "ps", "--all", "--quiet", "--filter", "label="+containerLabel+"="+cluster)
+	if err != nil {
+		return ctx, err
+	}
+	ids := strings.Fields(out)
+	if len(ids) == 0 {
 		return ctx, nil
 	}
-	_, err := docker(ctx, append([]string{"rm", "--force", "--volumes"}, startedNodes...)...)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "remove the node containers:", err)
+	if _, err := docker(ctx, append([]string{"rm", "--force", "--volumes"}, ids...)...); err != nil {
+		fmt.Fprintln(os.Stderr, "remove the containers the suite started:", err)
+		return ctx, err
 	}
-	return ctx, err
+	return ctx, nil
 }
 
 func docker(ctx context.Context, args ...string) (string, error) {

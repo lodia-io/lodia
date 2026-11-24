@@ -52,7 +52,7 @@ var (
 	examples = filepath.Join(root, "docs", "api", "examples")
 )
 
-var beforeLodia, afterNodes []env.Func
+var beforeLodia []env.Func
 
 func TestMain(m *testing.M) {
 	path := os.Getenv("E2E_KUBECONFIG")
@@ -62,7 +62,7 @@ func TestMain(m *testing.M) {
 	}
 	testenv = env.NewWithConfig(envconf.NewWithKubeConfig(path))
 	testenv.Setup(append(beforeLodia, installLodia)...)
-	testenv.Finish(append([]env.Func{removeNodes}, afterNodes...)...)
+	testenv.Finish(removeContainers)
 	os.Exit(testenv.Run(m))
 }
 
