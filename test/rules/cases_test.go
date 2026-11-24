@@ -323,6 +323,7 @@ func backupStale() []testCase {
 				backup("hourly", "Unknown", "SnapshotsPending", 3600),
 				backup("ok", "True", "BackupSucceeded", 300),
 				backup("no-store", "False", "NoBackupStore"),
+				backup("odd-store", "False", "StoreUnsupported", 300),
 				backup("no-period", "Unknown", "SnapshotsPending"),
 				backup("no-deltas-failed", "False", "BackupFailed"),
 				backup("paused", "False", "BackupFailed", 300), reason("paused", "Progressing", "Paused", "1x380"),
