@@ -57,7 +57,7 @@ The admin kubeconfig in `lodia:cluster-admins`, Lodia's own credential, the thre
 
 - The requester fills `spec.user` themselves (`kubectl auth whoami`): a MutatingAdmissionPolicy could fill it, but it is beta and off in 1.35 ([kube_features.go](https://github.com/kubernetes/kubernetes/blob/v1.35.10/staging/src/k8s.io/apiserver/pkg/features/kube_features.go#L407-L410)).
 - Revoking every person's certificate of a `ControlPlane` is a rotation of the request CA alone ([staged-credential-rotation](staged-credential-rotation.md)).
-- A kubectl credential plugin, requests on behalf of another user and a viewer level are not built ([todo.md](../../todo.md)).
+- A kubectl credential plugin, requests on behalf of another user and a viewer level are not built.
 
 ## Code
 

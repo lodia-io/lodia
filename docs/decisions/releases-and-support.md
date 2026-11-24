@@ -84,4 +84,4 @@ The chart, the release workflow that builds, signs, attests and publishes the im
 - `.github/workflows/release.yml` — the release, through the `release-*` targets of the `Makefile`; `hack/releasecheck/release_test.go` holds its trigger, order, permissions and pins.
 - `hack/releasecheck` — the tag check, run as `make release-check` and as the workflow's first step.
 - `.github/renovate.json5` — Renovate's configuration; the `verify` job of `ci.yml` validates it.
-- `.kube-api-linter.yml` — kube-api-linter's configuration, which `make kube-api-linter` runs on `api/` and `make verify` runs; `todo.md` names the rules it leaves off.
+- `.kube-api-linter.yml` — kube-api-linter's configuration, which `make kube-api-linter` runs on `api/` and `make verify` runs; its `disable` list names the rules it leaves off.

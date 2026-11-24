@@ -62,7 +62,7 @@ What the neighbours do is in [analysis](../analysis.md).
 - A tenant of an older minor whose configuration only a newer minor accepts gets the file, as with a CEL function its kube-apiserver lacks, such as `includes`, which 1.37 adds ([base.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/apiserver/pkg/cel/environment/base.go#L182-L187)), or an expression its CEL resolves otherwise, such as `.claims` inside a comprehension whose variable is named `claims`, which the cel-go of 1.35 and 1.36 resolves to that variable ([v0.26.0](https://github.com/google/cel-go/blob/v0.26.0/checker/env.go#L134-L138)) and that of 1.37 to the global ([v0.29.2](https://github.com/google/cel-go/blob/v0.29.2/checker/env.go#L152-L163)): its API server keeps its last configuration on a reload and does not start on it.
   Whoever writes the configuration answers for it, by the owner's decision of 2026-11-19.
   A configuration that only an older minor accepts, as `duration()` of an int, which the cel-go of 1.35 and 1.36 declares and that of 1.37 does not ([v0.26.0](https://github.com/google/cel-go/blob/v0.26.0/common/stdlib/standard.go#L608-L609)), is refused for every tenant.
-- `Ready` at a generation says that the file is written and valid, not that every replica has loaded it (`todo.md`): an issuer that does not answer holds the load back, which kube-apiserver's metrics and log tell ([operations](../operations.md#logging-in-with-an-oidc-provider)).
+- `Ready` at a generation says that the file is written and valid, not that every replica has loaded it: an issuer that does not answer holds the load back, which kube-apiserver's metrics and log tell ([operations](../operations.md#logging-in-with-an-oidc-provider)).
 
 ## Code
 
