@@ -663,7 +663,7 @@ Each controller records an event for every transition of a condition it writes (
 - No kubelet serving certificates from the cluster: the controller manager holds only the kubelet client signer, and starts no signer for `kubernetes.io/kubelet-serving` ([certificates.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/certificates.go#L74-L86)), so a kubelet with `serverTLSBootstrap: true` never gets one.
 - No legacy ServiceAccount token Secrets: lodia-signer holds the ServiceAccount key, and the controller manager's token controller does not start without one ([service_accounts.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/cmd/kube-controller-manager/app/service_accounts.go#L49-L52)), so a Secret of type `kubernetes.io/service-account-token` stays empty.
 - No multi-cluster operator: one Lodia per management cluster; sharding across replicas is phase 4.
-- What is owed: the [roadmap](roadmap.md) and [`todo.md`](../todo.md).
+- What is owed: the [roadmap](roadmap.md); what waits on a condition: [`todo.md`](../todo.md).
 
 ## Decisions
 
@@ -690,3 +690,4 @@ Each controller records an event for every transition of a condition it writes (
 - [structured-authentication](decisions/structured-authentication.md) — a tenant's JWT authenticators are upstream's `JWTAuthenticator`, reached through the tenant's nodes, kept from `system:` and `lodia:` names and reloaded without a restart.
 - [rehearse-a-minor-step](decisions/rehearse-a-minor-step.md) — a minor step is rehearsed on a copy of the API server at the next minor, on a fresh snapshot of the etcd, before its `Backup`.
 - [etcd-druid-behind-a-seam](decisions/etcd-druid-behind-a-seam.md) — only `internal/etcddruid` names etcd-druid, and the controllers get Lodia's values back; what Lodia assumes of etcd-druid and what pins each.
+- [todo-holds-what-waits](decisions/todo-holds-what-waits.md) — `todo.md` holds only what waits on a condition, each item opening with it; work that can start goes to the task's author, and a pass that fixes an item removes it.

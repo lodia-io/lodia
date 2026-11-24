@@ -31,6 +31,6 @@ The six controllers are built, high availability included, and the Helm chart in
 - [`docs/operations.md`](docs/operations.md) — upgrading and running Lodia; the runbooks.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — building and testing, and what CI runs on every pull request and every night.
 - [`CLAUDE.md`](CLAUDE.md) — how to work on the repository.
-- [`todo.md`](todo.md) — findings waiting for triage.
+- [`todo.md`](todo.md) — what waits on a condition: a release, an upstream fix, a need.
 
 Licensed under the [Apache License 2.0](LICENSE).

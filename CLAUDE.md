@@ -16,7 +16,9 @@ The fact that frames everything: **controllers never call each other** — each 
 ## Working from a task
 
 A task's body is its work order (handbook `process/work-orders.md`).
-Read **Authority** first; **Out of scope** is binding, findings outside it go to `todo.md`; a task is not Done until **Landing** is paid: the docs above, in the same change.
+Read **Authority** first; **Out of scope** is binding.
+A finding outside it goes to the task's author, who places it in the plan; one that waits on a condition goes to `todo.md`, opening with it ([decision](docs/decisions/todo-holds-what-waits.md)).
+A task is not Done until **Landing** is paid: the docs above, in the same change.
 
 ## Commands
 
