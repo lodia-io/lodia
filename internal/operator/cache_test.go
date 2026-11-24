@@ -10,6 +10,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,8 +49,12 @@ func TestTheCacheHoldsNoDataOfASecretWhicheverInformerReadsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	typed, metadata := &corev1.Secret{}, &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"}}
+	untyped := &unstructured.Unstructured{}
+	untyped.SetAPIVersion("v1")
+	untyped.SetKind("Secret")
 	if err := wait.PollUntilContextTimeout(t.Context(), 50*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (bool, error) {
-		return informers.Get(ctx, client.ObjectKeyFromObject(written), typed) == nil && informers.Get(ctx, client.ObjectKeyFromObject(written), metadata) == nil, nil
+		key := client.ObjectKeyFromObject(written)
+		return informers.Get(ctx, key, typed) == nil && informers.Get(ctx, key, metadata) == nil && informers.Get(ctx, key, untyped) == nil, nil
 	}); err != nil {
 		t.Fatalf("the cache never held the Secret: %v", err)
 	}
@@ -58,6 +63,9 @@ func TestTheCacheHoldsNoDataOfASecretWhicheverInformerReadsIt(t *testing.T) {
 	}
 	if len(typed.Data) != 0 {
 		t.Errorf("a Secret read from the cache holds %d keys, want none", len(typed.Data))
+	}
+	if data, found, _ := unstructured.NestedMap(untyped.Object, "data"); found {
+		t.Errorf("an unstructured Secret read from the cache holds %d keys, want none", len(data))
 	}
 	if len(typed.ManagedFields) != 0 || len(metadata.ManagedFields) != 0 {
 		t.Errorf("the cache holds %d managed fields of the Secret and %d of its metadata, want none", len(typed.ManagedFields), len(metadata.ManagedFields))

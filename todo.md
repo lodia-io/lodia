@@ -13,7 +13,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From kube-api-linter (2026-11-24)
 
-- `.kube-api-linter.yml` leaves six of kube-api-linter's rules off, since a fix of each finding changes the API's types or the JSON they marshal to; the count is of the findings at `0bc29d5`:
+- `.kube-api-linter.yml` leaves seven of kube-api-linter's rules off. `nonpointerstructs` stays off, since the linter's documentation says it is not for CRD types ([linters.md](https://github.com/kubernetes-sigs/kube-api-linter/blob/d90122c89087/docs/linters.md?plain=1#L615)); for the other six a fix of each finding changes the API's types or the JSON they marshal to, the count being of the findings at `0bc29d5`:
   - `requiredfields` (67) and `optionalfields` (60): 32 required fields lack `omitempty`, 17 required structs lack `omitzero`, 18 required fields should be pointers, and 60 optional fields should be pointers.
     A pointer changes the Go type that an importer compiles against, such as the Cluster API provider.
   - `nomaps` (3): `featureGates` of `apiServer`, `controllerManager` and `scheduler` are `map[string]bool`, and the rule wants a list of named elements.
@@ -54,7 +54,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
   A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
 - `make e2e` could check for Docker and `helm` before it creates its cluster.
-  A test or a cache transform should enforce the rule.
 
 ## From the PKI controller (2026-10-25)
 

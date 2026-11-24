@@ -15,6 +15,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -83,8 +84,8 @@ func GatewayAPI(cfg *rest.Config) (bool, error) {
 // Cache holds Lodia's own kinds whole, TLSRoutes and Gateways whole where
 // gatewayAPI says they are served, the Pods labelled as rehearsals' copies alone,
 // and of every other kind only the objects labelled with their ControlPlane,
-// without their managed fields, and a Secret without its data even where an
-// informer of Secrets holds more than metadata. The cache
+// without their managed fields, and a Secret without its data, typed or
+// unstructured, whichever informer holds it. The cache
 // maps every kind it holds when it is built, and fails on one not served.
 func Cache(gatewayAPI bool) (cache.Options, error) {
 	labelled, err := labels.NewRequirement(lodiav1alpha1.ControlPlaneLabel, selection.Exists, nil)
@@ -117,8 +118,13 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 var stripManagedFields = cache.TransformStripManagedFields()
 
 func transform(obj any) (any, error) {
-	if secret, ok := obj.(*corev1.Secret); ok {
-		secret.Data = nil
+	switch o := obj.(type) {
+	case *corev1.Secret:
+		o.Data = nil
+	case *unstructured.Unstructured:
+		if o.GetAPIVersion() == "v1" && o.GetKind() == "Secret" {
+			unstructured.RemoveNestedField(o.Object, "data")
+		}
 	}
 	return stripManagedFields(obj)
 }
