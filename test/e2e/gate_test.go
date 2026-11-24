@@ -17,7 +17,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -762,14 +761,6 @@ func removeContainers(ctx context.Context, cfg *envconf.Config) (context.Context
 		return ctx, err
 	}
 	return ctx, nil
-}
-
-func docker(ctx context.Context, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("docker %s: %w\n%s", args[0], err, out)
-	}
-	return string(out), nil
 }
 
 func installCNI(ctx context.Context, t *testing.T, access *tenantAccess, node string) {

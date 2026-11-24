@@ -122,7 +122,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From high availability (2026-10-27)
 
 - The e2e suites reach a tenant through `status.endpoint`, a kind node's address on the docker network `kind`, which Docker Desktop does not route to a macOS host, so `make e2e` and `make e2e-ha` run on Linux alone, as on GitHub's runners.
-  Running `go test` in a container attached to that network would bring them back to macOS.
+  Running `go test` in a container attached to that network would bring them back to macOS, but it is not a small change: the container needs Go, git, `helm` and the Docker CLI, the Docker socket and the repository mounted, and `go tool kind get kubeconfig --internal`, since the kubeconfig kind writes names 127.0.0.1, which the container does not reach.
+  Every one of the twelve targets would run through it.
 - Lodia sets etcd-druid's annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` on a highly available `Etcd`, which etcd-druid marks as one that may be removed at any time and is not meant for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/poddistruptionbudget/poddisruptionbudget.go#L35-L38)).
   Check it with every etcd-druid upgrade, and ask upstream for a field of the `Etcd` in its place.
 - Ask etcd-druid whether a scale-in can leave the remaining member running: the members' pod template carries a checksum of the ConfigMap whose `initial-cluster` names every member, so removing `highAvailability` restarts the last member: about 20 seconds without `Ready`, in which the controller manager and the scheduler lose their leases.
@@ -203,8 +204,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 - `.golangci.yml` breaks its own header: it switches gosec off for `internal/testenv/` (`.golangci.yml:72-73`), a rule off for one repository, and no GitHub workflow compares the file, so "the lint job fails on any difference" does not hold here.
   Move the exclusion to `//nolint:gosec // <why>` at its sites in `internal/testenv/testenv.go`, so that Lodia and the Cluster API provider carry the same file byte for byte; the provider's `verify` then compares its copy with Lodia's at the commit it pins.
-- A failed e2e run leaves nothing to read: the suite dumps no objects, events or logs, and the jobs upload no artifacts.
-  A dump on failure that fits under go test's `-timeout`, and an upload step under `if: always()`.
 - Six Markdown files are hard-wrapped against `CONTRIBUTING.md:27`: `CLAUDE.md`, `SECURITY.md`, `ADOPTERS.md`, `CODE_OF_CONDUCT.md`, `docs/review-checklist.md` and `docs/etcd-spike-2026-10.md`.
 
 ## From the kubelet certificates' lifetime (2026-11-12)

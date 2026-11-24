@@ -60,7 +60,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	testenv = env.NewWithConfig(envconf.NewWithKubeConfig(path))
+	testenv = dumping{env.NewWithConfig(envconf.NewWithKubeConfig(path))}
+	testenv.BeforeEachTest(dumpBeforeTimeout)
 	testenv.Setup(append(beforeLodia, installLodia)...)
 	testenv.Finish(removeContainers)
 	os.Exit(testenv.Run(m))
@@ -92,6 +93,7 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 			"--set", "metrics.service.enabled=true"),
 		helm.WithWait(), helm.WithTimeout("5m"))
 	if err != nil {
+		dumpCluster(ctx, cfg, "install")
 		return ctx, fmt.Errorf("install the chart: %w", err)
 	}
 	fmt.Printf("the chart installed %s into %s with %s, %s, %s and etcd-druid, after %s\n", release, operatorNamespace, operator, signer, tunnel, time.Since(start).Round(time.Second))
