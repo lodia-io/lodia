@@ -218,6 +218,78 @@ func TestReachableFollowsARecoveryAPeriodAfterAFailureTheCacheDoesNotHoldYet(t *
 	}
 }
 
+func frozenCache(held *lodiav1alpha1.ControlPlane, lostAnswers int) client.WithWatch {
+	return interceptor.NewClient(k8s, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && key == client.ObjectKeyFromObject(held) {
+				held.DeepCopyInto(cp)
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+		SubResourceApply: func(ctx context.Context, c client.Client, subResource string, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+			if err := c.SubResource(subResource).Apply(ctx, obj, opts...); err != nil || lostAnswers == 0 {
+				return err
+			}
+			lostAnswers--
+			return errors.New("the answer to the apply was lost")
+		},
+	})
+}
+
+func TestControllersLeadingFollowsARenewalAPeriodAfterALossTheCacheDoesNotHoldYet(t *testing.T) {
+	cp := controlPlane(t)
+	setAccess(t, cp)
+	writeKubeconfig(t, cp, tenantKubeconfig)
+	start := time.Now()
+	now := clocktesting.NewFakePassiveClock(start)
+	renew(t, contract.ControllerManagerLease, "cm_1", start)
+	renew(t, contract.SchedulerLease, "s_1", start)
+	r := &health.Reconciler{Client: k8s, Reader: k8s, Secrets: k8s, FailuresBeforeFalse: failuresBeforeFalse, DialContext: dialService, Period: time.Hour, Timeout: 2 * time.Second, Clock: now}
+	reconcile(t, r, cp)
+	const leadingMessage = "the leader Leases of kube-controller-manager and kube-scheduler are renewed"
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leadingMessage); err != nil {
+		t.Fatal(err)
+	}
+
+	r.Client = frozenCache(get(t, cp), 0)
+	removeLeases(t)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonControllerManagerNotLeading, "Lease kube-system/kube-controller-manager does not exist; Lease kube-system/kube-scheduler does not exist"); err != nil {
+		t.Fatal(err)
+	}
+	renew(t, contract.ControllerManagerLease, "cm_2", start)
+	renew(t, contract.SchedulerLease, "s_2", start)
+	reconcile(t, r, cp)
+	if err := expectLeading(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonLeading, leadingMessage); err != nil {
+		t.Errorf("one period after the renewal: %v", err)
+	}
+}
+
+func TestAWriteWhoseAnswerIsLostIsReadLiveInTheNextPass(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	testenv.Eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
+	r := &health.Reconciler{Client: frozenCache(get(t, cp), 1), Reader: k8s, Secrets: k8s, FailuresBeforeFalse: 1, DialContext: dialService, Period: time.Hour, Timeout: time.Second}
+
+	e.code.Store(http.StatusServiceUnavailable)
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass whose apply answered an error returned none")
+	}
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+		t.Fatal(err)
+	}
+	e.code.Store(http.StatusOK)
+	reconcile(t, r, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Errorf("the pass after a write whose answer was lost: %v", err)
+	}
+}
+
 func TestACABundleKeptElsewhereOrWithoutACertificateWaitsForCertificates(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)
