@@ -64,6 +64,13 @@ func Failed(backup *lodiav1alpha1.Backup, ready *metav1.Condition) bool {
 		(ready.Reason == lodiav1alpha1.ReasonSealLost || ready.Reason == lodiav1alpha1.ReasonObjectsControlledElsewhere)
 }
 
+// EndingReasons are the reasons of DatastoreReady under which a restore with
+// no status.restore ends: the Datastore controller writes them only before
+// the cleanup's marker, where it reads the Backup by its name, and no pass
+// leaves them without a person's act. No restore then names the Backup whose
+// keys a configuration holds once another has its name.
+var EndingReasons = []string{lodiav1alpha1.ReasonRestoreFailed, lodiav1alpha1.ReasonBackupIncompatible}
+
 // RestoresOf maps a Backup to the ControlPlanes of its namespace that name it
 // in restoreFrom.
 func RestoresOf(reader client.Reader) handler.MapFunc {

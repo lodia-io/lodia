@@ -493,12 +493,13 @@ func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
 
 func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNamesOne(t *testing.T) {
 	for i, c := range []struct {
-		name              string
-		successor, failed bool
+		name                            string
+		successor, failed, incompatible bool
 	}{
-		{"a restore of the successor", true, false},
-		{"a restore of the predecessor", false, false},
-		{"a restore of the predecessor beside a failed successor", false, true},
+		{"a restore of the successor", true, false, false},
+		{"a restore of the predecessor", false, false, false},
+		{"a restore of the predecessor beside a failed successor", false, true, false},
+		{"no restore beside a sealed successor of another minor", false, false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cp := controlPlane(t, fmt.Sprintf("pki-restore-replaced-%d", i), restoring)
@@ -516,6 +517,12 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 			} else {
 				second = seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
 			}
+			if c.incompatible {
+				second.Status.KubernetesVersion = "v1.36.4"
+				if err := k8s.Status().Update(t.Context(), second); err != nil {
+					t.Fatal(err)
+				}
+			}
 			mismatch := func(when, says string) {
 				t.Helper()
 				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
@@ -524,13 +531,18 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 				}
 			}
 			reconcile(t, r, cp)
-			mismatch("before status.restore", "waiting for the restore to name the one it restored, unless DatastoreReady is RestoreFailed: then restore another Backup")
+			wait := "waiting for the restore to name the one it restored, unless DatastoreReady is RestoreFailed or BackupIncompatible: then restore another Backup"
+			mismatch("before status.restore", wait)
 
-			if c.successor {
+			switch {
+			case c.incompatible:
+				reconcile(t, r, cp)
+				mismatch("while no restore names one", wait)
+			case c.successor:
 				restored(t, cp, second)
 				reconcile(t, r, cp)
 				mismatch("once status.restore names the successor", "and the restore was of UID "+string(second.UID)+", whose keys the restored data needs; restore another Backup")
-			} else {
+			default:
 				restored(t, cp, first)
 				reconcile(t, r, cp)
 				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)

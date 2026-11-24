@@ -4,6 +4,13 @@
 package restore_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"maps"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -86,5 +93,44 @@ func TestTheSourceIsFoundByItsUID(t *testing.T) {
 				t.Fatalf("source %+v, want UID %s", got, c.want)
 			}
 		})
+	}
+}
+
+func TestEndingReasonsAreExactlyTheReasonsTheRestoreCodeEndsWith(t *testing.T) {
+	ending := map[string]string{
+		"ReasonRestoreFailed":      lodiav1alpha1.ReasonRestoreFailed,
+		"ReasonBackupIncompatible": lodiav1alpha1.ReasonBackupIncompatible,
+	}
+	notEnding := []string{"ReasonBackupNotFound", "ReasonRestoring", "ReasonWaitingForBackup", "ReasonCompleted", "ReasonCAPredatesControlPlane"}
+	file, err := parser.ParseFile(token.NewFileSet(), filepath.Join("..", "controller", "datastore", "restore.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := map[string]bool{}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if selector, ok := n.(*ast.SelectorExpr); ok {
+			if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == "lodiav1alpha1" && strings.HasPrefix(selector.Sel.Name, "Reason") {
+				named[selector.Sel.Name] = true
+			}
+		}
+		return true
+	})
+	for name := range named {
+		if _, ok := ending[name]; !ok && !slices.Contains(notEnding, name) {
+			t.Errorf("restore.go names %s, which this test lists as neither ending a restore nor not: if no pass leaves it without a person's act, add it to restore.EndingReasons, which PKI's wait names", name)
+		}
+	}
+	for name := range ending {
+		if !named[name] {
+			t.Errorf("restore.go names no %s", name)
+		}
+	}
+	for _, name := range notEnding {
+		if !named[name] {
+			t.Errorf("restore.go names no %s", name)
+		}
+	}
+	if got, want := slices.Sorted(slices.Values(restore.EndingReasons)), slices.Sorted(maps.Values(ending)); !slices.Equal(got, want) {
+		t.Errorf("restore.EndingReasons is %v, want %v", got, want)
 	}
 }
