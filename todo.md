@@ -281,7 +281,3 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - `endpoint.certSANs` stays immutable with the rest of `endpoint` but `annotations` and `sourceRanges`, although PKI issues the serving certificate again when its names change (`certs.Matches`, `internal/certs/certs.go`): a name added in front of a living tenant's address needs a new tenant.
   Let it change beside them, in the transition rule of `Endpoint` (`api/v1alpha1/controlplane_types.go`), when someone needs it.
 - Audit by source address in `loadBalancer` mode needs `externalTrafficPolicy: Local`, which Lodia does not set on the Service: with the default `Cluster` kube-proxy masquerades the traffic of a load balancer ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1104-L1110)), so the API server sees a management node and audit `sourceIPs` name no client, while `Local` keeps the source address in most cases ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1111-L1114)).
-
-## From the flake of a held pass's report (2026-11-23)
-
-- No test catches a held pass that rewrites the API server's Deployment while its report is outside the running table: a held pass that force-applies the render there passes the whole package, since `TestAHeldPassOutsideTheRunningTableReportsWhatRuns/a_reported` (`internal/controller/workloads/revision_test.go`) keeps a Deployment equal to the render.
