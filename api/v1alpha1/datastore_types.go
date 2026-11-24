@@ -19,9 +19,11 @@ import (
 type DatastoreClass struct {
 	metav1.TypeMeta `json:",inline"`
 
+	// metadata is the standard object metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// spec is how the etcd is built.
 	// +required
 	Spec DatastoreClassSpec `json:"spec"`
 }
@@ -41,41 +43,41 @@ const DefaultQuotaBackendBytes = "4Gi"
 // ControlPlane: one, or three with high availability.
 // +kubebuilder:validation:XValidation:rule="!quantity(string(self.storage.size)).isLessThan((has(self.etcd) && has(self.etcd.quotaBackendBytes) ? quantity(string(self.etcd.quotaBackendBytes)) : quantity('4Gi')).add(has(self.etcd) && has(self.etcd.quotaBackendBytes) ? quantity(string(self.etcd.quotaBackendBytes)) : quantity('4Gi')))",message="storage.size must be at least twice the etcd quota, etcd.quotaBackendBytes or 4Gi: defragmentation writes a copy of the database beside it"
 type DatastoreClassSpec struct {
-	// Etcd configures the members.
+	// etcd configures the members.
 	// +optional
 	Etcd *EtcdSettings `json:"etcd,omitempty"`
 
-	// Storage is the members' volumes.
+	// storage is the members' volumes.
 	// +required
 	Storage EtcdStorage `json:"storage"`
 
-	// Backup is where and how often snapshots go; without it, no backups.
+	// backup is where and how often snapshots go; without it, no backups.
 	// +optional
 	Backup *EtcdBackup `json:"backup,omitempty"`
 
-	// Placement says where members run.
+	// placement says where members run.
 	// +optional
 	Placement *Placement `json:"placement,omitempty"`
 }
 
 // EtcdSettings configure etcd members.
 type EtcdSettings struct {
-	// QuotaBackendBytes is the database size limit, above zero: the backup
+	// quotaBackendBytes is the database size limit, above zero: the backup
 	// sidecar refuses to start with zero or less.
 	// +optional
 	// +kubebuilder:default="4Gi"
 	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="must be greater than zero"
 	QuotaBackendBytes *resource.Quantity `json:"quotaBackendBytes,omitempty"`
 
-	// AutoCompaction is etcd's own compaction.
+	// autoCompaction is etcd's own compaction.
 	// +optional
 	AutoCompaction *AutoCompaction `json:"autoCompaction,omitempty"`
 
-	// Defragmentation runs followers first, the leader last.
+	// defragmentation runs followers first, the leader last.
 	// +optional
 	Defragmentation *Defragmentation `json:"defragmentation,omitempty"`
 
-	// Resources of each member.
+	// resources of each member.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 }
@@ -83,13 +85,13 @@ type EtcdSettings struct {
 // AutoCompaction is etcd's compaction mode and retention.
 // +kubebuilder:validation:XValidation:rule="!has(self.retention) || self.retention.matches('^[0-9]+$') || ((!has(self.mode) || self.mode == 'periodic') && duration(self.retention) >= duration('0s'))",message="retention must be a number, or in periodic mode a duration"
 type AutoCompaction struct {
-	// Mode is periodic or revision.
+	// mode is periodic or revision.
 	// +optional
 	// +kubebuilder:default=periodic
 	// +kubebuilder:validation:Enum=periodic;revision
 	Mode string `json:"mode,omitempty"`
 
-	// Retention is a number of hours or a duration in periodic mode, a
+	// retention is a number of hours or a duration in periodic mode, a
 	// revision count in revision mode; etcd refuses to start with anything
 	// else.
 	// +optional
@@ -100,7 +102,7 @@ type AutoCompaction struct {
 
 // Defragmentation is a cron schedule.
 type Defragmentation struct {
-	// Schedule is a cron expression of five fields separated by single
+	// schedule is a cron expression of five fields separated by single
 	// spaces, without lists, whose ranges ascend and whose days of the week
 	// run from 1 to 6, since etcd-druid refuses 0 and the backup sidecar 7;
 	// */7 selects Sunday.
@@ -119,16 +121,16 @@ type CronSchedule string
 
 // EtcdStorage is the members' persistent volumes.
 type EtcdStorage struct {
-	// ClassName is the StorageClass; empty means the cluster's default.
+	// className is the StorageClass; empty means the cluster's default.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	ClassName string `json:"className,omitempty"`
 
-	// Size of each member's volume.
+	// size of each member's volume.
 	// +required
 	Size resource.Quantity `json:"size"`
 
-	// ReclaimPolicy is what happens to the volumes of a deleted ControlPlane.
+	// reclaimPolicy is what happens to the volumes of a deleted ControlPlane.
 	// +optional
 	// +kubebuilder:default=Retain
 	// +kubebuilder:validation:Enum=Delete;Retain
@@ -137,17 +139,17 @@ type EtcdStorage struct {
 
 // EtcdBackup is continuous snapshots to object storage.
 type EtcdBackup struct {
-	// Store is the bucket.
+	// store is the bucket.
 	// +required
 	Store BackupStore `json:"store"`
 
-	// FullSnapshotSchedule is a cron expression as defragmentation.schedule
+	// fullSnapshotSchedule is a cron expression as defragmentation.schedule
 	// takes it.
 	// +optional
 	// +kubebuilder:default="0 0 * * *"
 	FullSnapshotSchedule CronSchedule `json:"fullSnapshotSchedule,omitempty"`
 
-	// DeltaSnapshotPeriod is how often a delta snapshot is taken.
+	// deltaSnapshotPeriod is how often a delta snapshot is taken.
 	// +optional
 	// +kubebuilder:default="5m"
 	// +kubebuilder:validation:Type=string
@@ -155,17 +157,18 @@ type EtcdBackup struct {
 	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="must be a duration"
 	DeltaSnapshotPeriod *metav1.Duration `json:"deltaSnapshotPeriod,omitempty"`
 
-	// Retention is how long snapshots are kept.
+	// retention is how long snapshots are kept.
 	// +optional
 	Retention *BackupRetention `json:"retention,omitempty"`
 }
 
 // BackupStore is an object storage bucket.
 type BackupStore struct {
+	// provider is the object store's kind.
 	// +required
 	Provider StoreProvider `json:"provider"`
 
-	// Bucket name.
+	// bucket name.
 	// +required
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,61}[a-zA-Z0-9]$`
@@ -173,7 +176,7 @@ type BackupStore struct {
 
 	// @todo: refuses what etcd-backup-restore's parser misreads; remove with todo.md's v1/ prefix item.
 
-	// Prefix inside the bucket; each ControlPlane's snapshots go under
+	// prefix inside the bucket; each ControlPlane's snapshots go under
 	// <prefix>/<namespace UID>/controlplanes/<ControlPlane UID>. It neither
 	// contains v1/ nor ends in v1, which etcd-backup-restore would misread.
 	// +optional
@@ -181,19 +184,19 @@ type BackupStore struct {
 	// +kubebuilder:validation:XValidation:rule="!(self + '/').contains('v1/')",message="must neither contain v1/ nor end in v1: etcd-backup-restore's snapshot parser takes the last v1/ in a key for its layout and would ignore every snapshot under this prefix"
 	Prefix string `json:"prefix,omitempty"`
 
-	// Region of the bucket.
+	// region of the bucket.
 	// +optional
 	// +kubebuilder:validation:MaxLength=64
 	Region string `json:"region,omitempty"`
 
-	// Endpoint for S3-compatible stores.
+	// endpoint for S3-compatible stores.
 	// +optional
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://') || self.startsWith('http://')",message="must be a URL"
 	// +kubebuilder:validation:XValidation:rule="isURL(self)",message="must be a URL"
 	Endpoint string `json:"endpoint,omitempty"`
 
-	// SecretRef names the credentials.
+	// secretRef names the credentials.
 	// +required
 	SecretRef SecretReference `json:"secretRef"`
 }
@@ -204,7 +207,7 @@ type StoreProvider string
 
 // BackupRetention is how long snapshots live.
 type BackupRetention struct {
-	// FullSnapshots is how many full snapshots a running ControlPlane keeps,
+	// fullSnapshots is how many full snapshots a running ControlPlane keeps,
 	// the newest: days, at the default schedule. Only the newest keeps the
 	// delta snapshots after it, since no delta retention period is set, so an
 	// older one restores to its own revision.

@@ -11,9 +11,16 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the maintainers.
 
-## From the skeleton (2026-10-24)
+## From kube-api-linter (2026-11-24)
 
-- kube-api-linter on `api/`, as `releases-and-support` lists: the header of `.golangci.yml` says the file is identical in every Segla repository, so the linter needs a run of its own, not a line in that file.
+- `.kube-api-linter.yml` leaves seven of kube-api-linter's rules off. `nonpointerstructs` stays off, since the linter's documentation says it is not for CRD types ([linters.md](https://github.com/kubernetes-sigs/kube-api-linter/blob/d90122c89087/docs/linters.md?plain=1#L615)); for the other six a fix of each finding changes the API's types or the JSON they marshal to, the count being of the findings at `0bc29d5`:
+  - `requiredfields` (67) and `optionalfields` (60): 32 required fields lack `omitempty`, 17 required structs lack `omitzero`, 18 required fields should be pointers, and 60 optional fields should be pointers.
+    A pointer changes the Go type that an importer compiles against, such as the Cluster API provider.
+  - `nomaps` (3): `featureGates` of `apiServer`, `controllerManager` and `scheduler` are `map[string]bool`, and the rule wants a list of named elements.
+  - `notimestamp` (1): `status.expirationTimestamp` of a `KubeconfigRequest` would be `expirationTime`.
+  - `nodurations` (1): `spec.backup.deltaSnapshotPeriod` of a `DatastoreClass` is a `metav1.Duration`, and the rule wants an integer with its unit in its name.
+  - `arrayofstruct` (1): `claimValidationRules` of a JWT authenticator hold structs with no required field, since each sets one of `claim` and `expression`, which a CEL rule checks.
+  Decide each one with the API before it freezes, and switch the rule on in the change that fixes it.
 
 ## From lodia-signer (2026-10-23)
 
@@ -47,8 +54,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
   A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
 - `make e2e` could check for Docker and `helm` before it creates its cluster.
-- The cache keeps metadata only for Secrets because this controller watches them as `PartialObjectMetadata`; nothing stops a future controller from starting a typed Secret informer.
-  A test or a cache transform should enforce the rule.
 
 ## From the PKI controller (2026-10-25)
 
@@ -195,8 +200,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the provider's audit (2026-11-11)
 
-- `.golangci.yml` breaks its own header: it switches gosec off for `internal/testenv/` (`.golangci.yml:72-73`), a rule off for one repository, and no GitHub workflow compares the file, so "the lint job fails on any difference" does not hold here.
-  Move the exclusion to `//nolint:gosec // <why>` at its sites in `internal/testenv/testenv.go`, so that Lodia and the Cluster API provider carry the same file byte for byte; the provider's `verify` then compares its copy with Lodia's at the commit it pins.
 - A failed e2e run leaves nothing to read: the suite dumps no objects, events or logs, and the jobs upload no artifacts.
   A dump on failure that fits under go test's `-timeout`, and an upload step under `if: always()`.
 - `E2E_DIR` is one directory for every kind cluster (`Makefile:9`): two runs in one checkout share `work/e2e/kubeconfig`, kind makes the second cluster current in it, and the first run's helm, which reads the file on every call, follows it.
@@ -204,7 +207,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - The suite does not refuse the `HELM_KUBE*` variables, which helm lays over `--kubeconfig` ([environment.go](https://github.com/helm/helm/blob/v4.3.1/pkg/cli/environment.go#L102-L109)), so the chart install can reach another API server than the one the guard checked ([e2e-on-a-named-cluster](docs/decisions/e2e-on-a-named-cluster.md)).
 - `test/e2e/suite_test.go:123-132` runs ko through `go run` with `Output()` and no `WaitDelay`: a cancelled context kills `go`, ko keeps the pipe open, and the test waits for ko to end.
   A `GOARCH` in the environment also makes ko refuse `--platform`; ko's environment should drop it.
-- Six Markdown files are hard-wrapped against `CONTRIBUTING.md:27`: `CLAUDE.md`, `SECURITY.md`, `ADOPTERS.md`, `CODE_OF_CONDUCT.md`, `docs/review-checklist.md` and `docs/etcd-spike-2026-10.md`.
 - The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
   A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
 
@@ -263,7 +265,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the first release (2026-11-22)
 
 - An upgrade e2e from the previous release's chart, once a second release exists.
-- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
+- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, kube-api-linter, which has no tag and is pinned by a pseudo-version, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
 - An attested SBOM: ko pushes an SPDX SBOM beside each image, which `release.yml` neither signs nor attests.
 - etcd-druid's CRDs on a chart upgrade (the item on its chart's `crds/` directory, above) decide what a release that bumps etcd-druid says; the first release only installs.
 

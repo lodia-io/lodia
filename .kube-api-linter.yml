@@ -1,0 +1,26 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - kubeapilinter
+  settings:
+    custom:
+      kubeapilinter:
+        type: module
+        description: Kube API Linter lints Kubernetes API types against the API conventions.
+        settings:
+          linters:
+            disable:
+              - arrayofstruct
+              - nodurations
+              - nomaps
+              - nonpointerstructs
+              - notimestamp
+              - optionalfields
+              - requiredfields
+          lintersConfig:
+            conditions:
+              usePatchStrategy: Ignore
+              useProtobuf: Ignore
+            defaults:
+              preferredDefaultMarker: kubebuilder:default
