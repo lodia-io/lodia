@@ -522,6 +522,26 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 	}
 }
 
+func TestARewriteOfAnUnchangedRestoredConfigurationKeepsItsRecord(t *testing.T) {
+	cp := controlPlane(t, "pki-restore-rewritten", restoring)
+	publishEndpoint(t, cp)
+	b := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+	r := newReconciler(time.Hour)
+	reconcile(t, r, cp)
+	s := secretsOf(t, cp)["dev-encryption-config"]
+	if err := k8s.Patch(t.Context(), s, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.DataHashAnnotation+`":null}}}`)), client.FieldOwner("test/person")); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	s = secretsOf(t, cp)["dev-encryption-config"]
+	if s.Annotations[lodiav1alpha1.DataHashAnnotation] == "" {
+		t.Fatal("PKI did not write the configuration again")
+	}
+	if got := s.Labels["lodia.io/backup-uid"]; got != string(b.UID) {
+		t.Errorf("the configuration written again records Backup UID %q, want %s", got, b.UID)
+	}
+}
+
 func TestARestoreKeepsTheKeysOfTheBackupItsStatusNames(t *testing.T) {
 	cp := controlPlane(t, "pki-restore-named", restoring)
 	publishEndpoint(t, cp)
