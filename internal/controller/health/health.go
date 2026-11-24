@@ -102,6 +102,11 @@ type Reconciler struct {
 
 	mu       sync.Mutex
 	failures map[types.NamespacedName]int
+	// rereads holds the ControlPlanes whose last pass found a condition to
+	// write: the next reads both live, since the cache can lag that write, and
+	// a pass that compared with a cache still holding the condition it
+	// replaced would write nothing.
+	rereads  map[types.NamespacedName]bool
 	renewals map[types.NamespacedName]map[string]renewal
 	clients  *tenantclient.Clients
 	restores *semaphore.Weighted
@@ -158,12 +163,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.count(req.NamespacedName, false)
+			r.rereadNext(req.NamespacedName, false)
 			r.forget(req.NamespacedName)
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
 		return ctrl.Result{}, nil
+	}
+	if r.reread(req.NamespacedName) {
+		if err := live.Conditions(ctx, r.Reader, cp, lodiav1alpha1.ConditionReachable, lodiav1alpha1.ConditionControllersLeading); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionReachable) == nil || meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionControllersLeading) == nil {
 		if err := r.apply(ctx, cp, previous(cp, lodiav1alpha1.ConditionReachable), previous(cp, lodiav1alpha1.ConditionControllersLeading)); err != nil {
@@ -181,7 +192,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.apply(ctx, cp, ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))); err != nil {
+	conditions := []metav1.Condition{ptr.Deref(reachable, previous(cp, lodiav1alpha1.ConditionReachable)), ptr.Deref(leading, previous(cp, lodiav1alpha1.ConditionControllersLeading))}
+	r.rereadNext(req.NamespacedName, slices.ContainsFunc(conditions, func(c metav1.Condition) bool {
+		return statusapply.Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c)
+	}))
+	if err := r.apply(ctx, cp, conditions...); err != nil {
 		return ctrl.Result{}, err
 	}
 	if failed != "" {
@@ -902,6 +917,27 @@ func (r *Reconciler) failed(key types.NamespacedName) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.failures[key]
+}
+
+// rereadNext records whether key's next pass reads its conditions live.
+func (r *Reconciler) rereadNext(key types.NamespacedName, reread bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !reread {
+		delete(r.rereads, key)
+		return
+	}
+	if r.rereads == nil {
+		r.rereads = map[types.NamespacedName]bool{}
+	}
+	r.rereads[key] = true
+}
+
+// reread says whether key's pass reads its conditions live.
+func (r *Reconciler) reread(key types.NamespacedName) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rereads[key]
 }
 
 func endpoint(cp *lodiav1alpha1.ControlPlane) string {

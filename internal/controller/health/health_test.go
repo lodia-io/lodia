@@ -153,6 +153,71 @@ func TestReachableFollowsTheProbe(t *testing.T) {
 	}
 }
 
+type controlPlaneReads struct {
+	client.Reader
+	n atomic.Int32
+}
+
+func (r *controlPlaneReads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if isControlPlane(obj) {
+		r.n.Add(1)
+	}
+	return r.Reader.Get(ctx, key, obj, opts...)
+}
+
+func TestReachableFollowsARecoveryAPeriodAfterAFailureTheCacheDoesNotHoldYet(t *testing.T) {
+	cp := controlPlane(t)
+	e := serve(t)
+	writeBundle(t, cp, e)
+	publish(t, cp, e)
+	testenv.Eventually(t, func() error {
+		return expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200")
+	})
+	lagging, err := cache.New(healthRole, cache.Options{Scheme: k8s.Scheme(), NewInformer: testenv.Lagging(10 * time.Second), DefaultNamespaces: map[string]cache.Config{cp.Namespace: {}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- lagging.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := lagging.GetInformer(ctx, &lodiav1alpha1.ControlPlane{}); err != nil {
+		t.Fatal(err)
+	}
+	if !lagging.WaitForCacheSync(ctx) {
+		t.Fatal("the lagging cache did not sync")
+	}
+	cached, err := client.New(healthRole, client.Options{Scheme: k8s.Scheme(), Cache: &client.CacheOptions{Reader: lagging}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reads := &controlPlaneReads{Reader: k8s}
+	r := &health.Reconciler{Client: cached, Reader: reads, Secrets: k8s, FailuresBeforeFalse: 1, DialContext: dialService, Period: time.Hour, Timeout: time.Second}
+
+	e.code.Store(http.StatusServiceUnavailable)
+	reconcile(t, r, cp)
+	if err := expect(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonExternalProbeFailed, e.url+" answered 503"); err != nil {
+		t.Fatal(err)
+	}
+	e.code.Store(http.StatusOK)
+	reconcile(t, r, cp)
+	if err := expect(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReachable, e.url+" answered 200"); err != nil {
+		t.Fatalf("one period after the recovery: %v", err)
+	}
+
+	reconcile(t, r, cp)
+	reads.n.Store(0)
+	reconcile(t, r, cp)
+	if n := reads.n.Load(); n != 0 {
+		t.Errorf("a pass that follows one that wrote nothing read the ControlPlane live %d times", n)
+	}
+}
+
 func TestACABundleKeptElsewhereOrWithoutACertificateWaitsForCertificates(t *testing.T) {
 	cp := controlPlane(t)
 	e := serve(t)
