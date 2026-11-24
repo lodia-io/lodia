@@ -54,7 +54,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
   A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
 - `make e2e` could check for Docker and `helm` before it creates its cluster.
-- The cache keeps metadata only for Secrets because this controller watches them as `PartialObjectMetadata`; nothing stops a future controller from starting a typed Secret informer.
   A test or a cache transform should enforce the rule.
 
 ## From the PKI controller (2026-10-25)

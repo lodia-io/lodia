@@ -83,7 +83,8 @@ func GatewayAPI(cfg *rest.Config) (bool, error) {
 // Cache holds Lodia's own kinds whole, TLSRoutes and Gateways whole where
 // gatewayAPI says they are served, the Pods labelled as rehearsals' copies alone,
 // and of every other kind only the objects labelled with their ControlPlane,
-// without their managed fields. The cache
+// without their managed fields, and a Secret without its data even where an
+// informer of Secrets holds more than metadata. The cache
 // maps every kind it holds when it is built, and fails on one not served.
 func Cache(gatewayAPI bool) (cache.Options, error) {
 	labelled, err := labels.NewRequirement(lodiav1alpha1.ControlPlaneLabel, selection.Exists, nil)
@@ -108,9 +109,18 @@ func Cache(gatewayAPI bool) (cache.Options, error) {
 	}
 	return cache.Options{
 		DefaultLabelSelector: labels.NewSelector().Add(*labelled),
-		DefaultTransform:     cache.TransformStripManagedFields(),
+		DefaultTransform:     transform,
 		ByObject:             byObject,
 	}, nil
+}
+
+var stripManagedFields = cache.TransformStripManagedFields()
+
+func transform(obj any) (any, error) {
+	if secret, ok := obj.(*corev1.Secret); ok {
+		secret.Data = nil
+	}
+	return stripManagedFields(obj)
 }
 
 // Inputs are what Setup registers the controllers with: Config is what
