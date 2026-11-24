@@ -12,7 +12,7 @@ Built.
   Either names its project and whether it is one of the asks held back to go together.
 - Work that can start now is no item.
   A finding outside the task at hand goes to the task's author, who places it in the plan.
-- A pass that fixes an item removes it in the same change, with the `@todo` markers and the links in the docs that name it.
+- The change that fixes an item removes it, with the `@todo` markers and the links in the docs that name it.
 - Items are grouped by topic, not by where they came from.
 
 ## Why

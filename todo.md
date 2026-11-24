@@ -3,7 +3,7 @@
 What waits on a condition outside the task at hand: a release, an upstream fix, a need that has not come, a measurement that has no occasion yet.
 Each item opens with the condition that ends its wait and says what to do when it holds.
 Work that can start now is not an item: it goes to the task's author, who places it in the plan.
-A pass that fixes an item removes it.
+The change that fixes an item removes it.
 The rule is [todo-holds-what-waits](docs/decisions/todo-holds-what-waits.md); nothing here is a decision, which is a file in `docs/decisions/`.
 
 ## etcd-druid and etcd-backup-restore
