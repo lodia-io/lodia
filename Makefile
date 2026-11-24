@@ -303,7 +303,13 @@ verify: ## the check that says a change is done
 	cd test/monitoring && go mod tidy -diff
 	$(MAKE) --no-print-directory chart verify-release lint monitoring test restore-keys
 
+define e2e-needs
+@docker info > /dev/null 2>&1 || { echo "Docker is not installed or its daemon is not running: the suite starts containers and ko builds into the kind cluster through it"; exit 1; }
+@command -v helm > /dev/null || { echo "helm is not on the PATH: the suite installs the chart with it"; exit 1; }
+endef
+
 define e2e-on-kind
+$(e2e-needs)
 mkdir -p $(E2E_DIR)
 go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig $(if $(E2E_KIND_CONFIG),--config $(E2E_KIND_CONFIG))
 E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags $(E2E_TAGS) -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '^$(E2E_RUN)$$') -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
@@ -317,6 +323,7 @@ e2e: E2E_TAGS = e2e
 e2e: E2E_TIMEOUT = 30m
 e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards
 ifdef E2E_KUBECONFIG
+	$(e2e-needs)
 	E2E_KUBECONFIG=$(abspath $(E2E_KUBECONFIG)) go test -v -tags $(E2E_TAGS) -count=1 -timeout $(E2E_TIMEOUT) ./test/e2e/...
 else
 	$(e2e-on-kind)
