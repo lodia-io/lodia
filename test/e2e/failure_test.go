@@ -75,10 +75,6 @@ func (e dumping) Test(t *testing.T, features ...types.Feature) context.Context {
 	return e.Environment.Test(t, dumpOnFailure(features)...)
 }
 
-func (e dumping) TestInParallel(t *testing.T, features ...types.Feature) context.Context {
-	return e.Environment.TestInParallel(t, dumpOnFailure(features)...)
-}
-
 func dumpOnSetupFailure(funcs []env.Func) []env.Func {
 	out := make([]env.Func, len(funcs))
 	for i, f := range funcs {
