@@ -169,9 +169,6 @@ func TestTheEnvironmentDumpsOnceAtTheFirstFailedStepBeforeTheTeardown(t *testing
 			if got, err := os.ReadFile(console); err != nil || string(got) != "console of e2e-node\n" {
 				t.Errorf("the console is %q, %v", got, err)
 			}
-			if _, err := os.Stat(filepath.Join(dumps, "install")); err == nil {
-				t.Error("a dump of a failed install was written")
-			}
 			listings := 0
 			for _, call := range dockerCalls(t, calls) {
 				if strings.HasPrefix(call, "ps ") {
@@ -187,6 +184,50 @@ func TestTheEnvironmentDumpsOnceAtTheFirstFailedStepBeforeTheTeardown(t *testing
 				}
 			}
 		})
+	}
+}
+
+func TestTheEnvironmentDumpsOnceAtTheFirstSetupFuncThatFailsBeforeTheFinishFuncs(t *testing.T) {
+	dumps := dumpsInto(t)
+	calls := fakeDocker(t, nodeConsole)
+	var ran []string
+	setup := func(name string, err error) env.Func {
+		return func(ctx context.Context, _ *envconf.Config) (context.Context, error) {
+			ran = append(ran, name)
+			return ctx, err
+		}
+	}
+	seen := "not dumped"
+	environment := dumping{env.NewWithConfig(envconf.NewWithKubeConfig(clusterToDump(t)))}
+	environment.Setup(setup("builds", nil))
+	environment.Setup(setup("installs the Gateway", errors.New("the Gateway does not install")), setup("installs the chart", nil))
+	environment.Finish(func(ctx context.Context, _ *envconf.Config) (context.Context, error) {
+		if _, err := os.Stat(filepath.Join(dumps, "failure")); err == nil {
+			seen = "dumped"
+		}
+		return ctx, nil
+	})
+	if code := environment.Run(&testing.M{}); code != 1 {
+		t.Fatalf("the environment ended with %d, want the failure of its setup", code)
+	}
+	if want := []string{"builds", "installs the Gateway"}; !slices.Equal(ran, want) {
+		t.Errorf("the setup funcs ran as %q, want %q", ran, want)
+	}
+	console := filepath.Join(dumps, "failure", "containers", "e2e-node", "console.log")
+	if got, err := os.ReadFile(console); err != nil || string(got) != "console of e2e-node\n" {
+		t.Errorf("the console is %q, %v", got, err)
+	}
+	if seen != "dumped" {
+		t.Errorf("the finish func found %q, want the dump written before it", seen)
+	}
+	listings := 0
+	for _, call := range dockerCalls(t, calls) {
+		if strings.HasPrefix(call, "ps ") {
+			listings++
+		}
+	}
+	if listings != 1 {
+		t.Errorf("the failed setup dumped %d times, want once", listings)
 	}
 }
 

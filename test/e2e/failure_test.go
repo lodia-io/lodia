@@ -61,9 +61,15 @@ func dumpBeforeTimeout(cfg *envconf.Config, timeout time.Duration) {
 	}
 }
 
-// dumping dumps the cluster at the first step that fails, before a teardown
-// deletes what the failure left.
+// dumping dumps the cluster at the first Setup func of the environment or the
+// first step that fails, before a Finish func or a teardown deletes what the
+// failure left.
 type dumping struct{ env.Environment }
+
+func (e dumping) Setup(funcs ...env.Func) env.Environment {
+	e.Environment.Setup(dumpOnSetupFailure(funcs)...)
+	return e
+}
 
 func (e dumping) Test(t *testing.T, features ...types.Feature) context.Context {
 	return e.Environment.Test(t, dumpOnFailure(features)...)
@@ -71,6 +77,20 @@ func (e dumping) Test(t *testing.T, features ...types.Feature) context.Context {
 
 func (e dumping) TestInParallel(t *testing.T, features ...types.Feature) context.Context {
 	return e.Environment.TestInParallel(t, dumpOnFailure(features)...)
+}
+
+func dumpOnSetupFailure(funcs []env.Func) []env.Func {
+	out := make([]env.Func, len(funcs))
+	for i, f := range funcs {
+		out[i] = func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+			next, err := f(ctx, cfg)
+			if err != nil {
+				dumpCluster(ctx, cfg, "failure")
+			}
+			return next, err
+		}
+	}
+	return out
 }
 
 func dumpOnFailure(features []types.Feature) []types.Feature {

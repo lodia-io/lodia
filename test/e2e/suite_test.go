@@ -99,7 +99,6 @@ func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, er
 			"--set", "metrics.service.enabled=true"),
 		helm.WithWait(), helm.WithTimeout("5m"))
 	if err != nil {
-		dumpCluster(ctx, cfg, "install")
 		return ctx, fmt.Errorf("install the chart: %w", err)
 	}
 	fmt.Printf("the chart installed %s into %s with %s, %s, %s and etcd-druid, after %s\n", release, operatorNamespace, operator, signer, tunnel, time.Since(start).Round(time.Second))

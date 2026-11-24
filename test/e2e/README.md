@@ -59,11 +59,10 @@ Each container the suite starts, a node or the DNS container, carries the label 
 The suite removes the containers of its cluster by that label when it ends, pass or fail, and each node before it starts it; every `make` target that creates a cluster removes them by the label as well, since a `go test` timeout or a panic never reaches the suite's end.
 
 Where `E2E_DUMPS` names a directory, which every `make` target that creates a cluster sets to `work/e2e/<cluster>/_artifacts/dumps`, the suite dumps the cluster into a directory of it, each once per run and in place of the directory of the same name an earlier run left:
-- `failure`, at the first step that fails, before the teardown of its feature deletes what the failure left;
-- `install`, when the chart's install fails;
+- `failure`, at the first step that fails, before the teardown of its feature deletes what the failure left, or at the first setup func of the environment that fails (a ko build, the chart's install, the Envoy Gateway or MetalLB install of the build tags that set them up), before the removal of the containers;
 - `timeout`, four minutes before go test's `-timeout`, counted from the start of the process, so a setup that runs into it is dumped too; the timeout kills the process with no chance to dump after it.
 
-A dump holds every object of the cluster but Secrets and CustomResourceDefinitions, events included, as YAML under `objects/`; the log of every container, and the previous one of a restarted container, under `logs/<namespace>/<pod>/`; and the console and the journal of each container the suite started, under `containers/`.
+A dump holds every object of the cluster but Secrets, which hold credentials and, by default, Helm's release records ([storage backends](https://helm.sh/docs/topics/advanced/#storage-backends)), and CustomResourceDefinitions, events included, as YAML under `objects/`; the log of every container, and the previous one of a restarted container, under `logs/<namespace>/<pod>/`; and the console and the journal of each container the suite started, under `containers/`.
 Every e2e job of the workflows uploads `work/e2e/lodia-e2e-local/_artifacts/` under `if: always()`.
 
 `make e2e` gives the suite 30 minutes.
