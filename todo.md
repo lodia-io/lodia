@@ -11,9 +11,16 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
 - etcd-druid's scale at ~1000 `Etcd` objects with its default `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the maintainers.
 
-## From the skeleton (2026-10-24)
+## From kube-api-linter (2026-11-24)
 
-- kube-api-linter on `api/`, as `releases-and-support` lists: the header of `.golangci.yml` says the file is identical in every Segla repository, so the linter needs a run of its own, not a line in that file.
+- `.kube-api-linter.yml` leaves seven of kube-api-linter's rules off. `nonpointerstructs` stays off, since the linter's documentation says it is not for CRD types ([linters.md](https://github.com/kubernetes-sigs/kube-api-linter/blob/d90122c89087/docs/linters.md?plain=1#L615)); for the other six a fix of each finding changes the API's types or the JSON they marshal to, the count being of the findings at `0bc29d5`:
+  - `requiredfields` (67) and `optionalfields` (60): 32 required fields lack `omitempty`, 17 required structs lack `omitzero`, 18 required fields should be pointers, and 60 optional fields should be pointers.
+    A pointer changes the Go type that an importer compiles against, such as the Cluster API provider.
+  - `nomaps` (3): `featureGates` of `apiServer`, `controllerManager` and `scheduler` are `map[string]bool`, and the rule wants a list of named elements.
+  - `notimestamp` (1): `status.expirationTimestamp` of a `KubeconfigRequest` would be `expirationTime`.
+  - `nodurations` (1): `spec.backup.deltaSnapshotPeriod` of a `DatastoreClass` is a `metav1.Duration`, and the rule wants an integer with its unit in its name.
+  - `arrayofstruct` (1): `claimValidationRules` of a JWT authenticator hold structs with no required field, since each sets one of `claim` and `expression`, which a CEL rule checks.
+  Decide each one with the API before it freezes, and switch the rule on in the change that fixes it.
 
 ## From lodia-signer (2026-10-23)
 
@@ -46,8 +53,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `docs/operations.md` names the symptom.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
   A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
-- The cache keeps metadata only for Secrets because this controller watches them as `PartialObjectMetadata`; nothing stops a future controller from starting a typed Secret informer.
-  A test or a cache transform should enforce the rule.
 
 ## From the PKI controller (2026-10-25)
 
@@ -175,13 +180,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Once every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True there, and the gateway gate pins one: remove `noEndpoints`, the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).
   The upstream fix is [envoyproxy/gateway#10564](https://github.com/envoyproxy/gateway/pull/10564), open on 2026-11-08.
 
-## From the CI of the refactoring (2026-11-09)
-
-- `make test` gives envtest's API servers 60 s to stop instead of the default 20 s (the `@todo` in `Makefile`): a tenant API server in `internal/controller/tenant` twice took longer, after its test's checks had passed, and nobody has measured why.
-  768 stops in loaded Linux containers took at most 1.12 s, but it did reproduce outside CI: on macOS, in both of two runs of `go test -count=1 ./internal/controller/tenant/` on 2026-11-10, as `timeout waiting for process kube-apiserver to stop` in a test's cleanup after its checks passed, without a dump, since `LODIA_APISERVER_DUMPS` was not set.
-  `verify` now keeps the log and the goroutines of a tenant API server still running 20 s into its stop, in the artifact `apiserver-dumps` (`testenv.StartDumping`, the `@todo` in `internal/controller/tenant/tenant_test.go`).
-  Read the first dump, fix what holds it past SIGTERM, then remove `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` from `make test`, `StartDumping` and the artifact's step.
-
 ## From Workloads' hold (2026-11-09)
 
 - A renewed restart-only certificate rolls its component at once, or at the grant on a tenant Workloads holds, not in the tenant's window ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "Who waits for the window"): holding it for the window is for phase 3's rotations, and takes a field each way between Workloads and Lifecycle, a digest of the restart hashes and a clock of the certificate the pods still run.
@@ -200,25 +198,11 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   A store a person adds under a class without one, or an `endpointOverride` under a class whose store names no endpoint, is a field Lodia's apply does not own: it stays, and every status apply fails, held or not, until a class edit that renders that field is granted.
   etcd-druid's schema takes any provider or none, `Local` among them, no container, and a prefix and an endpoint of any length ([store.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/store.go#L13-L35)); the status takes S3, GCS, ABS and Swift, a bucket of at least one character, a prefix of 1 to 512 characters and an endpoint of at most 512.
 
-## From the provider's audit (2026-11-11)
-
-- `.golangci.yml` breaks its own header: it switches gosec off for `internal/testenv/` (`.golangci.yml:72-73`), a rule off for one repository, and no GitHub workflow compares the file, so "the lint job fails on any difference" does not hold here.
-  Move the exclusion to `//nolint:gosec // <why>` at its sites in `internal/testenv/testenv.go`, so that Lodia and the Cluster API provider carry the same file byte for byte; the provider's `verify` then compares its copy with Lodia's at the commit it pins.
-- Six Markdown files are hard-wrapped against `CONTRIBUTING.md:27`: `CLAUDE.md`, `SECURITY.md`, `ADOPTERS.md`, `CODE_OF_CONDUCT.md`, `docs/review-checklist.md` and `docs/etcd-spike-2026-10.md`.
-
 ## From the kubelet certificates' lifetime (2026-11-12)
 
 - A kubelet client certificate cannot be revoked, and a kubelet renews its own without asking for a lifetime: its certificate manager sets no `RequestedCertificateLifetime` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/certificate/kubelet.go#L229-L248)), so the controller manager's `--cluster-signing-duration` alone sets it ([signer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/certificates/signer/signer.go#L219-L237)).
   A node a platform removes therefore keeps a certificate its API server accepts for up to 30 days, and its kubelet may register its `Node` again in that time.
   `docs/decisions/staged-credential-rotation.md:22` sets the 30 days without weighing that window against the renewals a shorter lifetime costs: decide the lifetime, or a field for it, on that trade.
-
-## From the CI of the bounded reads (2026-11-13)
-
-- `TestAGrantThatChangesNoTemplateRollsNoPod` (`internal/controller/workloads/revision_test.go:268`) failed in the `verify` job of run [43357744832](https://github.com/lodia-io/lodia/actions/runs/43357744832), job 131663696983, at d378796 of #89, a pull request that touches nothing in `internal/controller/workloads`:
-  `Deployment kube-controller-manager is stamped "v0.0.0-test+running", want v0.0.1-test+next`, and the same for `kube-scheduler`.
-  Line 268 is the first `expectStamps` after the pass of the operator at the new revision: it left two of the three Deployments at the stamp of the old one, and the API server's Deployment carried the new.
-  The test passed three runs of three locally, `main` was green at bf28826, and none of the other failed runs among the last 60 of the repository names it.
-  The cause is not found.
 
 ## From the API before it freezes (2026-11-17)
 
@@ -269,7 +253,7 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From the first release (2026-11-22)
 
 - An upgrade e2e from the previous release's chart, once a second release exists.
-- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
+- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, kube-api-linter, which has no tag and is pinned by a pseudo-version, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
 - An attested SBOM: ko pushes an SPDX SBOM beside each image, which `release.yml` neither signs nor attests.
 - etcd-druid's CRDs on a chart upgrade (the item on its chart's `crds/` directory, above) decide what a release that bumps etcd-druid says; the first release only installs.
 
@@ -280,10 +264,3 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - `endpoint.certSANs` stays immutable with the rest of `endpoint` but `annotations` and `sourceRanges`, although PKI issues the serving certificate again when its names change (`certs.Matches`, `internal/certs/certs.go`): a name added in front of a living tenant's address needs a new tenant.
   Let it change beside them, in the transition rule of `Endpoint` (`api/v1alpha1/controlplane_types.go`), when someone needs it.
 - Audit by source address in `loadBalancer` mode needs `externalTrafficPolicy: Local`, which Lodia does not set on the Service: with the default `Cluster` kube-proxy masquerades the traffic of a load balancer ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1104-L1110)), so the API server sees a management node and audit `sourceIPs` name no client, while `Local` keeps the source address in most cases ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1111-L1114)).
-
-## From the flake of a held pass's report (2026-11-23)
-
-- Two more tests move `status.target` with `setTargetAt` and then cause a pass that can read the target from before the move out of Workloads' cache, which decides a hold from it (`held`, `internal/controller/workloads/workloads.go`): `TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves/a_held_pass` and `TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes` (`internal/controller/workloads/authentication_test.go`), where `setIngress` lands 16 to 19 ms after the target.
-  A pass on the old target, run by hand through the suite's stale client, writes the authentication ConfigMap and gives the next held pass another `APIServerReady`, which each test's checks refuse; no CI run has failed on either yet.
-  A write cannot be undone as the image of `TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable` is set again, so each needs a deterministic setup: `pause`, then the passes it means, by hand.
-- No test catches a held pass that rewrites the API server's Deployment while its report is outside the running table: a held pass that force-applies the render there passes the whole package, since `TestAHeldPassOutsideTheRunningTableReportsWhatRuns/a_reported` (`internal/controller/workloads/revision_test.go`) keeps a Deployment equal to the render.

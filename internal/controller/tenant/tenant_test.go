@@ -1347,13 +1347,12 @@ func startTenant(t *testing.T, cp *lodiav1alpha1.ControlPlane) *tenantClient {
 		Set("service-account-key-file", saKey).
 		Set("service-cluster-ip-range", string(cp.Spec.Network.ServiceCIDRs[0])).
 		Set("endpoint-reconciler-type", "none")
-	// @todo: dumps an API server that hangs in its stop; see todo.md.
-	cfg, stop, err := testenv.StartDumping(t, env, 20*time.Second)
+	cfg, err := env.Start()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := stop(); err != nil {
+		if err := env.Stop(); err != nil {
 			t.Error(err)
 		}
 	})

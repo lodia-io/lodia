@@ -54,13 +54,13 @@ spec:
           metadata:
             type: object
           spec:
-            description: BackupSpec names the ControlPlane to snapshot.
+            description: spec names the ControlPlane to snapshot.
             properties:
               controlPlaneRef:
-                description: ControlPlaneRef names a ControlPlane in this namespace.
+                description: controlPlaneRef names a ControlPlane in this namespace.
                 properties:
                   name:
-                    description: Name of the object.
+                    description: name of the object.
                     maxLength: 253
                     minLength: 1
                     type: string
@@ -74,15 +74,14 @@ spec:
             - message: a Backup cannot change; create another
               rule: self == oldSelf
           status:
-            description: |-
-              BackupStatus is the copy's progress, what it was taken of, and where it
-              is. The backup reconciler of the Datastore controller writes it.
+            description: status is the copy's progress and where it is.
             properties:
               completedAt:
+                description: completedAt is when the Backup was complete.
                 format: date-time
                 type: string
               conditions:
-                description: Conditions, Ready among them.
+                description: conditions include Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -144,7 +143,7 @@ spec:
                 x-kubernetes-list-type: map
               kubernetesVersion:
                 description: |-
-                  KubernetesVersion is the version the source ran when the Backup was
+                  kubernetesVersion is the version the source ran when the Backup was
                   sealed: its status.kubernetes.version, or its status.target.version
                   until Lifecycle writes the former. A ControlPlane restored from the
                   Backup runs the same minor.
@@ -152,12 +151,12 @@ spec:
                 type: string
               network:
                 description: |-
-                  Network is the source's network, which a ControlPlane restored from the
+                  network is the source's network, which a ControlPlane restored from the
                   Backup must have too.
                 properties:
                   clusterDomain:
                     default: cluster.local
-                    description: ClusterDomain is the cluster's DNS domain.
+                    description: clusterDomain is the cluster's DNS domain.
                     maxLength: 253
                     minLength: 1
                     type: string
@@ -166,7 +165,7 @@ spec:
                       rule: self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$')
                         && !self.matches('^[0-9.]+$')
                   podCIDRs:
-                    description: PodCIDRs are the ranges node CIDRs are allocated
+                    description: podCIDRs are the ranges node CIDRs are allocated
                       from.
                     items:
                       description: CIDR is an IPv4 or IPv6 network in CIDR notation.
@@ -181,7 +180,7 @@ spec:
                     x-kubernetes-list-type: atomic
                   serviceCIDRs:
                     description: |-
-                      ServiceCIDRs are the ranges Services get addresses from; the first
+                      serviceCIDRs are the ranges Services get addresses from; the first
                       address of the first range is the kubernetes Service, the tenth CoreDNS.
                     items:
                       description: CIDR is an IPv4 or IPv6 network in CIDR notation.
@@ -199,20 +198,20 @@ spec:
                 - serviceCIDRs
                 type: object
               seal:
-                description: Seal is the key the copy is checked by.
+                description: seal is the key the copy is checked by.
                 properties:
                   quotaBackendBytes:
                     anyOf:
                     - type: integer
                     - type: string
                     description: |-
-                      QuotaBackendBytes is the source etcd's quota when it was sealed, the
+                      quotaBackendBytes is the source etcd's quota when it was sealed, the
                       one bound Lodia has on the size of the copy: a ControlPlane restored
                       from the Backup needs at least this quota.
                     pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                     x-kubernetes-int-or-string: true
                   revision:
-                    description: Revision of the seal key in the source's etcd.
+                    description: revision of the seal key in the source's etcd.
                     format: int64
                     minimum: 1
                     type: integer
@@ -221,61 +220,62 @@ spec:
                 type: object
               snapshots:
                 description: |-
-                  Snapshots is where the copy is: the store it was sealed in and the
+                  snapshots is where the copy is: the store it was sealed in and the
                   Backup's own prefix there.
                 properties:
                   bucket:
+                    description: bucket is the bucket in the store.
                     maxLength: 63
                     minLength: 1
                     type: string
                   endpoint:
-                    description: Endpoint of an S3-compatible store; empty for the
+                    description: endpoint of an S3-compatible store; empty for the
                       provider's own.
                     maxLength: 512
                     type: string
                   fromSecret:
                     description: |-
-                      FromSecret is the part of the store that the provider reads from the
+                      fromSecret is the part of the store that the provider reads from the
                       credentials Secret.
                     properties:
                       authURL:
-                        description: AuthURL is Swift's Keystone, whose catalog names
+                        description: authURL is Swift's Keystone, whose catalog names
                           the store.
                         type: string
                       domain:
-                        description: Domain is ABS's deprecated domain key.
+                        description: domain is ABS's deprecated domain key.
                         type: string
                       domainName:
-                        description: DomainName is the Keystone domain of the Swift
+                        description: domainName is the Keystone domain of the Swift
                           project.
                         type: string
                       endpoint:
-                        description: Endpoint is S3's deprecated endpoint key.
+                        description: endpoint is S3's deprecated endpoint key.
                         type: string
                       region:
                         description: |-
-                          Region is S3's, which picks the partition, and with it the bucket of
+                          region is S3's, which picks the partition, and with it the bucket of
                           that name.
                         type: string
                       storageAPIEndpoint:
-                        description: StorageAPIEndpoint is GCS's deprecated endpoint
+                        description: storageAPIEndpoint is GCS's deprecated endpoint
                           key.
                         type: string
                       storageAccount:
-                        description: StorageAccount is the ABS account.
+                        description: storageAccount is the ABS account.
                         type: string
                       tenantName:
-                        description: TenantName is the Swift project, whose account
+                        description: tenantName is the Swift project, whose account
                           holds the containers.
                         type: string
                     type: object
                   prefix:
+                    description: prefix is the prefix in the bucket.
                     maxLength: 512
                     minLength: 1
                     type: string
                   provider:
-                    description: 'StoreProvider is the kind of an object store: S3,
-                      GCS, ABS or Swift.'
+                    description: provider is the object store's kind.
                     enum:
                     - S3
                     - GCS
@@ -288,15 +288,15 @@ spec:
                 - provider
                 type: object
               source:
-                description: Source is the ControlPlane the Backup was taken of.
+                description: source is the ControlPlane the Backup was taken of.
                 properties:
                   name:
-                    description: Name of the object.
+                    description: name of the object.
                     maxLength: 253
                     minLength: 1
                     type: string
                   uid:
-                    description: UID of the object.
+                    description: uid of the object.
                     maxLength: 36
                     minLength: 1
                     type: string
@@ -305,6 +305,7 @@ spec:
                 - uid
                 type: object
               startedAt:
+                description: startedAt is when the Backup started.
                 format: date-time
                 type: string
             type: object

@@ -19,7 +19,7 @@ type Hostname string
 
 // LocalReference names an object in the same namespace.
 type LocalReference struct {
-	// Name of the object.
+	// name of the object.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
@@ -31,13 +31,13 @@ type LocalReference struct {
 // again and a UID never. A reader does not follow it to the object, as it
 // follows a field named <x>Ref; the object may be gone.
 type UIDReference struct {
-	// Name of the object.
+	// name of the object.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// UID of the object.
+	// uid of the object.
 	// +required
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1
@@ -47,13 +47,13 @@ type UIDReference struct {
 
 // SecretReference names a Secret in a namespace.
 type SecretReference struct {
-	// Name of the Secret.
+	// name of the Secret.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// Namespace of the Secret.
+	// namespace of the Secret.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63

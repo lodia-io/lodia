@@ -22,12 +22,15 @@ import (
 type KubeconfigRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
+	// metadata is the standard object metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// spec is what the requester asks for.
 	// +required
 	Spec KubeconfigRequestSpec `json:"spec"`
 
+	// status is Lodia's answer.
 	// +optional
 	Status KubeconfigRequestStatus `json:"status,omitzero"`
 }
@@ -44,11 +47,11 @@ type KubeconfigRequestList struct {
 // which key, and for how long.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="a KubeconfigRequest cannot change; create another"
 type KubeconfigRequestSpec struct {
-	// ControlPlaneRef names a ControlPlane in this namespace.
+	// controlPlaneRef names a ControlPlane in this namespace.
 	// +required
 	ControlPlaneRef LocalReference `json:"controlPlaneRef"`
 
-	// User is the requester's own username, which the admission policy
+	// user is the requester's own username, which the admission policy
 	// kubeconfigrequests.lodia.io requires; the certificate's user is
 	// lodia:user:<user>.
 	// +required
@@ -57,21 +60,21 @@ type KubeconfigRequestSpec struct {
 	// +kubebuilder:validation:XValidation:rule="!self.matches(r'[\\p{Cc}\\x{FFFE}\\x{FFFF}]')",message="must hold no control character"
 	User string `json:"user"`
 
-	// Access ClusterAdmin puts the certificate in lodia:cluster-admins, for
+	// access ClusterAdmin puts the certificate in lodia:cluster-admins, for
 	// which the admission policy requires create on
 	// controlplanes/adminkubeconfig for the ControlPlane; without it the
 	// certificate carries the user only.
 	// +optional
 	Access KubeconfigAccess `json:"access,omitempty"`
 
-	// Request is a PEM PKCS#10 certificate request, of which Lodia uses the
+	// request is a PEM PKCS#10 certificate request, of which Lodia uses the
 	// public key only.
 	// +required
 	// +kubebuilder:validation:MaxLength=5120
 	// +kubebuilder:validation:XValidation:rule="string(self).matches(r'^-----BEGIN CERTIFICATE REQUEST-----\\r?\\n[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE REQUEST-----[\\r\\n]*$')",message="must be one PEM certificate request"
 	Request []byte `json:"request"`
 
-	// ExpirationSeconds counts from the request's creation.
+	// expirationSeconds counts from the request's creation.
 	// +optional
 	// +kubebuilder:default=3600
 	// +kubebuilder:validation:Minimum=600
@@ -89,22 +92,22 @@ const KubeconfigAccessClusterAdmin KubeconfigAccess = "ClusterAdmin"
 // KubeconfigRequestStatus is the issued kubeconfig. The kubeconfig request
 // reconciler of the PKI controller writes it.
 type KubeconfigRequestStatus struct {
-	// Kubeconfig names the public endpoint and the cluster CA bundle and
-	// embeds the certificate; it has no key.
-	// +optional
-	// +kubebuilder:validation:MaxLength=40960
-	Kubeconfig []byte `json:"kubeconfig,omitempty"`
-
-	// ExpirationTimestamp is the certificate's NotAfter.
-	// +optional
-	ExpirationTimestamp *metav1.Time `json:"expirationTimestamp,omitempty"`
-
-	// Conditions, Ready among them.
+	// conditions include Ready.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	// +kubebuilder:validation:MaxItems=8
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// kubeconfig names the public endpoint and the cluster CA bundle and
+	// embeds the certificate; it has no key.
+	// +optional
+	// +kubebuilder:validation:MaxLength=40960
+	Kubeconfig []byte `json:"kubeconfig,omitempty"`
+
+	// expirationTimestamp is the certificate's NotAfter.
+	// +optional
+	ExpirationTimestamp *metav1.Time `json:"expirationTimestamp,omitempty"`
 }
 
 // Backup is a sealed copy of a ControlPlane's etcd, kept in the
@@ -121,12 +124,15 @@ type KubeconfigRequestStatus struct {
 type Backup struct {
 	metav1.TypeMeta `json:",inline"`
 
+	// metadata is the standard object metadata.
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	// spec names the ControlPlane to snapshot.
 	// +required
 	Spec BackupSpec `json:"spec"`
 
+	// status is the copy's progress and where it is.
 	// +optional
 	Status BackupStatus `json:"status,omitzero"`
 }
@@ -142,7 +148,7 @@ type BackupList struct {
 // BackupSpec names the ControlPlane to snapshot.
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="a Backup cannot change; create another"
 type BackupSpec struct {
-	// ControlPlaneRef names a ControlPlane in this namespace.
+	// controlPlaneRef names a ControlPlane in this namespace.
 	// +required
 	ControlPlaneRef LocalReference `json:"controlPlaneRef"`
 }
@@ -150,18 +156,18 @@ type BackupSpec struct {
 // BackupStatus is the copy's progress, what it was taken of, and where it
 // is. The backup reconciler of the Datastore controller writes it.
 type BackupStatus struct {
-	// Conditions, Ready among them.
+	// conditions include Ready.
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	// +kubebuilder:validation:MaxItems=8
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// Source is the ControlPlane the Backup was taken of.
+	// source is the ControlPlane the Backup was taken of.
 	// +optional
 	Source *UIDReference `json:"source,omitempty"`
 
-	// KubernetesVersion is the version the source ran when the Backup was
+	// kubernetesVersion is the version the source ran when the Backup was
 	// sealed: its status.kubernetes.version, or its status.target.version
 	// until Lifecycle writes the former. A ControlPlane restored from the
 	// Backup runs the same minor.
@@ -169,22 +175,24 @@ type BackupStatus struct {
 	// +kubebuilder:validation:MaxLength=16
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 
-	// Network is the source's network, which a ControlPlane restored from the
+	// network is the source's network, which a ControlPlane restored from the
 	// Backup must have too.
 	// +optional
 	Network *Network `json:"network,omitempty"`
 
-	// Snapshots is where the copy is: the store it was sealed in and the
+	// snapshots is where the copy is: the store it was sealed in and the
 	// Backup's own prefix there.
 	// +optional
 	Snapshots *BackupSnapshotLocation `json:"snapshots,omitempty"`
 
-	// Seal is the key the copy is checked by.
+	// seal is the key the copy is checked by.
 	// +optional
 	Seal *BackupSeal `json:"seal,omitempty"`
 
+	// startedAt is when the Backup started.
 	// +optional
 	StartedAt *metav1.Time `json:"startedAt,omitempty"`
+	// completedAt is when the Backup was complete.
 	// +optional
 	CompletedAt *metav1.Time `json:"completedAt,omitempty"`
 }
@@ -193,7 +201,7 @@ type BackupStatus struct {
 type BackupSnapshotLocation struct {
 	SnapshotLocation `json:",inline"`
 
-	// FromSecret is the part of the store that the provider reads from the
+	// fromSecret is the part of the store that the provider reads from the
 	// credentials Secret.
 	// +optional
 	FromSecret *StoreSecretFields `json:"fromSecret,omitempty"`
@@ -203,36 +211,36 @@ type BackupSnapshotLocation struct {
 // the store rather than authenticate to it, as etcd-backup-restore reads
 // them; an absent key stays unset. Each is one provider's.
 type StoreSecretFields struct {
-	// Endpoint is S3's deprecated endpoint key.
+	// endpoint is S3's deprecated endpoint key.
 	// +optional
 	Endpoint *string `json:"endpoint,omitempty"`
 
-	// Region is S3's, which picks the partition, and with it the bucket of
+	// region is S3's, which picks the partition, and with it the bucket of
 	// that name.
 	// +optional
 	Region *string `json:"region,omitempty"`
 
-	// StorageAPIEndpoint is GCS's deprecated endpoint key.
+	// storageAPIEndpoint is GCS's deprecated endpoint key.
 	// +optional
 	StorageAPIEndpoint *string `json:"storageAPIEndpoint,omitempty"`
 
-	// StorageAccount is the ABS account.
+	// storageAccount is the ABS account.
 	// +optional
 	StorageAccount *string `json:"storageAccount,omitempty"`
 
-	// Domain is ABS's deprecated domain key.
+	// domain is ABS's deprecated domain key.
 	// +optional
 	Domain *string `json:"domain,omitempty"`
 
-	// AuthURL is Swift's Keystone, whose catalog names the store.
+	// authURL is Swift's Keystone, whose catalog names the store.
 	// +optional
 	AuthURL *string `json:"authURL,omitempty"`
 
-	// TenantName is the Swift project, whose account holds the containers.
+	// tenantName is the Swift project, whose account holds the containers.
 	// +optional
 	TenantName *string `json:"tenantName,omitempty"`
 
-	// DomainName is the Keystone domain of the Swift project.
+	// domainName is the Keystone domain of the Swift project.
 	// +optional
 	DomainName *string `json:"domainName,omitempty"`
 }
@@ -243,12 +251,12 @@ type StoreSecretFields struct {
 // restore proves it came from this Backup, and holds the source's data at
 // least up to it, by finding the key.
 type BackupSeal struct {
-	// Revision of the seal key in the source's etcd.
+	// revision of the seal key in the source's etcd.
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	Revision int64 `json:"revision"`
 
-	// QuotaBackendBytes is the source etcd's quota when it was sealed, the
+	// quotaBackendBytes is the source etcd's quota when it was sealed, the
 	// one bound Lodia has on the size of the copy: a ControlPlane restored
 	// from the Backup needs at least this quota.
 	// +optional

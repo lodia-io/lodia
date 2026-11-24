@@ -1,6 +1,6 @@
 # Every tool runs through `go tool` (see the tool block in go.mod), except
 # golangci-lint, helm, promtool, dashboard-linter, cosign and gh, which are installed on their own,
-# and ko, hydrophone, yq and crane, which run as `go run <module>@<version>`:
+# and ko, hydrophone, yq, crane and kube-api-linter, which run as `go run <module>@<version>`:
 # their dependency graphs would move the operator's own dependencies.
 
 ENVTEST_K8S_VERSION ?= 1.35.0
@@ -61,6 +61,7 @@ DIGEST = sha256:0000000000000000000000000000000000000000000000000000000000000000
 KO = go run github.com/google/ko@v0.19.1
 YQ = go run github.com/mikefarah/yq/v4@v4.54.1
 CRANE = go run github.com/google/go-containerregistry/cmd/crane@v0.22.1
+KUBE_API_LINTER = go run sigs.k8s.io/kube-api-linter/cmd/golangci-lint-kube-api-linter@v0.0.0-20261030144752-d90122c89087
 IMAGE_REGISTRY = ghcr.io/lodia-io
 CHART_REGISTRY = ghcr.io/lodia-io/charts
 PLATFORMS = linux/amd64,linux/arm64
@@ -104,20 +105,23 @@ lint:
 	cd api && golangci-lint run ./...
 	cd test/monitoring && golangci-lint run ./...
 
+.PHONY: kube-api-linter
+kube-api-linter: ## kube-api-linter on api/, with the rules .kube-api-linter.yml leaves on
+	cd api && $(KUBE_API_LINTER) run --config ../.kube-api-linter.yml ./...
+
 .PHONY: etcd
 etcd: ## fetch etcd's release binary at the version etcd-wrapper runs into ETCD_DIR, after checking it against the SHA-256 versions.EtcdArchives pins, unless it is there, and print its path
 	go run ./test/etcdbinary $(ETCD_DIR)
 
 .PHONY: test
 test: etcd ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd, and the tests of Lodia's calls to etcd run the binary that make etcd fetches
-	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)
 	out="$$(mktemp)" && st="$$(mktemp)" && { LODIA_HEALTH_TEST_WITHOUT_ENVTEST=1 go test -race -count=1 -v -run '^($(APART_TESTS))$$' ./internal/controller/health; echo $$? > "$$st"; } 2>&1 | tee "$$out"; \
 	status="$$(cat "$$st")"; [ -n "$$status" ] || status=1; \
 	for t in $(APART); do grep -q "^--- PASS: $$t (" "$$out" || { echo "$$t did not pass in the step without envtest"; status=1; }; done; \
 	rm -f "$$out" "$$st"; exit $$status
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health
 	cd api && go test ./...
 
 .PHONY: fleet
@@ -303,6 +307,7 @@ verify: ## the check that says a change is done
 	go mod tidy -diff
 	cd api && go mod tidy -diff
 	cd test/monitoring && go mod tidy -diff
+	$(MAKE) --no-print-directory kube-api-linter
 	$(MAKE) --no-print-directory chart verify-release lint monitoring test restore-keys
 
 define e2e-needs
