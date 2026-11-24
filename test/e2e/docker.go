@@ -19,7 +19,7 @@ import (
 const containerLabel = "io.lodia.e2e.cluster"
 
 var (
-	containerID   = regexp.MustCompile(`^[0-9a-f]{12,64}$`)
+	containerID   = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	containerName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 )
 
@@ -45,7 +45,7 @@ func dockerStdout(ctx context.Context, args ...string) (string, error) {
 // cluster, each as format prints it, and keeps the words that match
 // wellFormed: a warning docker prints is not a container.
 func suiteContainers(ctx context.Context, cluster, format string, wellFormed *regexp.Regexp) ([]string, error) {
-	out, err := dockerStdout(ctx, "ps", "--all", "--format", format, "--filter", "label="+containerLabel+"="+cluster)
+	out, err := dockerStdout(ctx, "ps", "--all", "--no-trunc", "--format", format, "--filter", "label="+containerLabel+"="+cluster)
 	if err != nil {
 		return nil, err
 	}

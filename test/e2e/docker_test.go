@@ -30,13 +30,18 @@ func dockerCalls(t *testing.T, calls string) []string {
 	return strings.Split(strings.TrimSpace(string(log)), "\n")
 }
 
-func TestTheContainersTheSuiteRemovesAreTheIDsDockerPrintsOnStdout(t *testing.T) {
+func TestTheContainersTheSuiteRemovesAreTheFullIDsDockerPrintsOnStdout(t *testing.T) {
+	const (
+		idA = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+		idB = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	)
 	cases := []struct {
 		name, ps, want string
 		wantErr        bool
 	}{
-		{"a warning on stderr", `echo "WARNING: container deadbeef0123 is slow" >&2; echo abcdef012345; echo 0123456789ab`, "rm --force --volumes abcdef012345 0123456789ab", false},
-		{"words on stdout that are no ID", `echo "WARNING: the daemon is slow"; echo --all; echo abcdef012345; echo ABCDEF012345`, "rm --force --volumes abcdef012345", false},
+		{"a warning on stderr", `echo "WARNING: container deadbeef0123 is slow" >&2; echo ` + idA + `; echo ` + idB, "rm --force --volumes " + idA + " " + idB, false},
+		{"words on stdout that are no ID", `echo "WARNING: the daemon is slow"; echo --all; echo ` + idA + `; echo ` + strings.ToUpper(idB), "rm --force --volumes " + idA, false},
+		{"a short ID", `echo abcdef012345; echo ` + idA, "rm --force --volumes " + idA, false},
 		{"a warning only", `echo "WARNING: the daemon is slow" >&2`, "", false},
 		{"no container", `:`, "", false},
 		{"a failed listing", `echo "Cannot connect to the Docker daemon" >&2; exit 1`, "", true},
@@ -48,7 +53,7 @@ func TestTheContainersTheSuiteRemovesAreTheIDsDockerPrintsOnStdout(t *testing.T)
 			if (err != nil) != c.wantErr {
 				t.Fatalf("got %v, want an error: %v", err, c.wantErr)
 			}
-			want := []string{"ps --all --format {{.ID}} --filter label=io.lodia.e2e.cluster=lodia-e2e-x"}
+			want := []string{"ps --all --no-trunc --format {{.ID}} --filter label=io.lodia.e2e.cluster=lodia-e2e-x"}
 			if c.want != "" {
 				want = append(want, c.want)
 			}

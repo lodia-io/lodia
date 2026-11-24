@@ -178,7 +178,7 @@ esac
 		t.Fatal(err)
 	}
 	log, err := os.ReadFile(calls)
-	if err != nil || !strings.HasPrefix(string(log), "ps --all --format {{.Names}} --filter label=io.lodia.e2e.cluster=lodia-e2e-x\n") {
+	if err != nil || !strings.HasPrefix(string(log), "ps --all --no-trunc --format {{.Names}} --filter label=io.lodia.e2e.cluster=lodia-e2e-x\n") {
 		t.Fatalf("docker was called as %q, %v", log, err)
 	}
 	for path, want := range map[string]string{
