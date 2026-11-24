@@ -347,13 +347,17 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, ren
 		return nil, err
 	}
 	// The typed Etcd marshals its deprecated selector as null and its status
-	// as an empty object; neither is a field to apply. Nor are empty
-	// scheduling constraints: applied as an empty object where the apply set
-	// some before, they come back null, which the schema refuses.
+	// as an empty object; neither is a field to apply. Nor are the objects
+	// render leaves empty without the class or spec fields they come from:
+	// applied as an empty object where the apply set fields in it before, an
+	// object comes back null, which the schema refuses
+	// (sigs.k8s.io/structured-merge-diff/v6@v6.4.2 typed/remove.go#L171-L173).
 	unstructured.RemoveNestedField(content, "spec", "selector")
 	unstructured.RemoveNestedField(content, "status")
-	if constraints, _, _ := unstructured.NestedMap(content, "spec", "schedulingConstraints"); len(constraints) == 0 {
-		unstructured.RemoveNestedField(content, "spec", "schedulingConstraints")
+	for _, object := range [][]string{{"spec", "schedulingConstraints"}, {"spec", "sharedConfig"}, {"spec", "etcd", "resources"}} {
+		if fields, _, _ := unstructured.NestedMap(content, object...); len(fields) == 0 {
+			unstructured.RemoveNestedField(content, object...)
+		}
 	}
 	applied := &unstructured.Unstructured{Object: content}
 	if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(manager), client.ForceOwnership); err != nil {
