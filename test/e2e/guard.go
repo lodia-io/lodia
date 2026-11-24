@@ -53,6 +53,14 @@ func RequireNamedCluster(path string) error {
 	return nil
 }
 
+func kindCluster(kubeconfig string) (string, error) {
+	cfg, err := clientcmd.LoadFromFile(kubeconfig)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(cfg.CurrentContext, "kind-"), nil
+}
+
 func helmKubeVariables() []string {
 	var names []string
 	for _, kv := range os.Environ() {

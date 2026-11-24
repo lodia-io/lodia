@@ -714,14 +714,7 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	if _, err := docker(ctx, "rm", "--force", "--volumes", name); err != nil {
 		t.Fatal(err)
 	}
-	run := []string{"run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind", "--label", containerLabel + "=" + cluster,
-		"--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
-		"--cgroupns=private", "--tmpfs", "/tmp", "--tmpfs", "/run", "--volume", "/var",
-		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false"}
-	if nodeDNS != "" {
-		run = append(run, "--dns", nodeDNS)
-	}
-	if _, err := docker(ctx, append(run, nodeImage)...); err != nil {
+	if _, err := docker(ctx, nodeRunArgs(cluster, name, nodeDNS, nodeImage)...); err != nil {
 		t.Fatal(err)
 	}
 	until(ctx, t, time.Minute, "container "+name+" booted", func(ctx context.Context) error {
@@ -748,15 +741,7 @@ func removeContainers(ctx context.Context, cfg *envconf.Config) (context.Context
 	if err != nil {
 		return ctx, err
 	}
-	out, err := docker(ctx, "ps", "--all", "--quiet", "--filter", "label="+containerLabel+"="+cluster)
-	if err != nil {
-		return ctx, err
-	}
-	ids := strings.Fields(out)
-	if len(ids) == 0 {
-		return ctx, nil
-	}
-	if _, err := docker(ctx, append([]string{"rm", "--force", "--volumes"}, ids...)...); err != nil {
+	if err := removeSuiteContainers(ctx, cluster); err != nil {
 		fmt.Fprintln(os.Stderr, "remove the containers the suite started:", err)
 		return ctx, err
 	}

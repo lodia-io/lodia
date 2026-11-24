@@ -47,7 +47,7 @@ func Dump(ctx context.Context, cfg *rest.Config, cluster, dir string) error {
 }
 
 func dumpObjects(ctx context.Context, disco discovery.DiscoveryInterface, dyn dynamic.Interface, dir string) error {
-	_, lists, err := disco.ServerGroupsAndResources()
+	_, lists, err := discovery.ToServerResourcesInterfaceWithContext(disco).ServerGroupsAndResourcesWithContext(ctx)
 	errs := []error{err}
 	seen := map[string]bool{}
 	for _, list := range lists {
@@ -58,7 +58,7 @@ func dumpObjects(ctx context.Context, disco discovery.DiscoveryInterface, dyn dy
 		}
 		for _, r := range list.APIResources {
 			name := strings.TrimSuffix(r.Name+"."+gv.Group, ".")
-			if strings.Contains(r.Name, "/") || !slices.Contains(r.Verbs, "list") || seen[name] || slices.Contains(withheld, name) {
+			if !slices.Contains(r.Verbs, "list") || seen[name] || slices.Contains(withheld, name) {
 				continue
 			}
 			seen[name] = true
@@ -116,12 +116,12 @@ func writeLog(ctx context.Context, k8s kubernetes.Interface, pod corev1.Pod, con
 }
 
 func dumpContainers(ctx context.Context, cluster, dir string) error {
-	out, err := docker(ctx, "ps", "--all", "--format", "{{.Names}}", "--filter", "label="+containerLabel+"="+cluster)
+	names, err := suiteContainers(ctx, cluster, "{{.Names}}", containerName)
 	if err != nil {
 		return err
 	}
 	var errs []error
-	for name := range strings.FieldsSeq(out) {
+	for _, name := range names {
 		base := filepath.Join(dir, "containers", name)
 		if console, err := docker(ctx, "logs", name); err != nil {
 			errs = append(errs, err)

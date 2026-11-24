@@ -194,3 +194,25 @@ esac
 		t.Error("the DNS container has a journal")
 	}
 }
+
+func TestADumpLeavesOutWhatDockerPrintsThatIsNoContainerName(t *testing.T) {
+	calls := fakeDocker(t, `case "$1" in
+ps) echo "WARNING: the daemon is slow" >&2; printf '%s\n' e2e-dns -v a/b ;;
+logs) echo "console of $2" ;;
+exec) exit 126 ;;
+esac
+`)
+	dir := t.TempDir()
+	if err := dumpContainers(t.Context(), "lodia-e2e-x", dir); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "containers"))
+	if err != nil || len(entries) != 1 || entries[0].Name() != "e2e-dns" {
+		t.Fatalf("the dump holds %v, %v, want e2e-dns alone", entries, err)
+	}
+	for _, call := range dockerCalls(t, calls) {
+		if strings.Contains(call, "WARNING") || strings.Contains(call, "-v") || strings.Contains(call, "a/b") {
+			t.Errorf("docker was called as %q", call)
+		}
+	}
+}

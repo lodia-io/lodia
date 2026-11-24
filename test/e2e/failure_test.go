@@ -1,8 +1,6 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build e2e
-
 package e2e
 
 import (
@@ -27,11 +25,10 @@ const (
 var (
 	dumpDir = os.Getenv("E2E_DUMPS")
 	dumped  sync.Map
-	armed   sync.Once
 )
 
 // dumpCluster writes a dump of the cluster into E2E_DUMPS/name, once for each
-// name, where the variable is set.
+// name, where the variable is set, in place of what an earlier run left there.
 func dumpCluster(ctx context.Context, cfg *envconf.Config, name string) {
 	if dumpDir == "" {
 		return
@@ -44,6 +41,9 @@ func dumpCluster(ctx context.Context, cfg *envconf.Config, name string) {
 	dir := filepath.Join(dumpDir, name)
 	cluster, err := kindCluster(cfg.KubeconfigFile())
 	if err == nil {
+		err = os.RemoveAll(dir)
+	}
+	if err == nil {
 		err = Dump(ctx, cfg.Client().RESTConfig(), cluster, dir)
 	}
 	if err != nil {
@@ -53,15 +53,12 @@ func dumpCluster(ctx context.Context, cfg *envconf.Config, name string) {
 	fmt.Fprintf(os.Stderr, "the dump %s is in %s\n", name, dir)
 }
 
-// dumpBeforeTimeout dumps the cluster dumpMargin before go test's timeout,
-// which kills the process with no chance to dump after it.
-func dumpBeforeTimeout(ctx context.Context, cfg *envconf.Config, t *testing.T) (context.Context, error) {
-	armed.Do(func() {
-		if deadline, ok := t.Deadline(); ok {
-			time.AfterFunc(time.Until(deadline)-dumpMargin, func() { dumpCluster(context.Background(), cfg, "timeout") })
-		}
-	})
-	return ctx, nil
+// dumpBeforeTimeout dumps the cluster dumpMargin before the timeout of go test,
+// counted from now, which kills the process with no chance to dump after it.
+func dumpBeforeTimeout(cfg *envconf.Config, timeout time.Duration) {
+	if timeout > 0 {
+		time.AfterFunc(timeout-dumpMargin, func() { dumpCluster(context.Background(), cfg, "timeout") })
+	}
 }
 
 // dumping dumps the cluster at the first step that fails, before a teardown

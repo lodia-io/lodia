@@ -84,7 +84,7 @@ func runDNS(ctx context.Context, cluster string, files map[string]string, probe 
 	defer func() { _ = os.RemoveAll(dir) }()
 	steps := [][]string{
 		{"rm", "--force", "--volumes", name},
-		{"create", "--name", name, "--network", "kind", "--label", containerLabel + "=" + cluster, "--restart=on-failure:3", gatewayDNSImage, "-conf", "/Corefile"},
+		dnsCreateArgs(cluster, name, gatewayDNSImage),
 	}
 	for path, content := range files {
 		local := filepath.Join(dir, filepath.Base(path))
