@@ -4,6 +4,7 @@
 package e2e
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,8 +15,13 @@ import (
 
 func kubeconfig(t *testing.T, current string, contexts ...string) string {
 	t.Helper()
+	return kubeconfigFor(t, "https://127.0.0.1:6443", current, contexts...)
+}
+
+func kubeconfigFor(t *testing.T, server, current string, contexts ...string) string {
+	t.Helper()
 	cfg := clientcmdapi.NewConfig()
-	cfg.Clusters["c"] = &clientcmdapi.Cluster{Server: "https://127.0.0.1:6443"}
+	cfg.Clusters["c"] = &clientcmdapi.Cluster{Server: server}
 	cfg.AuthInfos["u"] = &clientcmdapi.AuthInfo{Token: "t"}
 	for _, name := range contexts {
 		cfg.Contexts[name] = &clientcmdapi.Context{Cluster: "c", AuthInfo: "u"}
@@ -28,7 +34,17 @@ func kubeconfig(t *testing.T, current string, contexts ...string) string {
 	return path
 }
 
+func withoutHelmKubeVariables(t *testing.T) {
+	t.Helper()
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); strings.HasPrefix(name, helmKubePrefix) {
+			t.Setenv(name, "")
+		}
+	}
+}
+
 func TestRequireNamedCluster(t *testing.T) {
+	withoutHelmKubeVariables(t)
 	cases := []struct {
 		name, path, want string
 	}{
@@ -54,6 +70,7 @@ func TestRequireNamedCluster(t *testing.T) {
 }
 
 func TestRequireNamedClusterRefusesTheVariablesHelmLaysOverItsKubeconfig(t *testing.T) {
+	withoutHelmKubeVariables(t)
 	cases := []struct {
 		name, want string
 		env        map[string]string
