@@ -150,7 +150,7 @@ func StartDumping(t testing.TB, env *envtest.Environment, after time.Duration) (
 		cfg, err := env.Start()
 		return cfg, env.Stop, err
 	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { //nolint:gosec // G703: the directory is the one LODIA_APISERVER_DUMPS names
 		return nil, nil, err
 	}
 	output, err := os.CreateTemp(dir, strings.ReplaceAll(t.Name(), "/", "_")+"-*.log")
@@ -166,11 +166,11 @@ func StartDumping(t testing.TB, env *envtest.Environment, after time.Duration) (
 	}
 	return cfg, func() error {
 		dump := time.AfterFunc(after, func() {
-			_ = exec.CommandContext(context.Background(), "pkill", "-QUIT", "-f", "--", "--secure-port="+api.SecureServing.Port).Run()
+			_ = exec.CommandContext(context.Background(), "pkill", "-QUIT", "-f", "--", "--secure-port="+api.SecureServing.Port).Run() //nolint:gosec // G204: the port is the one envtest gave the API server it started
 		})
 		err := env.Stop()
 		if dump.Stop() {
-			err = errors.Join(err, os.Remove(output.Name()))
+			err = errors.Join(err, os.Remove(output.Name())) //nolint:gosec // G703: the file is the one this function created
 		}
 		return errors.Join(err, output.Close())
 	}, nil
