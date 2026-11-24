@@ -19,7 +19,7 @@ Built.
 
 - At `6452c99` the file held 83 items: 56 could start, 5 were obsolete, and 22 waited on a condition, 6 of them asks of other projects.
   A file that mixes the two cannot say what is owed and what is only waiting.
-- Among the 56 was a defect no heading marked as one: an edit that removes `etcd.autoCompaction` from a class makes etcd-druid's schema refuse the `Etcd` of every tenant on it, and the item had stood since 2026-11-11.
+- Among the 56 was a defect no heading marked as one: an edit that removed `etcd.autoCompaction` from a class made etcd-druid's schema refuse the `Etcd` of every tenant on it, and the item had stood since 2026-11-11 (fixed by #135).
   #68 and #99 had fixed items and left them in the file.
 
 ## Rejected
