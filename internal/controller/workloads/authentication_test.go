@@ -564,13 +564,11 @@ func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {
 			setTargetAt(t, cp, version, next)
 			testenv.Eventually(t, func() error {
 				d := deployment(t, cp, "kube-apiserver")
-				if d.Spec.Template.Spec.Containers[0].Image != "registry.k8s.io/kube-apiserver:v1.33.2" {
-					d.Spec.Template.Spec.Containers[0].Image = "registry.k8s.io/kube-apiserver:v1.33.2"
-					if err := k8s.Update(t.Context(), d); err != nil {
-						return err
-					}
-					markAvailable(t, deployment(t, cp, "kube-apiserver"))
-				}
+				d.Spec.Template.Spec.Containers[0].Image = "registry.k8s.io/kube-apiserver:v1.33.2"
+				return k8s.Update(t.Context(), d)
+			})
+			markAvailable(t, deployment(t, cp, "kube-apiserver"))
+			testenv.Eventually(t, func() error {
 				if got := reportedAPIServer(t, cp); got != "v1.33.2" {
 					return fmt.Errorf("the API server reports %q", got)
 				}
