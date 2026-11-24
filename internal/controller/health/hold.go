@@ -106,7 +106,7 @@ func (r *NodesReconciler) holdOrRelease(ctx context.Context, cp *lodiav1alpha1.C
 	if chosen.condition == nil {
 		return nil
 	}
-	return r.report(ctx, cp, s.status(cp), holdStatus(chosen, lease), *chosen.condition)
+	return r.report(ctx, cp, s, s.status(cp), holdStatus(chosen, lease), *chosen.condition)
 }
 
 // readLease reads the controller manager's Lease with a consistent GET; a

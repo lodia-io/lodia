@@ -556,6 +556,50 @@ func TestASamplingPassThatChangesNothingWritesNothing(t *testing.T) {
 	}
 }
 
+func TestStatusNodesFollowsANodeGoneAPeriodAfterAWriteTheCacheDoesNotHoldYet(t *testing.T) {
+	for _, c := range []struct {
+		name        string
+		lostAnswers int
+	}{{"a write the cache lags", 0}, {"a write whose answer was lost", 1}} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := tenantControlPlane(t)
+			start := time.Now().Truncate(time.Second)
+			now := clocktesting.NewFakePassiveClock(start)
+			r := nodesReconciler(now)
+			joined(t, "a", corev1.ConditionTrue, start)
+			joined(t, "b", corev1.ConditionTrue, start)
+			sample(t, r, cp)
+			expectNodes(t, cp, nodesOf(2, 2, 0, "v1.35.0"))
+			expectNotHeld(t, cp, silent(0, 2))
+
+			reads := &controlPlaneReads{Reader: k8s}
+			r.Client, r.Reader = frozenCache(get(t, cp), c.lostAnswers), reads
+			pass := func(at time.Duration) {
+				t.Helper()
+				renewNodeLease(t, "a", time.Now())
+				renewNodeLease(t, "b", time.Now())
+				now.SetTime(start.Add(at))
+				sample(t, r, cp)
+			}
+			joined(t, "c", corev1.ConditionTrue, start)
+			pass(30 * time.Second)
+			expectNodes(t, cp, nodesOf(3, 3, 0, "v1.35.0"))
+			expectNotHeld(t, cp, silent(0, 3))
+			removeNode(t, "c")
+			pass(60 * time.Second)
+			expectNodes(t, cp, nodesOf(2, 2, 0, "v1.35.0"))
+			expectNotHeld(t, cp, silent(0, 2))
+
+			pass(65 * time.Second)
+			reads.n.Store(0)
+			pass(70 * time.Second)
+			if n := reads.n.Load(); n != 0 {
+				t.Errorf("a pass that follows one that wrote nothing read the ControlPlane live %d times", n)
+			}
+		})
+	}
+}
+
 func TestAWaitForAccessLeavesStatusNodesAndRestartsTheClock(t *testing.T) {
 	cp := tenantControlPlane(t)
 	start := time.Now().Truncate(time.Second)

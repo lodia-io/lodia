@@ -56,7 +56,8 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 					Rendered:     lodiav1alpha1.Rendered{Version: "v1.37.1"},
 				},
 			},
-			Nodes: &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 3, Ready: 2}, OldestKubelet: "v1.34.2"},
+			Nodes:  &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 3, Ready: 2}, OldestKubelet: "v1.34.2"},
+			Health: &lodiav1alpha1.HealthStatus{ControllerManagerHold: &lodiav1alpha1.ControllerManagerHold{Since: &at, SilentNodes: 2, CountedNodes: 3}},
 			Credentials: &lodiav1alpha1.CredentialsStatus{
 				AdminKubeconfigSecretRef: &lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
 				CABundleSecretRef:        &lodiav1alpha1.LocalReference{Name: "dev-ca-bundle"},
@@ -173,8 +174,8 @@ func TestNodesTakesTheAPIServersStatus(t *testing.T) {
 	if err := live.Nodes(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady); err != nil {
 		t.Fatal(err)
 	}
-	if !equality.Semantic.DeepEqual(cp.Status.Nodes, server.Status.Nodes) {
-		t.Errorf("status.nodes %+v, want the API server's %+v", cp.Status.Nodes, server.Status.Nodes)
+	if !equality.Semantic.DeepEqual(cp.Status.Nodes, server.Status.Nodes) || !equality.Semantic.DeepEqual(cp.Status.Health, server.Status.Health) {
+		t.Errorf("status.nodes %+v and status.health %+v, want the API server's %+v and %+v", cp.Status.Nodes, cp.Status.Health, server.Status.Nodes, server.Status.Health)
 	}
 	for _, c := range []struct {
 		conditionType string
