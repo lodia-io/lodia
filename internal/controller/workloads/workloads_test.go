@@ -65,31 +65,43 @@ var restartOnlySecrets = []lodiav1alpha1.Secret{
 var (
 	k8s          client.WithWatch
 	apiReader    client.Reader
-	managerReads *pausedReads
+	managerReads *reads
 )
 
-type pausedReads struct {
+type reads struct {
 	client.Client
-	mu     sync.Mutex
-	paused map[client.ObjectKey]int64
+	mu      sync.Mutex
+	paused  map[client.ObjectKey]int64
+	targets map[client.ObjectKey]*lodiav1alpha1.Target
 }
 
-func (r *pausedReads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+func (r *reads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
 		return err
 	}
-	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && cp.Spec.Paused {
-		r.mu.Lock()
-		r.paused[key] = max(r.paused[key], cp.Generation)
-		r.mu.Unlock()
+	cp, ok := obj.(*lodiav1alpha1.ControlPlane)
+	if !ok {
+		return nil
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cp.Spec.Paused {
+		r.paused[key] = max(r.paused[key], cp.Generation)
+	}
+	r.targets[key] = cp.Status.Target.DeepCopy()
 	return nil
 }
 
-func (r *pausedReads) pausedAt(key client.ObjectKey) int64 {
+func (r *reads) pausedAt(key client.ObjectKey) int64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.paused[key]
+}
+
+func (r *reads) targetOf(key client.ObjectKey) *lodiav1alpha1.Target {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.targets[key]
 }
 
 func TestMain(m *testing.M) {
@@ -107,7 +119,7 @@ func TestMain(m *testing.M) {
 	k8s = env.Client
 	mgr := env.Manager(env.AsController("workloads"), true)
 	apiReader = mgr.GetAPIReader()
-	managerReads = &pausedReads{Client: mgr.GetClient(), paused: map[client.ObjectKey]int64{}}
+	managerReads = &reads{Client: mgr.GetClient(), paused: map[client.ObjectKey]int64{}, targets: map[client.ObjectKey]*lodiav1alpha1.Target{}}
 	reconciler := &workloads.Reconciler{Client: managerReads, Reader: apiReader, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
 	if err := reconciler.SetupWithManager(mgr, 1); err != nil {
 		env.Fatal("controller", err)
@@ -1842,6 +1854,13 @@ func setTargetAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, version, revision
 		target["operatorRevision"] = revision
 	}
 	applyStatus(t, cp, "test/target", map[string]any{"target": target})
+	set := get(t, cp).Status.Target
+	testenv.Eventually(t, func() error {
+		if read := managerReads.targetOf(client.ObjectKeyFromObject(cp)); !equality.Semantic.DeepEqual(read, set) {
+			return fmt.Errorf("the suite's manager last read the target %+v, want %+v", read, set)
+		}
+		return nil
+	})
 }
 
 func setDatastore(t *testing.T, cp *lodiav1alpha1.ControlPlane, endpoints ...lodiav1alpha1.HostPort) {

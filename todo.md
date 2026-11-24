@@ -221,14 +221,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   A node a platform removes therefore keeps a certificate its API server accepts for up to 30 days, and its kubelet may register its `Node` again in that time.
   `docs/decisions/staged-credential-rotation.md:22` sets the 30 days without weighing that window against the renewals a shorter lifetime costs: decide the lifetime, or a field for it, on that trade.
 
-## From the CI of the bounded reads (2026-11-13)
-
-- `TestAGrantThatChangesNoTemplateRollsNoPod` (`internal/controller/workloads/revision_test.go:268`) failed in the `verify` job of run [43357744832](https://github.com/lodia-io/lodia/actions/runs/43357744832), job 131663696983, at d378796 of #89, a pull request that touches nothing in `internal/controller/workloads`:
-  `Deployment kube-controller-manager is stamped "v0.0.0-test+running", want v0.0.1-test+next`, and the same for `kube-scheduler`.
-  Line 268 is the first `expectStamps` after the pass of the operator at the new revision: it left two of the three Deployments at the stamp of the old one, and the API server's Deployment carried the new.
-  The test passed three runs of three locally, `main` was green at bf28826, and none of the other failed runs among the last 60 of the repository names it.
-  The cause is not found.
-
 ## From the API before it freezes (2026-11-17)
 
 - `extraArgs` refuses the flags that conflict with what Lodia renders, and checks the values of only the flags its rules name, each in one form first; it passes every other value through as written, and a value a component refuses makes it exit.
@@ -292,7 +284,4 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 
 ## From the flake of a held pass's report (2026-11-23)
 
-- Two more tests move `status.target` with `setTargetAt` and then cause a pass that can read the target from before the move out of Workloads' cache, which decides a hold from it (`held`, `internal/controller/workloads/workloads.go`): `TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves/a_held_pass` and `TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes` (`internal/controller/workloads/authentication_test.go`), where `setIngress` lands 16 to 19 ms after the target.
-  A pass on the old target, run by hand through the suite's stale client, writes the authentication ConfigMap and gives the next held pass another `APIServerReady`, which each test's checks refuse; no CI run has failed on either yet.
-  A write cannot be undone as the image of `TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable` is set again, so each needs a deterministic setup: `pause`, then the passes it means, by hand.
 - No test catches a held pass that rewrites the API server's Deployment while its report is outside the running table: a held pass that force-applies the render there passes the whole package, since `TestAHeldPassOutsideTheRunningTableReportsWhatRuns/a_reported` (`internal/controller/workloads/revision_test.go`) keeps a Deployment equal to the render.
