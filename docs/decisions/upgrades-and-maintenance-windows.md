@@ -2,7 +2,7 @@
 
 Decided 2026-10-25.
 Built: the steps of a minor upgrade below, its rehearsal among them, Lifecycle driving them, the operator revision, the holds of Workloads, Tenant and the Datastore controller, the stamps on the Deployments and the `Etcd`, Lifecycle's grant of the running revision, of patch updates and of edits of the `DatastoreClass` by the rules below (windows, the fleet, maintenance on request and the settling time), and the warning of the end of support in `Progressing`'s message, a metric and an alert.
-Not built yet: the rendering of a dropped minor, in the release that first drops one ([todo](../../todo.md#for-the-release-that-first-drops-a-minor)).
+Not built yet: the rendering of a dropped minor, in the release that first drops one ([todo](../../todo.md#releases-and-tooling)).
 
 ## Decision
 
@@ -96,7 +96,7 @@ Only the change settling and deletion end a slot: an owner's edit that the write
 | `maintenance.autoUpdate.kubernetesPatch` finds a newer patch | in the window |
 | a new operator revision renders something else | in the window |
 | an edit of the tenant's `DatastoreClass` that reaches its `Etcd` | in the window: a class is shared, and the edit rolls every member on it |
-| a certificate renewal that needs a restart | now, or at the grant on a tenant Workloads holds; in the window with phase 3's rotations (`todo.md`) |
+| a certificate renewal that needs a restart | now, or at the grant on a tenant Workloads holds; in the window with phase 3's rotations |
 | a credential rotation the owner started | now; the stages wait for the owner |
 
 **Windows.**

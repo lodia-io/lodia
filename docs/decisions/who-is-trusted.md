@@ -20,7 +20,7 @@ The bounded reads of a tenant, Health's, Tenant's and PKI's, and the chart's pol
 ## Why
 
 - **The management cluster holds every tenant.**
-  A tenant namespace holds that tenant's CA keys and its class's backup credentials, which read every tenant's snapshots on the class ([Identity and tenancy](../README.md#identity-and-tenancy)).
+  A tenant namespace holds that tenant's CA keys and its class's backup credentials, which read and delete every tenant's snapshots on the class ([Identity and tenancy](../README.md#identity-and-tenancy)).
   A `ControlPlane` names the `Backup` whose data it restores, the class whose bucket it writes and flags of its API server ([the fields](../api/controlplane.md#spec)), so whoever writes one reaches what its namespace reaches.
 - **The threats need no access to Lodia.**
   `cluster-admin` inside a tenant is enough: its administrator writes the Nodes and Leases Health counts, and an APIService naming a Service of their own puts their server in place of a built-in group ([controller-manager-hold](controller-manager-hold.md)), so a read of the tenant can return anything, of any length.
@@ -46,7 +46,7 @@ The bounded reads of a tenant, Health's, Tenant's and PKI's, and the chart's pol
 - Every read of a tenant is bounded in bytes, items and time.
   Health's, Tenant's and PKI's are, through one client ([controller-manager-hold](controller-manager-hold.md), [tenant-clients-speak-http1](tenant-clients-speak-http1.md), [one-client-for-a-tenant](one-client-for-a-tenant.md)).
 - The platform's RBAC on the management cluster is the boundary: Secrets in tenant namespaces are readable by Lodia and the platform's administrators only ([Identity and tenancy](../README.md#identity-and-tenancy)).
-- A compromised control plane pod reaches the management network, since its egress is not denied yet (`todo.md`).
+- A compromised control plane pod reaches the management network, since its egress is not denied yet.
 - The issuers of a tenant's JWT authenticators, which its administrator may name, are fetched through the tenant's nodes, never from the management network ([structured-authentication](structured-authentication.md)).
 - The confirmation stops a wrong selector or a prune, not a person who annotates first: a management cluster administrator can also weaken the policies ([no-admission-webhooks](no-admission-webhooks.md#consequences)).
 - A Helm uninstall keeps every CRD and every object of theirs, and deletes the policies: until the chart is installed again nothing refuses a delete ([the chart](../README.md#installation)).

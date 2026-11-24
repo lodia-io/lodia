@@ -1,264 +1,87 @@
 # todo
 
-Capture inbox.
-Findings that fall outside the current task land here and are triaged into the Notion **Tasks** database at the end of a task.
-Nothing here is a decision — a decision is a file in `docs/decisions/`.
+What waits on a condition outside the task at hand: a release, an upstream fix, a need that has not come, a measurement that has no occasion yet.
+Each item opens with the condition that ends its wait and says what to do when it holds.
+Work that can start now is not an item: it goes to the task's author, who places it in the plan.
+The change that fixes an item removes it.
+The rule is [todo-holds-what-waits](docs/decisions/todo-holds-what-waits.md); nothing here is a decision, which is a file in `docs/decisions/`.
 
-## From the design (2026-10-23)
+## etcd-druid and etcd-backup-restore
 
-- Check whether kube-apiserver reloads `--proxy-client-cert-file` and whether konnectivity-server reloads `--cluster-cert`; each proven reload removes a rollout from certificate renewal.
-- Propose upstream a task of etcd-druid that deletes a prefix in the store (dedicated-etcd-by-default): a deleted `ControlPlane`'s last snapshots and a deleted or failed `Backup`'s copy under `…/backups/<Backup UID>` wait for it, and platforms use their bucket's lifecycle rules meanwhile, which must spare the copy of a `Backup` that exists (`docs/operations.md`).
-- etcd-backup-restore restores without etcd's `RevisionBump` and `MarkCompacted`, so a member it restores keeps the snapshot's revisions; propose the bump upstream (dedicated-etcd-by-default; the etcd spike's finding 5 measured the stale cache).
-- etcd-druid's scale at ~1000 `Etcd` objects with its default `concurrentSyncs: 3` is not documented; measure in phase 4 or ask the maintainers.
+- When etcd-druid renders `listen-client-http-urls`, which gives etcd's gRPC a listener of its own ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L128-L131)) and which v0.39.2 does not ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/configmap/etcdconfig.go#L55)), G2's step that deletes the etcd leader's pod wants zero failed requests again.
+  Until then each loop may lose one, answered 500 with `Internal` or `Unknown` for a call etcd ended without a gRPC status ([gate G2](test/e2e/README.md#gate-g2-a-highly-available-control-plane)).
+  Three runs failed on it while the step wanted zero: 40764385375 on #43, 42450529023 on #56 and [43430828031](https://github.com/lodia-io/lodia/actions/runs/43430828031) on #89; locally it was 1 of 193,299 reads over 30 deletions at 50 a second.
+  The ask of etcd-druid to render it is held back with the two under [Asks of other projects](#asks-of-other-projects), and waits for the maintainer's word.
+- When an etcd-druid release's image vector carries an etcd-backup-restore that orders snapshot sets by revision ([#1089](https://github.com/gardener/etcd-backup-restore/pull/1089); [images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/images/images.yaml#L20-L25)), take it, remove the `@todo` at the copy task's creation in `internal/controller/datastore/backup.go`, and add a test if one is feasible, such as an e2e step that saves a full snapshot of a lower revision after the `Backup`'s and checks that the copy holds the seal.
+  Until then a compaction Job that lists the store before a `Backup`'s full snapshot lands and saves its own after it makes the copy take the compacted set, which ends below the seal, while the `Backup` reads `Completed`; the restore's seal check refuses it (`RestoreFailed`).
+  The copier sorts by `CreatedOn` ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L175-L177)), the restore and the compactor by revision ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L129-L150)).
+- When etcd-backup-restore releases fixes of [#1045](https://github.com/gardener/etcd-backup-restore/issues/1045) and [#1046](https://github.com/gardener/etcd-backup-restore/issues/1046) and the etcd-druid Lodia pins runs that image, bump it, lower the floor of `event-ttl` in `api/v1alpha1/controlplane_types.go` so that it refuses only 0 and below (with 0 Events never expire), drop the cases between 0 and 1h from `test/api/validation_test.go`, and drop the restore's clause from `docs/api/controlplane.md`.
+  [#1043](https://github.com/gardener/etcd-backup-restore/issues/1043) and [#1044](https://github.com/gardener/etcd-backup-restore/issues/1044) fail a restore loudly with `mismatched event revision`, whatever the leases, and take only that bump; nothing in Lodia works around them.
+  They are two deltas that start at one revision after a leader handoff, and a full snapshot named by a revision read before the snapshot is taken ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/snapshotter/snapshotter.go#L341-L368)), whose content can end above the first delta.
+  Until then a one-member tenant that loses its volume replays up to a day of deltas (`api/v1alpha1/datastore_types.go`).
+  The only leases in a tenant's etcd are an Event's, `--event-ttl`, an hour by default ([options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/apiserver/options/options.go#L129)); etcd counts a restored lease from its restart ([lessor.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/lease/lessor.go#L482-L490)), so one that expires during the replay is revoked and the revision moves.
+  Only `applyFirstDeltaSnapshot` trims events, by the revision it reads right after it fetched and decoded the first delta alone ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L480-L530)): a revocation before that read drops the first delta's leading events, and the restore reports success (#1045).
+  A revocation later, during the replay, leaves the revision one ahead, and `verifySnapshotRevision` aborts with `mismatched event revision` (#1046, [restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L583-L594)).
+  The floor of 1h assumes that a replay at the quota takes less than an hour, which is not measured: `TestOneMemberRestoredThroughDeltas` replayed 2 and 3 deltas in 0.65 s and 1.05 s on kind.
+- When the etcd-backup-restore of the etcd-druid release Lodia pins reads a snapshot's key relative to its store prefix (v0.45.3 takes the last `v1/` anywhere, [snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/snapshot.go#L39-L59)), remove the schema's rule (the `@todo` in `api/v1alpha1/datastore_types.go`), its cases in `test/api/validation_test.go`, its row in `docs/decisions/etcd-druid-behind-a-seam.md` and its mentions in the docs.
+  Nobody has asked etcd-backup-restore for it yet; that ask is not one of the held ones, and waits for the maintainer's word.
 
-## From kube-api-linter (2026-11-24)
+## Kubernetes
 
-- `.kube-api-linter.yml` leaves seven of kube-api-linter's rules off. `nonpointerstructs` stays off, since the linter's documentation says it is not for CRD types ([linters.md](https://github.com/kubernetes-sigs/kube-api-linter/blob/d90122c89087/docs/linters.md?plain=1#L615)); for the other six a fix of each finding changes the API's types or the JSON they marshal to, the count being of the findings at `0bc29d5`:
-  - `requiredfields` (67) and `optionalfields` (60): 32 required fields lack `omitempty`, 17 required structs lack `omitzero`, 18 required fields should be pointers, and 60 optional fields should be pointers.
-    A pointer changes the Go type that an importer compiles against, such as the Cluster API provider.
-  - `nomaps` (3): `featureGates` of `apiServer`, `controllerManager` and `scheduler` are `map[string]bool`, and the rule wants a list of named elements.
-  - `notimestamp` (1): `status.expirationTimestamp` of a `KubeconfigRequest` would be `expirationTime`.
-  - `nodurations` (1): `spec.backup.deltaSnapshotPeriod` of a `DatastoreClass` is a `metav1.Duration`, and the rule wants an integer with its unit in its name.
-  - `arrayofstruct` (1): `claimValidationRules` of a JWT authenticator hold structs with no required field, since each sets one of `claim` and `expression`, which a CEL rule checks.
-  Decide each one with the API before it freezes, and switch the rule on in the change that fixes it.
+- When a fix of [kubernetes#142980](https://github.com/kubernetes/kubernetes/issues/142980), such as [#143346](https://github.com/kubernetes/kubernetes/pull/143346), is in every Kubernetes patch Lodia supports, the API server goes back to `--shutdown-delay-duration=15s` without the `preStop` sleep (the `@todo` in `internal/controller/workloads/render.go`, [api-exposure](docs/decisions/api-exposure.md)).
+- When apiserver-network-proxy reloads `--cluster-cert`, which konnectivity-server loads once ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.1/cmd/server/app/server.go#L408-L438), v0.37.1), drop `konnectivity-server` from `restartOnly` (`internal/controller/workloads/render.go`), and `konnectivity-kubeconfig` once its client-go reload is proven: kube-apiserver already reloads `--proxy-client-cert-file` at 1.35 to 1.37 ([apiserver.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/kube-aggregator/pkg/apiserver/apiserver.go#L304-L320)), so `front-proxy-client` waits on nothing here.
+  Until then each renewal of those leaves rolls the API server pod ([staged-credential-rotation](docs/decisions/staged-credential-rotation.md)).
+  Nobody has asked apiserver-network-proxy for it yet; that ask is not one of the held ones, and waits for the maintainer's word.
 
-## From lodia-signer (2026-10-23)
+## The Gateway
 
-- The signer's socket is mode 0600 and owned by the signer's user (65532 on distroless `nonroot`); kube-apiserver can dial it only as that user or as root.
-  When the Workloads controller runs the API server as non-root, both containers need the same user.
-- The signer logs a failed load at error level when it reads a Secret volume while the kubelet removes the previous version; the next event reloads the complete set.
-  If that noise matters, retry once before logging.
+- When Envoy Gateway v1.10.1 is out, move the gateway gate to it (`test/e2e/gateway_setup_test.go`): v1.10 is the first line whose compatibility matrix covers Kubernetes v1.37 ([matrix.md](https://github.com/envoyproxy/gateway/blob/v1.10.0/site/content/en/news/releases/matrix.md#L13-L14)), the minor of the gate's kind cluster, and v1.9.3 is the version every experiment behind the design ran on.
+- When every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True while its Service lists no endpoint for its port ([envoyproxy/gateway#10564](https://github.com/envoyproxy/gateway/pull/10564), open since 2026-11-08), and the gateway gate pins one: remove `noEndpoints` (the `@todo` in `internal/controller/workloads/gateway.go`), the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).
+  v1.9.3 and v1.10.0 set it ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L3119-L3125), [route.go](https://github.com/envoyproxy/gateway/blob/v1.10.0/internal/gatewayapi/route.go#L3313-L3318) and [#L2539-L2547](https://github.com/envoyproxy/gateway/blob/v1.10.0/internal/gatewayapi/route.go#L2539-L2547)); an `HTTPRoute` keeps True, citing the Gateway API's conformance ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L323-L330)).
 
-## From the etcd spike (2026-10-24)
+## Releases and tooling
 
-- Upstream for etcd-druid: the etcd container's readiness probe takes its scheme from `backup.tls` while the wrapper serves HTTPS whenever client TLS is on; and a failing pre-scale snapshot shows only on its `EtcdOpsTask`, not on the `Etcd` (findings 1 and 4).
+- When a release first drops a minor from the version table (1.35 first, which ends on 2027-02-28, `internal/versions/versions.go`), it keeps that minor renderable for one more release as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"), and keeps its end-of-support date, which the metric, the alert and `Progressing`'s notice read for the tenants still on it.
+- When Lodia has a second release, an upgrade e2e from the previous release's chart; G5 (`test/e2e/maintenance_test.go`) upgrades only between two builds of one tree.
+- When a pull request first moves etcd-druid past v0.39.2, Renovate's included, which can merge before any release, that pull request chooses how etcd-druid's CRDs reach the management cluster and writes the choice first in [releases-and-support](docs/decisions/releases-and-support.md): the chart templates them, as it does Lodia's own, or the release notes tell to apply them by hand before the upgrade.
+  Helm applies a chart's `crds/` only when it installs a release and never on an upgrade ([charts.mdx](https://github.com/helm/helm-www/blob/d869ccd3db838b63cee08bffb8400e1a9221c3ee/docs/topics/charts.mdx?plain=1#L1052-L1056), [install.go](https://github.com/helm/helm/blob/v4.3.1/pkg/action/install.go#L329-L338)), and an API server prunes the fields that a CRD's schema lacks before it persists an object ([pruning](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions.md?plain=1#L330-L332)), so an upgrade that keeps the old CRDs drops the new fields without an error.
+  A templated copy must not collide with the `crds/` an install applies.
+  The first release only installed.
+
+## Waiting for a need
+
+- When a user needs CoreDNS's replicas scaled by an autoscaler, `addons.coreDNS` gets a way to leave `replicas` out of Tenant's apply, so that the autoscaler owns the field ([HPA](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/workloads/autoscaling/horizontal-pod-autoscale.md?plain=1#L662-L697)), and [tenant-resources-by-inventory](docs/decisions/tenant-resources-by-inventory.md) changes with it.
+  Until then every apply sets an autoscaler back.
+- When a platform grants `create` on `ControlPlane`s to someone who may not read the namespace's Secrets, the chart adds a ValidatingAdmissionPolicy that requires `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names ([restore-replaces-the-source](docs/decisions/restore-replaces-the-source.md), "Not built").
+- When a user runs a tenant with an IPv6 first service range where `apiserver-proxy` runs (`gateway` mode, or `loadBalancer` without an IP `host`), Workloads draws a unique local address per `ControlPlane` and keeps it beside its CAs, and `apiServer.advertiseAddress` becomes optional, which breaks no manifest ([api-exposure](docs/decisions/api-exposure.md)).
+- When a platform needs a name added in front of a living tenant's address, let `endpoint.certSANs` change in the transition rule of `Endpoint` (`api/v1alpha1/controlplane_types.go`), as `annotations` and `sourceRanges` do: PKI issues the serving certificate again when its names change (`certs.Matches`, `internal/certs/certs.go`).
+
+## Scale
+
+- When a management cluster is to hold some hundreds of real tenants, or phase 4's scale work starts, measure etcd-druid at about 1,000 `Etcd`s.
+  It runs 3 workers by default ([defaults.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/config/v1alpha1/defaults.go#L101-L114)) and requeues every `Etcd` each 15 s, the chart's `etcdStatusSyncPeriod` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconciler.go#L147)), which asks about 67 reconciles a second.
+  The fleet test stands in for etcd-druid ([Scale](docs/operations.md#scale)).
+- When held restores stay held long enough, or hold enough objects, that their lists show in the operator's or the tenants' load, list a held restore's seven kinds less often than the probe runs: today every `health.period` (5 s), a page of 500 each (`actedOn` in `internal/controller/health/health.go`), ten held restores at a time.
+
+## Asks of other projects
+
+Lodia asks nothing upstream without the maintainer's word, and that word is the condition of each ask here and of each item above that waits on one, which names it.
+The asks here are the ones nothing in Lodia waits on.
+Some asks of etcd-druid and etcd-backup-restore are held back to go together: the two marked held below and the one on G2's listener above.
+Nobody has asked for the others yet.
+
+- **etcd-druid, held.**
+  Ask for a field of the `Etcd` in place of the annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction`, which Lodia sets on a highly available `Etcd` and etcd-druid marks as not for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/poddistruptionbudget/poddisruptionbudget.go#L35-L38)).
+  The check at each upgrade is the row in [etcd-druid-behind-a-seam](docs/decisions/etcd-druid-behind-a-seam.md).
+- **etcd-backup-restore, held.**
+  Ask it to restore with etcd's `RevisionBump` and `MarkCompacted`: its restorer builds `snapshot.RestoreConfig` without either ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L194-L202)), so a member it restores keeps the snapshot's revisions, and the tenant's API server lists objects etcd no longer holds until a person rolls it ([Lost etcd quorum](docs/operations.md#lost-etcd-quorum), finding 5 of the [etcd spike](docs/etcd-spike-2026-10.md), [dedicated-etcd-by-default](docs/decisions/dedicated-etcd-by-default.md)).
+- **etcd-druid, outside the held asks.**
+  Ask about two defects: the etcd container's readiness probe takes its scheme from `backup.tls` ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L613-L619)) while the wrapper serves HTTPS whenever client TLS is on, and a failing pre-scale snapshot shows only on its `EtcdOpsTask`, not on the `Etcd` (findings 1 and 4 of the [etcd spike](docs/etcd-spike-2026-10.md)).
   Those `presync-snapshot-*` tasks also make etcd-druid reject a `Backup`'s snapshot task while they run, which the backup reconciler sends again.
   In turn, a `Backup`'s task that has not completed makes etcd-druid reject its pre-sync task ([reconcile_task.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcdopstask/reconcile_task.go#L110-L115)), and after three rejected or failed attempts etcd-druid goes ahead without that snapshot, with only a warning event ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/statefulset.go#L216-L226)); a slow `Backup` flush, or one sent again while the full snapshot Lease stays short of the seal, can use them up.
   etcd-druid takes that snapshot before every hibernation, every change of the replicas, Lodia's switch between 1 and 3 members included, and every change of the etcd-wrapper, backup-restore or init container's image ([statefulset.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/statefulset.go#L130-L183)).
-- Upstream for etcd-backup-restore: the sidecar keeps serving its first serving certificate after the Secret changes (finding 3).
-
-## From deciding the design (2026-10-25)
-
-- client-go reloads a kubeconfig's CA file only with `ClientsAllowCARotation`, on by default since 1.36 ([known_features.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/client-go/features/known_features.go#L115-L117)): on 1.35 a trust anchor rotation restarts every component whose kubeconfig names the CA file; plan it into the phase 3 rotation.
-- Phase 2: Argo CD has no generic health check for custom resources ([health checks](https://github.com/argoproj/argo-cd/blob/v3.5.6/docs/operator-manual/health.md#L61-L83)), and kstatus, through which Flux waits, keeps a permanently failing object InProgress until a timeout unless it reports `Stalled` ([kstatus](https://github.com/kubernetes-sigs/cli-utils/blob/v0.37.2/pkg/kstatus/status/status.go#L102-L183)); Lodia writes no kstatus `Reconciling`, so the docs ship an Argo CD Lua health check and a Flux `healthCheckExprs` entry ([kustomizations.md](https://github.com/fluxcd/kustomize-controller/blob/v1.10.1/docs/spec/v1/kustomizations.md#L351-L374)) for `ControlPlane`, both reading `status.observedGeneration` and `Ready`.
-
-## From the Datastore controller (2026-10-25)
-
-- The backup-restore sidecar's `spec.backup.resources` have no field in the `DatastoreClass` and stay etcd-druid's default (50m / 128Mi at v0.39.2); the operator configuration's `defaults.resources` should cover them once phase 1 measures.
-- The shared `Placement` and `resources` types carry only size limits (`api/v1alpha1/controlplane_types.go`), not the rules of pod validation: the class's `placement` and `etcd.resources` have none yet.
-  Until then a class value the apps API refuses in etcd-druid's StatefulSet shows as `status.datastore.members.updated` absent, since etcd-druid returns before it stamps `observedGeneration` ([reconciler.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/controller/etcd/reconciler.go#L127-L144)).
-  The running members stay, later certificate generations stop reaching them until the class is fixed, and the reason is in the `Etcd`'s `status.lastErrors`.
-- No schema can check what pod admission refuses in a pod the StatefulSet API accepted: a `priorityClassName` that names no PriorityClass, or one deleted later, and a LimitRange or ResourceQuota in the tenant namespace.
-  The rolling update deletes the old pod first and then cannot create the new one ([stateful_set_control.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/statefulset/stateful_set_control.go#L748-L760)), so a single member goes down at its next roll, and every certificate generation is a roll.
-  `docs/operations.md` names the symptom.
-- Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
-  A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
-
-## From the PKI controller (2026-10-25)
-
-- A changed `apiServer.encryption.provider` puts the new provider first with a new key and keeps the previous ones readable, but nothing rewrites the stored Secrets or drops the old provider, and with two API server replicas one may write with the new key before the other has reloaded the file (up to a minute).
-  That is the etcd encryption key rotation of [staged-credential-rotation](docs/decisions/staged-credential-rotation.md); until it is built, document the change as unsupported, or refuse it in the schema.
-  A `Backup` is unaffected: it takes the source's configuration after the copy, and that holds every provider PKI ever wrote.
-  A change back to `None` puts a second `identity` behind the first (`encryptionConfig` in `internal/controller/pki/secrets.go`); harmless, and the rotation should drop it with the other old providers.
-- The kubelet signer narrows nothing: whoever holds it can sign any identity the API server accepts.
-  A signer outside the controller manager, serving only kubelet CSRs (those for `kubernetes.io/kube-apiserver-client-kubelet`, [types.go](https://github.com/kubernetes/api/blob/v0.37.1/certificates/v1/types.go#L155-L158)), would make the narrowing true; decide before the client CA rotation is built.
-
-## From the PKI review (2026-10-25)
-
-- `readEncryptionConfig` decodes leniently, while kube-apiserver decodes strictly and with defaults ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L140-L146), [loadConfig](https://github.com/kubernetes/kubernetes/blob/v1.37.0/staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L519-L536)).
-- The previous etcd generation is kept and adopted on completeness alone, even when it does not chain to the current etcd CA (a restored predecessor's generation, for instance); keep it only if it chains.
-
-## From the contracts audit (2026-10-25)
-
-- Phase 3: `target.rotation.*`, which `Target` lacks, gets a stage enum of its own instead of sharing PKI's observed `RotationPhase`, and `rotation.ca` becomes `clusterCA`.
-- Phase 3: `Hibernated`, with Lifecycle as its writer.
-
-## From the Tenant controller (2026-10-25)
-
-- Nothing watches `<cp>-ca-bundle`: a rotated cluster CA reaches `cluster-info` within the apply period; the CA rotation of phase 3 should bring a Tenant pass.
-- A tenant's own admission webhook that fails with a 5xx counts as no answer, so a True `AddonsApplied` stays while it keeps an object out.
-- The one-minute requeue while the rollout is pending runs the full apply, not only the rollout read.
-- `--agent-identifiers=ipv4=$(HOST_IP)` names an agent by its node's IPv4 address only; IPv6 and dual-stack nodes need `ipv6=`.
-- `AddonsAvailable` is not read again while applies are refused: the rollout read before stays.
-- CoreDNS's replicas are Lodia's: an autoscaler is set back on every apply; a later phase lets one own them.
-
-## From the Workloads controller (2026-10-25)
-
-- The NetworkPolicies isolate each component's ingress alone; the default-deny set and egress, the README's arrows, come later.
-- The control plane pods set no securityContext: give them one that passes Pod Security `restricted`, the API server and the signer under one user (From lodia-signer, above).
-- Workloads lists the management nodes uncached on every pass of a `nodePort` `ControlPlane`; an informer on Nodes, which carry no control-plane label and so need a cache rule of their own, would serve them from memory.
-- Workloads finds another owner's objects under its names in the cache, which holds only labelled ones.
-  An unlabelled object it applied for a predecessor is taken over silently, with the `OwnerReferencesPermissionEnforcement` plugin as without it, now that Workloads may delete (before, the plugin refused the apply); one that only refers to another `ControlPlane` is applied over once and then held; one with another controller is refused by validation, which `APIServerReady` reports as `Refused`.
-  Reading the targets uncached, as PKI reads its Secrets, would see them all.
-
-## From the chart (2026-10-26)
-
-- etcd-druid's CRDs come from its chart's `crds/` directory, which Helm applies only when it installs a release (`docs/README.md`, Installation): a bump of the dependency needs its CRDs applied by hand first; decide whether the chart templates them or the release notes carry the step.
-
-## From #29's review (2026-10-26)
-
-- Measure a highly available control plane's idle footprint; phase 2's scope and gate do not list it.
-
-## From the backup prefix (2026-10-26)
-
-- The `v1/` prefix rule: the schema refuses a `DatastoreClass` backup prefix that contains `v1/` or ends in `v1` (the `@todo` in `api/v1alpha1/datastore_types.go`), since etcd-backup-restore v0.45.3 takes the last `v1/` anywhere in a key for its layout ([snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/snapshot.go#L39-L59)).
-  Remove the rule, its cases in `test/api/validation_test.go` and its mentions in the docs once the sidecar of the etcd-druid release Lodia pins reads a key relative to its store prefix.
-
-## From the lossless rollouts (2026-10-27)
-
-- Deleting a `ControlPlane` waits out the API server's 90 s grace period, since its etcd goes at the same moment and the requests in flight wait for it; the Datastore controller should delete the `Etcd` only after Workloads' API server pods are gone, which also brings the per-pull-request e2e job back under its budget (its overrun is accepted for now).
-- Requests through the tunnel (logs, exec, webhooks, aggregated APIs) can fail for 1–3 s after a new API server pod turns ready: the agents reach its konnectivity-server through the Service, which sends them to ready pods only, so they connect only once the pod already takes requests, and a webhook with `failurePolicy: Fail` turns that into refused writes.
-  The agents should connect before the pod turns ready, through an agent port that reaches pods not yet ready, and the pod's readiness should wait for them; konnectivity-server's `/readyz` waits for one agent ([readiness_manager.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.0/pkg/server/readiness_manager.go#L28-L33)), which a tenant without nodes never has.
-  The gate's loop should send such a request too.
-
-## From the phase 2 contracts (2026-10-27)
-
-- The `restore` verb (restore-replaces-the-source, not built): a ValidatingAdmissionPolicy in the chart could require `authorizer…check('restore')` on the `Backup` a new `ControlPlane`'s `restoreFrom` names, for platforms where the right to create `ControlPlane`s is wider than the right to read a namespace's Secrets.
-- An IPv6 advertise address Lodia draws: once tenants where `apiserver-proxy` runs, in gateway mode or behind a load balancer without an IP `host`, have users with an IPv6 first service range, Workloads could draw a unique local address per `ControlPlane` and keep it beside its CAs, which a platform backs up anyway.
-  `apiServer.advertiseAddress` then becomes optional, which breaks no manifest (api-exposure).
-
-## From the docs review (2026-10-27)
-
-- konnectivity-server's Role in the tenant (`internal/controller/tenant/manifests/konnectivity.yaml` L13-L21) can update and delete every Lease in `kube-system`, the controller manager's and the scheduler's leader Leases included.
-  The server needs its own Lease, `konnectivity-proxy-server-<server ID>` with a random ID at every start, and lists and deletes the expired ones labelled `k8s-app=konnectivity-server` ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/server/app/server.go#L160-L171), [options.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/server/app/options/options.go#L413-L428), [gc_controller.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/pkg/server/leases/gc_controller.go#L56-L92)), so `resourceNames` cannot narrow the Role, since they restrict no `create` ([RBAC](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#referring-to-resources)).
-  A lease namespace of their own can: the server and the agents take `--lease-namespace` at v0.35.0, v0.36.0 and v0.37.0, `kube-system` by default ([server options.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/server/app/options/options.go#L164), [agent options.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.35.0/cmd/agent/app/options/options.go#L142)), and the server's Role and the agents' (L38-L46) would move there.
-- Place each tenant's daily full snapshot inside its maintenance window once phase 2's wave 2 brings the windows, as Gardener does for its shoots ([backup and restore](https://github.com/gardener/gardener/blob/master/docs/concepts/backup-restore.md)); today Lodia passes the class's `backup.fullSnapshotSchedule` to etcd-druid unchanged, `0 0 * * *` by default (dedicated-etcd-by-default).
-
-## From high availability (2026-10-27)
-
-- The e2e suites reach a tenant through `status.endpoint`, a kind node's address on the docker network `kind`, which Docker Desktop does not route to a macOS host, so `make e2e` and `make e2e-ha` run on Linux alone, as on GitHub's runners.
-  Running `go test` in a container attached to that network would bring them back to macOS, but it is not a small change: the container needs Go, git, `helm` and the Docker CLI, the Docker socket and the repository mounted, and `go tool kind get kubeconfig --internal`, since the kubeconfig kind writes names 127.0.0.1, which the container does not reach.
-  Every one of the twelve targets would run through it.
-- Lodia sets etcd-druid's annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` on a highly available `Etcd`, which etcd-druid marks as one that may be removed at any time and is not meant for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/poddistruptionbudget/poddisruptionbudget.go#L35-L38)).
-  Check it with every etcd-druid upgrade, and ask upstream for a field of the `Etcd` in its place.
-- Ask etcd-druid whether a scale-in can leave the remaining member running: the members' pod template carries a checksum of the ConfigMap whose `initial-cluster` names every member, so removing `highAvailability` restarts the last member: about 20 seconds without `Ready`, in which the controller manager and the scheduler lose their leases.
-- kube-apiserver closes its connection to the external signer on SIGTERM ([kubernetes#142980](https://github.com/kubernetes/kubernetes/issues/142980)), so the API server's shutdown delay is a `preStop` sleep of 15 seconds with `--shutdown-delay-duration=0` (the `@todo` in `internal/controller/workloads/render.go`, api-exposure).
-  Go back to `--shutdown-delay-duration=15s` without the sleep once a fix, such as kubernetes#143346, is in every Kubernetes patch Lodia supports.
-- Removing `highAvailability` waits for etcd-druid to list `<cp>-etcd-0` as ready, but etcd-druid lists a member as ready until its lease is a minute old ([check_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/health/etcdmember/check_ready.go#L88-L106), [values.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/charts/values.yaml#L66)).
-  A removal within that minute of member 0 failing reaches etcd-druid, which holds the scale-in until member 0 returns, so `DatastoreReady` reads `1 of 1 members ready`, and Lodia holds adding `highAvailability` back until that scale-in completes.
-  Reading the pod's readiness would narrow the window, not close it, at the cost of RBAC on pods: etcd's readiness probe takes up to 25 seconds to fail ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L603-L610)).
-
-## From availability surviving a spec change (2026-10-28)
-
-- A writer that refuses a new generation, `Refused` or `ObjectsControlledElsewhere`, turns its condition, and so `Ready`, False while the tenant still serves the previous one, though a readiness condition reports availability ([independent-controllers](docs/decisions/independent-controllers.md)).
-  It needs its own answer to where a refusal shows while availability stays.
-- G2's step that deletes the etcd leader's pod tolerates one failed request in each loop, answered 500 with the etcd client's error for a call etcd ended without a gRPC status, `Internal` or `Unknown` ([gate G2](test/e2e/README.md#gate-g2-a-highly-available-control-plane)); the target is zero.
-  The required `e2e-ha` failed three times in that step while it wanted zero, each time on requests answered 500: run 40764385375 on #43, one on a reused connection in each loop, sent 21 ms (inside the tenant) and 32 ms (outside) after the deletion the test logged; run 42450529023 on #56, one of 480 inside the tenant on new connections, sent 2.4 ms after the deletion; and run [43430828031](https://github.com/lodia-io/lodia/actions/runs/43430828031) on #89, one of 580 outside the tenant on new connections in the step's first second, `Unknown`, the first whose body the loops logged.
-  Locally it was `Internal`, 1 of 193,299 reads over 30 deletions at 50 requests a second, sent 5 ms after its deletion, and 0 of 39,740 over 30 at 10.
-  `listen-client-http-urls` would give gRPC a listener of its own ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L128)), but etcd-druid renders the configuration and does not offer it ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/configmap/etcdconfig.go#L55)); once it does, the step goes back to zero.
-- Health compares each condition it applies with the cache unless it has just read it live, and its predicates ignore its own conditions, so a write the server holds and the cache does not yet, such as a `Reachable` False, stays until its next pass, a `health.period` (5 s by default) later.
-
-## From KubeconfigRequest (2026-10-30)
-
-- A kubectl exec credential plugin that generates the key, creates the request and caches the certificate, as gardenlogin caches Gardener's ([get_client_certificate.go](https://github.com/gardener/gardenlogin/blob/v0.11.0/cmd/get_client_certificate.go#L187-L188)); until then a person runs openssl and kubectl.
-- Requests on behalf of another user, for a platform's backend: the policy could admit them with `impersonate` on `lodia.io` `users`; additive.
-- A viewer level for `spec.access`: it needs a read-only role kept current with the tenant's resources; additive to the enum.
-
-## From the backups (2026-11-01)
-
-- Until etcd-backup-restore sorts snapshot sets by revision, a compaction Job of etcd-druid that lists the store before a `Backup`'s full snapshot lands and saves its own after it makes the copy take the compacted set, which ends below the seal, while the `Backup` reads `Completed`; the restore's seal check refuses such a `Backup` (`RestoreFailed`).
-  The copier sorts the sets by their full snapshot's `CreatedOn` ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L175-L177), the same on `master` on 2026-11-02), while the restore and the compactor take the full snapshot with the highest revision ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L129-L150)).
-  Propose upstream that it sort by the full snapshot's last revision, then by `CreatedOn`.
-  When the fix is released: bump the etcd-backup-restore image the copy Job runs, which comes from etcd-druid's image vector ([images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/images/images.yaml#L20-L25)); remove the `@todo` at the copy task's creation in `internal/controller/datastore/backup.go`; and add a test that would have caught it if one is feasible, such as an e2e step that saves a full snapshot of a lower revision after the `Backup`'s and checks that the copy holds the seal.
-
-- A `Backup` started after the store moved through `<cp>-etcd-backup`, but before the sidecar's files hold the new keys, puts its full snapshot into the old store, while its copy Job reads the new keys when it starts and finds nothing there, which succeeds; the kubelet's update delay bounds the window ([secrets](https://github.com/kubernetes/website/blob/snapshot-initial-v1.37/content/en/docs/concepts/configuration/secret.md#L549-L553)).
-  `docs/operations.md` has a person wait for that upload after the two moves no `Backup` sees; a move the `Backup` records is not covered.
-- The backup reconciler dials the source's etcd in every pass that seals, the Datastore controller dials a restored etcd in every pass of its `ControlPlane` once a member is ready, and the etcd sampler dials every formed etcd and each of its members once a minute: a client per `Etcd`, kept across passes and closed when the `Etcd` names a new certificate generation or goes, would save a TLS handshake per pass once fleets grow.
-
-## From the restore's hold (2026-11-02)
-
-- Health lists seven kinds in a held restore's tenant every period, a page of 500 each (`actedOn` in `internal/controller/health/health.go`); if inert tenants grow large, list them less often than the probe runs.
-
-## From the restore (2026-11-02)
-
-- PKI copies a restore's keys from the `Backup` of `restoreFrom.backupRef`'s name, not from the `Backup` UID `status.restore` names: a `ControlPlane` restored from a `Backup` that went without its keys, which takes a person removing `lodia.io/restore-source` by hand, would take the keys of a successor `Backup` of the same name and hold that one while its keys exist (`backupKeys` in `internal/controller/pki/secrets.go`, `restoring` in `internal/controller/datastore/backup.go`; round 3, R3-P2).
-
-## From the gateway gate (2026-11-08)
-
-- Move the gateway gate to Envoy Gateway v1.10.x at its first patch release: v1.10.0 is the first whose compatibility matrix covers Kubernetes v1.37 ([matrix.md](https://github.com/envoyproxy/gateway/blob/v1.10.0/site/content/en/news/releases/matrix.md#L13-L14)), and v1.9.3 is the version every experiment behind the design ran on.
-- Workloads counts a `TLSRoute`'s `ResolvedRefs` False with reason `EndpointsNotFound` as resolved (the `@todo` in `internal/controller/workloads/gateway.go`): Envoy Gateway v1.9.3 sets it while the EndpointSlices of the route's Service list no endpoint for its port ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L3119-L3125)), so while no API server pod has an address, and `Ready` would read `RouteNotAccepted` instead of `APIServerReady`'s reason; for an `HTTPRoute` it keeps `ResolvedRefs` True there, citing the Gateway API's conformance ([route.go](https://github.com/envoyproxy/gateway/blob/v1.9.3/internal/gatewayapi/route.go#L323-L330)).
-  Once every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True there, and the gateway gate pins one: remove `noEndpoints`, the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).
-  The upstream fix is [envoyproxy/gateway#10564](https://github.com/envoyproxy/gateway/pull/10564), open on 2026-11-08.
-
-## From Workloads' hold (2026-11-09)
-
-- A renewed restart-only certificate rolls its component at once, or at the grant on a tenant Workloads holds, not in the tenant's window ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "Who waits for the window"): holding it for the window is for phase 3's rotations, and takes a field each way between Workloads and Lifecycle, a digest of the restart hashes and a clock of the certificate the pods still run.
-
-## From the Cluster API provider (2026-11-10)
-
-- Phase 3: a dedicated identity for Cluster API.
-  `<cluster>-kubeconfig`, which the provider copies from `<cp>-admin-kubeconfig`, carries Lodia's admin credential (`kubernetes-admin` in `lodia:cluster-admins`), which is also the platform's automation credential, while Cluster API's contract says that kubeconfig must not be shared with other users or applications ([control-plane.md](https://github.com/kubernetes-sigs/cluster-api/blob/v1.14.3/docs/book/src/developer/providers/contracts/control-plane.md#L872-L874)).
-  A second standing kubeconfig from PKI for it, so that revoking one does not revoke the other.
-
-## From class edits in the window (2026-11-11)
-
-- A person's edit of the `Etcd`'s `spec.backup.store` to a value the schema of `status.datastore.snapshots` refuses fails every status apply while `keep` or `copied` carries the store: while the class waits for its grant or is held for its credentials, while the operator revision is held, and while the recorded class is gone, until a class of its name is created again and granted; `DatastoreReady`, `BackupReady` and `status.datastore` stop being written meanwhile.
-  A store a person adds under a class without one, or an `endpointOverride` under a class whose store names no endpoint, is a field Lodia's apply does not own: it stays, and every status apply fails, held or not, until a class edit that renders that field is granted.
-  etcd-druid's schema takes any provider or none, `Local` among them, no container, and a prefix and an endpoint of any length ([store.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/store.go#L13-L35)); the status takes S3, GCS, ABS and Swift, a bucket of at least one character, a prefix of 1 to 512 characters and an endpoint of at most 512.
-
-## From the kubelet certificates' lifetime (2026-11-12)
-
-- A kubelet client certificate cannot be revoked, and a kubelet renews its own without asking for a lifetime: its certificate manager sets no `RequestedCertificateLifetime` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/certificate/kubelet.go#L229-L248)), so the controller manager's `--cluster-signing-duration` alone sets it ([signer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/certificates/signer/signer.go#L219-L237)).
-  A node a platform removes therefore keeps a certificate its API server accepts for up to 30 days, and its kubelet may register its `Node` again in that time.
-  `docs/decisions/staged-credential-rotation.md:22` sets the 30 days without weighing that window against the renewals a shorter lifetime costs: decide the lifetime, or a field for it, on that trade.
-
-## From the API before it freezes (2026-11-17)
-
-- `extraArgs` refuses the flags that conflict with what Lodia renders, and checks the values of only the flags its rules name, each in one form first; it passes every other value through as written, and a value a component refuses makes it exit.
-  The kinds known that it accepts and a component cannot run with: a key that is no flag of the component's minor, on which it exits; a flag that names a file, which no tenant can put into the pod (`audit-policy-file`, `admission-control-config-file`, `tls-sni-cert-key`, `token-auth-file`, `authentication-token-webhook-config-file`, `kubelet-certificate-authority`, `leader-migration-config`); `audit-log-*` without a policy, which kube-apiserver ignores; `runtime-config` turning off a group Tenant or Health needs; `request-timeout` above a minute, the default Workloads' termination grace period counts, which may cut a drain short (not measured); a `disable-admission-plugins` entry the tenant's own `enable-admission-plugins` names; `node-cidr-mask-size` beside `node-cidr-mask-size-ipv4` or `-ipv6`; a node mask size above its family's width, 32 or 128, from which the controller manager builds node ranges with no mask ([cidr_set.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controller/nodeipam/ipam/cidrset/cidr_set.go#L92), since `net.CIDRMask` returns nil past the width), or one beyond int32, which it refuses (neither run); a feature gate locked or unknown in the minor; and `emulated-version` or `min-compatibility-version`, with which a component serves the APIs and gates of an older minor than its image, the one Lodia reports and renders the tenant's objects for ([registry.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/staging/src/k8s.io/component-base/compatibility/registry.go#L245-L259)), not proven to break anything.
-  Decide per kind whether the schema refuses it, a minor's flag table refuses it, or the docs say it.
-- The values of `extraArgs` have no length bound, so a CEL rule that splits one exceeds the CRD's cost budget (the rules on `disable-admission-plugins` are regular expressions for it), and a tenant's value is bounded only by the object's size.
-
-## From the synthetic fleet (2026-11-17)
-
-- Workloads' mappers of TLSRoute, Gateway and ControlPlane events list every `ControlPlane` from the cache with copies for each event, as a gateway tenant's pass does: at 315 tenants one such list took 0.7 ms and allocated 2.8 MiB; an index of the gateway tenants by Gateway would read only those that share one.
-- The fleet's etcd-druid is a stand-in, so etcd-druid's own scale is still unmeasured (above, "From the design").
-- A Gateway's route writes run one at a time, each waiting for the cache to show it: the 150 writes of 50 gateway tenants created beside 3,000 routes were done 11.5 to 12.2 s after they began, about 80 ms a write, and the 3,000 of the creation of 1,000 tenants took about 4.7 minutes, about 94 ms a write with the API server busier ([Scale](docs/operations.md#scale)): Lodia's routes hold one hostname each, so a fence for each hostname, with the Gateway's first read from the API server, would let the writes of different hostnames run at once.
-
-## For the release that first drops a minor
-
-- A minor dropped from the version table stays renderable for one more release, as the source of an upgrade ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "End of support"): build it in the release that first drops one, since no minor is dropped yet and the flag would have no data and no test that means anything.
-  It keeps its end-of-support date too, which the metric, the alert and `Progressing`'s notice read for the tenants still on it: without the date their series ends, and the alert resolves for the tenants nearing or past it.
-
-## From structured authentication (2026-11-19)
-
-- `Ready` at a generation says that the authentication configuration is written and valid, not that every API server replica has loaded it: an issuer that does not answer holds a load back with nothing in the status ([structured-authentication](docs/decisions/structured-authentication.md)).
-  A condition outside `Ready` could compare each replica's `apiserver_authentication_config_controller_last_config_info` with a hash Workloads writes on the ConfigMap.
-- Where `apiserver-proxy` runs the konnectivity agents resolve names through the node's DNS, so a JWT issuer inside the tenant is reached by a name the nodes resolve or by its ClusterIP in `issuer.discoveryURL` ([operations](docs/operations.md#logging-in-with-an-oidc-provider)); decide whether those agents should resolve the tenant's Services too.
-
-## From the rehearsal (2026-11-20)
-
-- From 1.36 every API server writes a peer lease with `--advertise-address`, which Workloads renders as `status.endpoint.inCluster.host` for every replica, and builds the mixed-version proxy only with `--peer-ca-file` ([config.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/config.go#L331-L354)); `extraArgs` refuses neither `peer-ca-file`, `peer-advertise-ip` nor `peer-advertise-port`, so a tenant that sets the first turns the proxy on with one address for every peer: an IP `endpoint.loadBalancer.host`, a management node's address in `nodePort` mode, or an address no management pod reaches wherever `apiserver-proxy` runs.
-  Refuse the three flags, or render each replica's pod IP as `--peer-advertise-ip` with the cluster CA as `--peer-ca-file` and turn the proxy on, which is a decision of its own.
-- The copy's etcd runs `versions.EtcdImage` from `gcr.io/etcd-development` by digest; move it under the configured registry once the `registry` key is read ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "The operator revision").
-- The rehearsal's verdict names no snapshot size: the etcd image has no shell, so the size reaches the operator only through the `snapshot` container's log or the copy's `apiserver_storage_size_bytes`, a read of the copy's whole `/metrics`.
-
-## From the delta restore (2026-11-21)
-
-- Four open defects in etcd-backup-restore's restore through delta snapshots ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L480-L530)).
-  [#1043](https://github.com/gardener/etcd-backup-restore/issues/1043) and [#1044](https://github.com/gardener/etcd-backup-restore/issues/1044) fail a restore loudly with `mismatched event revision`, whatever the leases: two deltas that start at one revision after a leader handoff, and a full snapshot named by a revision read before the snapshot is taken ([snapshotter.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/snapshotter/snapshotter.go#L341-L368)), whose content can end above the first delta.
-  [#1045](https://github.com/gardener/etcd-backup-restore/issues/1045) and [#1046](https://github.com/gardener/etcd-backup-restore/issues/1046) need a lease that expires while the restore's embedded etcd replays deltas: it revokes the lease and the revision moves.
-  Only `applyFirstDeltaSnapshot` trims events, by the revision it reads right after it fetched and decoded the first delta alone.
-  A revocation before that read drops the first delta's leading events, and the restore reports success (#1045).
-  A revocation later, during the replay, leaves the revision one ahead, and [`verifySnapshotRevision`](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L583-L594) aborts with `mismatched event revision` (#1046).
-  The only leases in a tenant's etcd are an Event's, `--event-ttl`, an hour by default ([options.go](https://github.com/kubernetes/kubernetes/blob/v1.37.1/pkg/controlplane/apiserver/options/options.go#L129)), and etcd counts a restored lease from its restart ([lessor.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/lease/lessor.go#L482-L490)), so both need a replay longer than the TTL.
-  Lodia's defaults, a full snapshot a day and a delta every 5 minutes (`api/v1alpha1/datastore_types.go`), make a one-member tenant that loses its volume replay up to a day of deltas.
-  What Lodia does: CEL refuses an `event-ttl` under 1h in `apiServer.extraArgs`, which assumes that a replay of the deltas at the quota takes less than an hour.
-  `TestOneMemberRestoredThroughDeltas` (`nightly-restore.yml`) logs a replay's duration and its number of deltas; its runs on kind replayed 2 and 3 deltas in 0.65 s and 1.05 s, on a database of a few hundred revisions, so the assumption at the quota is still not measured.
-  When #1045 and #1046 are fixed and released: bump the etcd-backup-restore image that etcd-druid's image vector names, lower the 1h floor in `api/v1alpha1/controlplane_types.go` to refuse 0 and below, since with 0 Events never expire, and drop the cases between 0 and 1h from `test/api/validation_test.go` and the restore's clause from `docs/api/controlplane.md`.
-  Nothing in Lodia works around #1043 and #1044; the bump is all they take.
-
-## From the first release (2026-11-22)
-
-- An upgrade e2e from the previous release's chart, once a second release exists.
-- Renovate for the tools pinned by version in the `Makefile`, `CONTRIBUTING.md`, the workflows and `test/e2e/hydrophone_test.go` (ko, yq, crane, kube-api-linter, which has no tag and is pinned by a pseudo-version, hydrophone, Helm, cosign, golangci-lint, promtool, dashboard-linter and the Renovate validator), for Node of `ci.yml`, which `renovate.json5` disables and which has to stay inside the validator's `engines.node` (`^24.11.0 || ^26.13.0` for `renovate@44.257.9`), and for the e2e's pins: the kind node images (`test/e2e/upgrade_test.go`, `test/e2e/upgrade_nightly_test.go`), versitygw and aws-cli (`test/e2e/s3_test.go`), Envoy, Envoy Gateway and the charts `gateway-helm` and `gateway-crds-helm` (`test/e2e/gateway_setup_test.go`), CoreDNS (`test/e2e/dns_test.go`), MetalLB's chart and images (`test/e2e/loadbalancer_setup_test.go`), `conformance` and busybox (`test/e2e/restore_test.go`) and agnhost (`test/e2e/gate_test.go`).
-- An attested SBOM: ko pushes an SPDX SBOM beside each image, which `release.yml` neither signs nor attests.
-- etcd-druid's CRDs on a chart upgrade (the item on its chart's `crds/` directory, above) decide what a release that bumps etcd-druid says; the first release only installs.
-
-## From a balancer's host (2026-11-23)
-
-- Health probes the konnectivity server only in `gateway` mode, through its SNI route: a `loadBalancer` or `nodePort` tenant's `endpoint.konnectivity` is never probed (`internal/controller/health/health.go`, `probes`).
-- No probe takes the pods' path through `apiserver-proxy`, which runs in `loadBalancer` mode unless `host` is an IP too: `Reachable` proves the public endpoint and, in `gateway` mode, the tunnel from the management cluster, never the proxy on a node.
-- `endpoint.certSANs` stays immutable with the rest of `endpoint` but `annotations` and `sourceRanges`, although PKI issues the serving certificate again when its names change (`certs.Matches`, `internal/certs/certs.go`): a name added in front of a living tenant's address needs a new tenant.
-  Let it change beside them, in the transition rule of `Endpoint` (`api/v1alpha1/controlplane_types.go`), when someone needs it.
-- Audit by source address in `loadBalancer` mode needs `externalTrafficPolicy: Local`, which Lodia does not set on the Service: with the default `Cluster` kube-proxy masquerades the traffic of a load balancer ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1104-L1110)), so the API server sees a management node and audit `sourceIPs` name no client, while `Local` keeps the source address in most cases ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1111-L1114)).
+- **etcd-druid, outside the held asks.**
+  Ask whether a scale-in can leave the remaining member running: the members' pod template carries a checksum of the ConfigMap ([builder.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/statefulset/builder.go#L221-L223)) whose `initial-cluster` names every member ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/configmap/etcdconfig.go#L97)), so removing `highAvailability` restarts the last member: about 20 seconds without `Ready`, in which the controller manager and the scheduler lose their leases.
+- **etcd-backup-restore, outside the held asks.**
+  Ask it to reload its serving certificate when the Secret changes: the sidecar calls `ListenAndServeTLS(certFile, keyFile)` once ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/server/httpAPI.go#L190)), so it keeps serving its first one (finding 3 of the [etcd spike](docs/etcd-spike-2026-10.md)).
+  Lodia renews etcd's certificates as a new generation ([staged-credential-rotation](docs/decisions/staged-credential-rotation.md)); with a reload upstream a renewal in place would roll nothing and spare a one-member tenant its 20 s.

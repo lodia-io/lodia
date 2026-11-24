@@ -1026,10 +1026,10 @@ func (r *Reconciler) hashes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	return restartHashes(cp.Name, data, config), unhashed, nil
 }
 
-// restartHashes are each component's hash of what it reads once: its
-// restart-only Secrets by their data hashes and, for the API server, its
-// ConfigMaps as configMaps hashes them, so that a change to one rolls the
-// component that reads it once and nothing else.
+// restartHashes are each component's hash of its restart-only Secrets by
+// their data hashes and, for the API server, its ConfigMaps as configMaps
+// hashes them, so that a change to one rolls the component that has it and
+// nothing else.
 func restartHashes(cp string, data map[string]string, config []*corev1.ConfigMap) map[string]string {
 	out := map[string]string{}
 	for component, secrets := range restartOnly {

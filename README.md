@@ -13,7 +13,7 @@ helm install lodia oci://ghcr.io/lodia-io/charts/lodia --version 0.1.0-alpha.1 -
 
 Measured, each by its test:
 
-- A minor upgrade fails no request: two loops of 20 requests a second, one against the public endpoint and one from a pod in the tenant, record zero failures ([G1](test/e2e/README.md#gate-g1-a-minor-upgrade), every pull request).
+- Through a minor upgrade, two loops of 20 requests a second, each reading the `kubernetes` EndpointSlice, one against the public endpoint and one from a pod in the tenant, record zero failures ([G1](test/e2e/README.md#gate-g1-a-minor-upgrade), every pull request); a request through the tunnel is not among them ([A tenant namespace](docs/README.md#a-tenant-namespace)).
 - Each minor step is rehearsed on a copy of the tenant first, and a tenant that sets a feature gate the next minor removed stops there with its API server untouched (the same gate).
 - With every node cut off from the control plane for 10 minutes, no node is tainted and every pod keeps its UID ([G4](test/e2e/README.md#nightly-gate-g4-nodes-cut-off-from-the-gateway), every night).
 - An operator upgrade reaches a tenant only inside its maintenance window ([G5](test/e2e/README.md#gate-g5-an-operator-upgrade-in-windows), every pull request).
@@ -31,6 +31,6 @@ The six controllers are built, high availability included, and the Helm chart in
 - [`docs/operations.md`](docs/operations.md) — upgrading and running Lodia; the runbooks.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — building and testing, and what CI runs on every pull request and every night.
 - [`CLAUDE.md`](CLAUDE.md) — how to work on the repository.
-- [`todo.md`](todo.md) — findings waiting for triage.
+- [`todo.md`](todo.md) — what waits on a condition: a release, an upstream fix, a need.
 
 Licensed under the [Apache License 2.0](LICENSE).

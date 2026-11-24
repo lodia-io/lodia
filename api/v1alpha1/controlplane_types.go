@@ -321,10 +321,16 @@ type APIServer struct {
 	Encryption *Encryption `json:"encryption,omitempty"`
 
 	// extraArgs are flags passed to kube-apiserver, each under its name as
-	// kube-apiserver spells it. The flags Lodia sets, those whose defaults it
-	// relies on, those that conflict with either and those that end the
-	// process are refused, but for enable-admission-plugins, whose entries
-	// follow Lodia's; featureGates sets feature-gates.
+	// kube-apiserver spells it. The schema refuses the flags Lodia sets;
+	// bind-address, etcd-prefix, etcd-servers-overrides and
+	// shutdown-send-retry-after, whose defaults it relies on; the flags that
+	// conflict with one Lodia sets; help, which ends the process; and version,
+	// which ends it or, given as vX.Y.Z, sets the version it reports while it
+	// runs on. It checks the values of disable-admission-plugins,
+	// service-account-max-token-expiration and event-ttl. Every other flag and
+	// value is passed as written, and a flag or a value kube-apiserver refuses
+	// makes it exit. enable-admission-plugins merges: its entries follow
+	// Lodia's. featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
@@ -367,10 +373,14 @@ type EncryptionProvider string
 // Component configures kube-controller-manager.
 type Component struct {
 	// extraArgs are flags passed to the component, each under its name as the
-	// component spells it. The flags Lodia sets, those whose defaults it
-	// relies on, those that conflict with either and those that end the
-	// process are refused, but for controllers, whose entries follow Lodia's;
-	// featureGates sets feature-gates.
+	// component spells it. The schema refuses the flags Lodia sets;
+	// authorization-always-allow-paths and secure-port, whose defaults it
+	// relies on; the flags that conflict with one Lodia sets; help, which ends
+	// the process; and version, which ends it or, given as vX.Y.Z, sets the
+	// version it reports while it runs on. It checks the values of the node
+	// mask sizes. Every other flag and value is passed as written, and a flag
+	// or a value the component refuses makes it exit. controllers merges: its
+	// entries follow Lodia's. featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
@@ -394,9 +404,13 @@ type Component struct {
 // Scheduler configures kube-scheduler.
 type Scheduler struct {
 	// extraArgs are flags passed to kube-scheduler, each under its name as
-	// kube-scheduler spells it. The flags Lodia sets, those whose defaults it
-	// relies on, those that conflict with either and those that end the
-	// process are refused; featureGates sets feature-gates.
+	// kube-scheduler spells it. The schema refuses the flags Lodia sets;
+	// authorization-always-allow-paths and secure-port, whose defaults it
+	// relies on; the flags that conflict with one Lodia sets; help and
+	// write-config-to, which end the process; and version, which ends it or,
+	// given as vX.Y.Z, sets the version it reports while it runs on. Every
+	// other flag and value is passed as written, and a flag or a value
+	// kube-scheduler refuses makes it exit. featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"

@@ -14,6 +14,7 @@ linters:
               - arrayofstruct
               - nodurations
               - nomaps
+              # Not for CRD types, whose optionality the schema validates: the rules for them are optionalfields and requiredfields (https://github.com/kubernetes-sigs/kube-api-linter/blob/d90122c89087/docs/linters.md?plain=1#L615-L617)
               - nonpointerstructs
               - notimestamp
               - optionalfields
