@@ -175,13 +175,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Once every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True there, and the gateway gate pins one: remove `noEndpoints`, the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).
   The upstream fix is [envoyproxy/gateway#10564](https://github.com/envoyproxy/gateway/pull/10564), open on 2026-11-08.
 
-## From the CI of the refactoring (2026-11-09)
-
-- `make test` gives envtest's API servers 60 s to stop instead of the default 20 s (the `@todo` in `Makefile`): a tenant API server in `internal/controller/tenant` twice took longer, after its test's checks had passed, and nobody has measured why.
-  768 stops in loaded Linux containers took at most 1.12 s, but it did reproduce outside CI: on macOS, in both of two runs of `go test -count=1 ./internal/controller/tenant/` on 2026-11-10, as `timeout waiting for process kube-apiserver to stop` in a test's cleanup after its checks passed, without a dump, since `LODIA_APISERVER_DUMPS` was not set.
-  `verify` now keeps the log and the goroutines of a tenant API server still running 20 s into its stop, in the artifact `apiserver-dumps` (`testenv.StartDumping`, the `@todo` in `internal/controller/tenant/tenant_test.go`).
-  Read the first dump, fix what holds it past SIGTERM, then remove `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` from `make test`, `StartDumping` and the artifact's step.
-
 ## From Workloads' hold (2026-11-09)
 
 - A renewed restart-only certificate rolls its component at once, or at the grant on a tenant Workloads holds, not in the tenant's window ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "Who waits for the window"): holding it for the window is for phase 3's rotations, and takes a field each way between Workloads and Lifecycle, a digest of the restart hashes and a clock of the certificate the pods still run.

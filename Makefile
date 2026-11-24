@@ -107,14 +107,13 @@ etcd: ## fetch etcd's release binary at the version etcd-wrapper runs into ETCD_
 
 .PHONY: test
 test: etcd ## unit and envtest tests, those of RACE_PACKAGES with the race detector, and the test of health that counts a tenant of 5,000 Nodes at the operator's Timeout without it; envtest runs a real API server and etcd, and the tests of Lodia's calls to etcd run the binary that make etcd fetches
-	# @todo: 60 s until we know what holds an API server past SIGTERM; see todo.md.
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" $(ETCD_BINARY) go test $$(go list ./... | grep -vxF "$$(go list $(RACE_PACKAGES))")
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)
 	out="$$(mktemp)" && st="$$(mktemp)" && { LODIA_HEALTH_TEST_WITHOUT_ENVTEST=1 go test -race -count=1 -v -run '^($(APART_TESTS))$$' ./internal/controller/health; echo $$? > "$$st"; } 2>&1 | tee "$$out"; \
 	status="$$(cat "$$st")"; [ -n "$$status" ] || status=1; \
 	for t in $(APART); do grep -q "^--- PASS: $$t (" "$$out" || { echo "$$t did not pass in the step without envtest"; status=1; }; done; \
 	rm -f "$$out" "$$st"; exit $$status
-	KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health
+	KUBEBUILDER_ASSETS="$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health
 	cd api && go test ./...
 
 .PHONY: fleet
