@@ -31,4 +31,4 @@ jobs:
         if: always()
         with:
           name: conformance
-          path: work/e2e/_artifacts/
+          path: work/e2e/lodia-e2e-local/_artifacts/

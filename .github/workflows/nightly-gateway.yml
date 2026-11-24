@@ -32,7 +32,7 @@ jobs:
         if: always()
         with:
           name: g6
-          path: work/e2e/_artifacts/
+          path: work/e2e/lodia-e2e-local/_artifacts/
 
   conformance:
     runs-on: ubuntu-24.04
@@ -52,4 +52,4 @@ jobs:
         if: always()
         with:
           name: conformance-gateway
-          path: work/e2e/_artifacts/
+          path: work/e2e/lodia-e2e-local/_artifacts/
