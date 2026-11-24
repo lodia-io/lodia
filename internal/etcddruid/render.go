@@ -4,7 +4,9 @@
 package etcddruid
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"path"
@@ -15,6 +17,7 @@ import (
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
@@ -354,6 +358,7 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, ren
 	// (sigs.k8s.io/structured-merge-diff/v6@v6.4.2 typed/remove.go#L171-L173).
 	unstructured.RemoveNestedField(content, "spec", "selector")
 	unstructured.RemoveNestedField(content, "status")
+	// @todo: the drop goes once every minor a management cluster runs keeps an object its removal empties (todo.md).
 	for _, object := range [][]string{{"spec", "schedulingConstraints"}, {"spec", "sharedConfig"}, {"spec", "etcd", "resources"}} {
 		if fields, _, _ := unstructured.NestedMap(content, object...); len(fields) == 0 {
 			unstructured.RemoveNestedField(content, object...)
@@ -368,6 +373,118 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, ren
 		return nil, err
 	}
 	return &Store{etcd: result}, nil
+}
+
+// @todo: goes with the drop in Apply once every minor a management cluster runs keeps an object its removal empties (todo.md).
+
+// HeldEmpty names each object that refused, the API server's refusal of
+// manager's apply of rendered, finds null, or, where the API server keeps it
+// empty, without a field the schema requires, because the apply removed
+// manager's fields in it while other field managers hold it as an empty
+// object, as Apply says, with those managers and what releases it; explained
+// says that the refusal has no other cause. It reads the Etcd's managedFields
+// through reader, which must not be the cache: the cache strips them.
+func (e *Engine) HeldEmpty(ctx context.Context, reader client.Reader, manager string, rendered *Store, refused error) (held []string, explained bool, err error) {
+	var status apierrors.APIStatus
+	if !errors.As(refused, &status) || status.Status().Details == nil {
+		return nil, false, nil
+	}
+	var emptied []string
+	explained = true
+	for _, cause := range status.Status().Details.Causes {
+		parent := strings.LastIndex(cause.Field, ".")
+		switch {
+		case cause.Type == metav1.CauseTypeTypeInvalid && strings.HasPrefix(cause.Message, `Invalid value: "null"`):
+			emptied = append(emptied, cause.Field)
+		case cause.Type == metav1.CauseTypeFieldValueRequired && parent > 0:
+			emptied = append(emptied, cause.Field[:parent])
+		case cause.Field != skippedRules:
+			explained = false
+		}
+	}
+	if len(emptied) == 0 {
+		return nil, false, nil
+	}
+	current := &druidv1alpha1.Etcd{}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(rendered.etcd), current); err != nil {
+		return nil, false, client.IgnoreNotFound(err)
+	}
+	for _, field := range emptied {
+		names := strings.Split(field, ".")
+		path := make(fieldpath.Path, 0, len(names))
+		for _, name := range names {
+			path = append(path, fieldpath.PathElement{FieldName: &name})
+		}
+		ours, others := false, false
+		var holders []holder
+		for _, entry := range current.ManagedFields {
+			if entry.FieldsV1 == nil {
+				continue
+			}
+			set := &fieldpath.Set{}
+			if err := set.FromJSON(entry.FieldsV1.GetRawReader()); err != nil {
+				return nil, false, fmt.Errorf("read the managedFields of Etcd %s: %w", current.Name, err)
+			}
+			inside := set
+			for _, element := range path {
+				inside = inside.WithPrefix(element)
+			}
+			switch {
+			case entry.Manager == manager && entry.Operation == metav1.ManagedFieldsOperationApply:
+				ours = !inside.Empty()
+			case !inside.Empty():
+				others = true
+			case set.Has(path):
+				holders = append(holders, holder{entry.Operation, entry.Manager})
+			}
+		}
+		if !ours || others || len(holders) == 0 {
+			explained = false
+			continue
+		}
+		held = append(held, field+", "+holding(field, holders))
+	}
+	return held, explained, nil
+}
+
+// skippedRules is the field of the cause the API server adds when a schema
+// error kept it from evaluating the validation rules
+// (k8s.io/apiextensions-apiserver@v0.37.2 pkg/registry/customresource/strategy.go#L405-L412).
+const skippedRules = "<nil>"
+
+type holder struct {
+	operation metav1.ManagedFieldsOperationType
+	manager   string
+}
+
+// holding says which managers hold the object at field and what releases
+// it. The API server keys a manager's fields by its operation too
+// (k8s.io/apimachinery@v0.37.2 pkg/util/managedfields/internal/managedfields.go#L134-L153),
+// so an apply releases only what the manager applied, and an object held by an
+// update goes only when it is removed, which takes it from every manager.
+func holding(field string, holders []holder) string {
+	slices.SortFunc(holders, func(a, b holder) int {
+		return cmp.Or(strings.Compare(a.manager, b.manager), strings.Compare(string(a.operation), string(b.operation)))
+	})
+	holders = slices.Compact(holders)
+	which := make([]string, len(holders))
+	update := false
+	for i, h := range holders {
+		which[i] = "the " + strings.ToLower(string(h.operation)) + " of field manager " + h.manager
+		update = update || h.operation == metav1.ManagedFieldsOperationUpdate
+	}
+	verb := " holds "
+	if len(holders) > 1 {
+		verb = " hold "
+	}
+	release := "until " + holders[0].manager + " applies without it"
+	switch {
+	case update:
+		release = `until the JSON patch [{"op":"remove","path":"/` + strings.ReplaceAll(field, ".", "/") + `"}] removes it`
+	case len(holders) > 1:
+		release = "until each applies without it"
+	}
+	return "which " + strings.Join(which, " and ") + verb + release
 }
 
 // Delete deletes the Etcd under its UID.

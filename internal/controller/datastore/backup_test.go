@@ -1765,6 +1765,16 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		pass(t, r, b.Name)
 		released(t, b.Name)
 	})
+	t.Run("not held by a restore of a predecessor Backup of its name that lacks its keys", func(t *testing.T) {
+		b, _ := backup(t, "keyless-successor", nil)
+		cp := restoring(t, "keyless-successor", b.Name)
+		predecessor := b.DeepCopy()
+		predecessor.UID = "7d1f0a52-3c2b-4f0e-8a6d-5b9c4e2f1a30"
+		completeRestore(t, cp, predecessor)
+		deleteBackup(t, b.Name)
+		pass(t, r, b.Name)
+		released(t, b.Name)
+	})
 	t.Run("a ControlPlane the cache does not hold yet", func(t *testing.T) {
 		b, _ := backup(t, "fresh", nil)
 		restoring(t, "fresh", b.Name)

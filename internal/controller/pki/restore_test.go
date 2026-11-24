@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -260,12 +261,17 @@ func TestARestoreCopiesTheBackupsKeysBehindANewOne(t *testing.T) {
 		}
 	}
 	restarted := newReconciler(time.Hour)
-	restarted.Client = noBackupReads{controller}
 	restarted.Reader = noBackupKeyReads{apiReader}
-	reconcile(t, restarted, cp)
-	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
-	if got := secretOf(t, cp, "dev-encryption-config").Data[lodiav1alpha1.EncryptionConfigKey]; !bytes.Equal(got, written) {
-		t.Errorf("the configuration changed once the Backup was gone:\n%s", got)
+	for _, restore := range []bool{false, true} {
+		if restore {
+			restored(t, cp, b)
+			restarted.Client = noBackupReads{controller}
+		}
+		reconcile(t, restarted, cp)
+		expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+		if got := secretOf(t, cp, "dev-encryption-config").Data[lodiav1alpha1.EncryptionConfigKey]; !bytes.Equal(got, written) {
+			t.Errorf("the configuration changed once the Backup was gone, status.restore set %t:\n%s", restore, got)
+		}
 	}
 }
 
@@ -340,7 +346,7 @@ func TestATransientErrorReadingTheBackupWritesNothing(t *testing.T) {
 	publishEndpoint(t, cp)
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForBackup)
-	seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+	first := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
 	secrets, status := resourceVersions(t, cp)
 	for _, down := range []struct {
 		name   string
@@ -361,6 +367,19 @@ func TestATransientErrorReadingTheBackupWritesNothing(t *testing.T) {
 	r.Client, r.Reader = controller, apiReader
 	reconcile(t, r, cp)
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+
+	removedByHand(t, first)
+	seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForBackup)
+	secrets, status = resourceVersions(t, cp)
+	r.Client = noBackupReads{controller}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil || err.Error() != "the API server is down" {
+		t.Errorf("a pass that cannot read the Backup after its keys were copied returned %v, want the read's error", err)
+	}
+	if after, afterStatus := resourceVersions(t, cp); !maps.Equal(after, secrets) || afterStatus != status {
+		t.Error("a pass that cannot read the Backup after its keys were copied wrote")
+	}
 }
 
 func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
@@ -412,6 +431,238 @@ func TestARestoreGoesOnWhenItsBackupCompletes(t *testing.T) {
 	})
 	if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, backupProviders(t, b)) {
 		t.Errorf("the configuration holds %+v after its new key, want the Backup's", got)
+	}
+}
+
+func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
+	for i, c := range []struct {
+		name   string
+		copied bool
+	}{
+		{"no keys copied before the restore completed", false},
+		{"the successor's keys copied before the restore completed", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := controlPlane(t, fmt.Sprintf("pki-restore-successor-%d", i), restoring)
+			publishEndpoint(t, cp)
+			first := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+			removedByHand(t, first)
+			r := newReconciler(time.Hour)
+			if !c.copied {
+				restored(t, cp, first)
+				reconcile(t, r, cp)
+				if got, want := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady).Message, "Backup "+backupName+" with UID "+string(first.UID)+", which the restore was of, is gone, and its keys with it; restore another Backup"; got != want {
+					t.Errorf("without a Backup of its name the message is %q, want %q", got, want)
+				}
+			}
+			second := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+			if c.copied {
+				reconcile(t, r, cp)
+				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+				restored(t, cp, first)
+			}
+
+			reconcile(t, r, cp)
+			says := "Backup " + backupName + " has UID " + string(second.UID) + ", and the restore was of UID " + string(first.UID) + ", whose keys the restored data needs; restore another Backup"
+			if c.copied {
+				says = "dev-encryption-config holds the keys of Backup " + backupName + " with UID " + string(second.UID) + ", and the restore was of UID " + string(first.UID) + ", whose keys the restored data needs; restore another Backup"
+			}
+			mismatch := func() {
+				t.Helper()
+				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+				if got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonWaitingForBackup || got.Message != says {
+					t.Errorf("CertificatesReady is %s %s: %q, want WaitingForBackup %q", got.Status, got.Reason, got.Message, says)
+				}
+			}
+			mismatch()
+			if !c.copied {
+				if secretsOf(t, cp)["dev-encryption-config"] != nil {
+					t.Fatal("the restore got the keys of a Backup its status does not name")
+				}
+				return
+			}
+			changed := freshControlPlane(t, cp)
+			changed.Spec.APIServer = &lodiav1alpha1.APIServer{Encryption: &lodiav1alpha1.Encryption{Provider: "aescbc"}}
+			if err := k8s.Update(t.Context(), changed); err != nil {
+				t.Fatal(err)
+			}
+			reconcile(t, r, cp)
+			if first := writtenProviders(t, cp)[0]; first.AESCBC == nil {
+				t.Fatalf("the configuration was not written again for the new provider: %+v", first)
+			}
+			mismatch()
+		})
+	}
+}
+
+func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNamesOne(t *testing.T) {
+	sealed := func(t *testing.T, namespace string) *lodiav1alpha1.Backup {
+		return seal(t, namespace, encryptionConfiguration(t, secretboxKey()))
+	}
+	at := func(reason string) func(*testing.T, string) *lodiav1alpha1.Backup {
+		return func(t *testing.T, namespace string) *lodiav1alpha1.Backup {
+			b := newBackup(t, namespace)
+			setReady(t, b, metav1.ConditionFalse, reason)
+			return b
+		}
+	}
+	ofAnotherMinor := func(t *testing.T, namespace string) *lodiav1alpha1.Backup {
+		b := sealed(t, namespace)
+		b.Status.KubernetesVersion = "v1.36.4"
+		if err := k8s.Status().Update(t.Context(), b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for i, c := range []struct {
+		name      string
+		successor func(*testing.T, string) *lodiav1alpha1.Backup
+		restores  string
+	}{
+		{"a sealed successor before the copy", sealed, "successor"},
+		{"a sealed successor after the copy and before the cleanup", sealed, ""},
+		{"a sealed successor being deleted, held by its finalizer", sealed, "deleted"},
+		{"a sealed successor after the cleanup", sealed, "predecessor"},
+		{"a failed successor before the copy", at(lodiav1alpha1.ReasonNoBackupStore), ""},
+		{"a failed successor after the cleanup", at(lodiav1alpha1.ReasonNoBackupStore), "predecessor"},
+		{"a successor never sealed, its source gone", at(lodiav1alpha1.ReasonControlPlaneNotFound), ""},
+		{"a sealed successor of another minor", ofAnotherMinor, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := controlPlane(t, fmt.Sprintf("pki-restore-replaced-%d", i), restoring)
+			publishEndpoint(t, cp)
+			first := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+			copied := backupProviders(t, first)
+			r := newReconciler(time.Hour)
+			reconcile(t, r, cp)
+			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+			removedByHand(t, first)
+			second := c.successor(t, cp.Namespace)
+			mismatch := func(when, says string) {
+				t.Helper()
+				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+				if got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonWaitingForBackup || got.Message != says {
+					t.Errorf("%s: CertificatesReady is %s %s: %q, want WaitingForBackup %q", when, got.Status, got.Reason, got.Message, says)
+				}
+			}
+			reconcile(t, r, cp)
+			wait := "dev-encryption-config holds the keys of Backup " + backupName + " with UID " + string(first.UID) + ", and the Backup of that name now has UID " + string(second.UID) +
+				"; PKI checks the Backup's UID and not its keys, and waits while the Backup of that name exists, until status.restore names UID " + string(first.UID) + "; DatastoreReady says how the restore goes"
+			mismatch("before status.restore", wait)
+
+			switch c.restores {
+			case "successor":
+				restored(t, cp, second)
+				reconcile(t, r, cp)
+				held := "dev-encryption-config holds the keys of Backup " + backupName + " with UID " + string(first.UID) + ", and the restore was of UID " + string(second.UID) + ", whose keys the restored data needs; restore another Backup"
+				mismatch("once status.restore names the successor", held)
+				for _, gone := range []client.Object{second, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: backupKeys, Namespace: cp.Namespace}}} {
+					if err := k8s.Delete(t.Context(), gone); err != nil {
+						t.Fatal(err)
+					}
+				}
+				reconcile(t, r, cp)
+				mismatch("once the successor the restore was of is deleted", held)
+			case "deleted":
+				if err := k8s.Patch(t.Context(), second, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":["`+lodiav1alpha1.RestoreSourceFinalizer+`"]}}`))); err != nil {
+					t.Fatal(err)
+				}
+				if err := k8s.Delete(t.Context(), second); err != nil {
+					t.Fatal(err)
+				}
+				if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(second), second); err != nil || second.DeletionTimestamp.IsZero() {
+					t.Fatalf("the successor is not being deleted: %v", err)
+				}
+				reconcile(t, r, cp)
+				mismatch("while the successor is being deleted", wait)
+				if err := k8s.Patch(t.Context(), second, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":null}}`))); err != nil {
+					t.Fatal(err)
+				}
+				reconcile(t, r, cp)
+				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+				if freshControlPlane(t, cp).Status.Restore != nil {
+					t.Error("status.restore is set once the successor is gone")
+				}
+			case "predecessor":
+				restored(t, cp, first)
+				reconcile(t, r, cp)
+				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+			default:
+				reconcile(t, r, cp)
+				mismatch("while status.restore is unset", wait)
+			}
+			if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, copied) {
+				t.Errorf("the configuration holds %+v after its new key, want the keys it copied", got)
+			}
+		})
+	}
+}
+
+func TestARewriteOfAnUnchangedRestoredConfigurationKeepsItsRecord(t *testing.T) {
+	cp := controlPlane(t, "pki-restore-rewritten", restoring)
+	publishEndpoint(t, cp)
+	b := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+	r := newReconciler(time.Hour)
+	reconcile(t, r, cp)
+	s := secretsOf(t, cp)["dev-encryption-config"]
+	if err := k8s.Patch(t.Context(), s, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"annotations":{"`+lodiav1alpha1.DataHashAnnotation+`":null}}}`)), client.FieldOwner("test/person")); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	s = secretsOf(t, cp)["dev-encryption-config"]
+	if s.Annotations[lodiav1alpha1.DataHashAnnotation] == "" {
+		t.Fatal("PKI did not write the configuration again")
+	}
+	if got := s.Labels["lodia.io/backup-uid"]; got != string(b.UID) {
+		t.Errorf("the configuration written again records Backup UID %q, want %s", got, b.UID)
+	}
+}
+
+func TestARestoreKeepsTheKeysOfTheBackupItsStatusNames(t *testing.T) {
+	cp := controlPlane(t, "pki-restore-named", restoring)
+	publishEndpoint(t, cp)
+	b := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+	r := newReconciler(time.Hour)
+	reconcile(t, r, cp)
+	restored(t, cp, b)
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, backupProviders(t, b)) {
+		t.Errorf("the configuration holds %+v after its new key, want the Backup's", got)
+	}
+}
+
+func removedByHand(t *testing.T, b *lodiav1alpha1.Backup) {
+	t.Helper()
+	ctx := t.Context()
+	if err := k8s.Patch(ctx, b, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":["`+lodiav1alpha1.RestoreSourceFinalizer+`"]}}`))); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Patch(ctx, b, client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"finalizers":null}}`))); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: backupKeys, Namespace: b.Namespace}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func restored(t *testing.T, cp *lodiav1alpha1.ControlPlane, b *lodiav1alpha1.Backup) {
+	t.Helper()
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": lodiav1alpha1.GroupVersion.String(),
+		"kind":       "ControlPlane",
+		"metadata":   map[string]any{"name": cp.Name, "namespace": cp.Namespace},
+		"status": map[string]any{"restore": map[string]any{
+			"backup":      map[string]any{"name": b.Name, "uid": string(b.UID)},
+			"source":      map[string]any{"name": "source", "uid": "5e1f7c3a-0000-4000-8000-000000000001"},
+			"completedAt": metav1.Now().UTC().Format(time.RFC3339),
+		}},
+	}}
+	if err := k8s.Status().Apply(t.Context(), client.ApplyConfigurationFromUnstructured(u), client.FieldOwner("test/datastore"), client.ForceOwnership); err != nil {
+		t.Fatal(err)
 	}
 }
 

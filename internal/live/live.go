@@ -4,7 +4,7 @@
 // Package live reads a writer's own conditions, Datastore's status.datastore
 // and status.restore, Workloads' status.components and status.endpoint, the
 // rehearsal's status.rehearsal, Tenant's status.addons, PKI's
-// status.credentials and Health's status.nodes,
+// status.credentials and Health's status.nodes and status.health,
 // and for Lifecycle's decisions the whole object, as the API server holds
 // them, for the waits and keeps docs/decisions/independent-controllers.md
 // names. A read fails when the API
@@ -94,14 +94,15 @@ func Credentials(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Co
 	return nil
 }
 
-// Nodes replaces cp's status.nodes and its conditions of the given types with
-// the API server's, read through reader, which must not be a cache.
+// Nodes replaces cp's status.nodes, status.health and its conditions of the
+// given types with the API server's, read through reader, which must not be a
+// cache.
 func Nodes(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) error {
 	current, err := conditions(ctx, reader, cp, conditionTypes)
 	if err != nil {
 		return err
 	}
-	cp.Status.Nodes = current.Status.Nodes
+	cp.Status.Nodes, cp.Status.Health = current.Status.Nodes, current.Status.Health
 	return nil
 }
 

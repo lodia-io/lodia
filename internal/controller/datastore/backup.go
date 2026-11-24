@@ -232,6 +232,12 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if status.StartedAt == nil {
+		if why := unrecordable(*etcd.Snapshots()); why != "" {
+			return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("Etcd %s names a backup store that status.datastore.snapshots cannot hold: %s", etcd.Name(), why), 10*time.Second)
+		}
+		if why := unrecordable(location.SnapshotLocation); why != "" {
+			return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("the location of the Backup's copy in the store of Etcd %s is one status.snapshots cannot hold: %s", etcd.Name(), why), 10*time.Second)
+		}
 		status.Source = &lodiav1alpha1.UIDReference{Name: source.Name, UID: source.UID}
 		if source.Status.Kubernetes != nil && source.Status.Kubernetes.Version != "" {
 			status.KubernetesVersion = source.Status.Kubernetes.Version
@@ -646,9 +652,10 @@ func (r *BackupReconciler) release(ctx context.Context, backup *lodiav1alpha1.Ba
 }
 
 // restoring says whether a ControlPlane in the Backup's namespace that is
-// not being deleted and restores from it lacks an encryption configuration of
-// its own while the Backup's keys exist, or has one and lacks a completed
-// restore. One without its own once the keys are gone can never get them, and
+// not being deleted and restores from it, by name until its restore is
+// complete and then by the UID status.restore names, lacks an encryption
+// configuration of its own while the Backup's keys exist, or has one and lacks
+// a completed restore. One without its own once the keys are gone can never get them, and
 // would hold the Backup for good. The ControlPlanes and their Secrets are read
 // from the API server: a ControlPlane the cache does not hold yet would find
 // no Backup to restore.
@@ -659,7 +666,8 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 	}
 	for i := range controlPlanes.Items {
 		cp := &controlPlanes.Items[i]
-		if !cp.DeletionTimestamp.IsZero() || cp.Spec.RestoreFrom == nil || cp.Spec.RestoreFrom.BackupRef.Name != backup.Name {
+		if !cp.DeletionTimestamp.IsZero() || cp.Spec.RestoreFrom == nil || cp.Spec.RestoreFrom.BackupRef.Name != backup.Name ||
+			cp.Status.Restore != nil && cp.Status.Restore.Backup.UID != backup.UID {
 			continue
 		}
 		keys := &metav1.PartialObjectMetadata{}

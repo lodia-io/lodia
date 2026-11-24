@@ -158,6 +158,11 @@ type sampling struct {
 	count *nodeCount
 	// ranOut is whether a read of this pass ran into its Timeout.
 	ranOut bool
+	// reread is whether the last report found a change to write: the next
+	// reads the status live before it compares, since the cache can lag that
+	// write, and a report that compared with a cache still holding what the
+	// write replaced would write nothing.
+	reread bool
 }
 
 // restart forgets the clock of the node Leases and the count towards the
@@ -296,7 +301,7 @@ func (r *NodesReconciler) sample(ctx context.Context, cp *lodiav1alpha1.ControlP
 	}
 	if waiting != "" {
 		s.restart()
-		return r.report(ctx, cp, s.status(cp), nil, *held(cp, lodiav1alpha1.ReasonWaitingForAccess, waiting))
+		return r.report(ctx, cp, s, s.status(cp), nil, *held(cp, lodiav1alpha1.ReasonWaitingForAccess, waiting))
 	}
 	tenant, err := r.tenant(key, kubeconfig)
 	if err != nil {
@@ -583,14 +588,14 @@ func kubeletVersion(reported string) *version.Version {
 	return v
 }
 
-// report applies status.nodes and ControllerManagerHeld when either differs
-// from the cache's, after a live read: the apply names the object by name, and
-// a cache still holding a deleted predecessor must not leave its list on the
-// successor, which carries it forward. An apply that leaves a field out
-// removes it, so without a list of Nodes of this run it carries the status
-// the API server holds.
-func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
-	if !changes(cp, nodes, health, c) {
+// report applies status.nodes, status.health and ControllerManagerHeld when
+// any differs from the cache's, or after a report that found a change, after
+// a live read: the apply names the object by name, and a cache still holding
+// a deleted predecessor must not leave its list on the successor, which
+// carries it forward. An apply that leaves a field out removes it, so without
+// a list of Nodes of this run it carries the status the API server holds.
+func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlPlane, s *sampling, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
+	if !s.reread && !changes(cp, nodes, health, c) {
 		return nil
 	}
 	if err := live.Nodes(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllerManagerHeld); err != nil {
@@ -599,7 +604,7 @@ func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if nodes == nil {
 		nodes = cp.Status.Nodes
 	}
-	if !changes(cp, nodes, health, c) {
+	if s.reread = changes(cp, nodes, health, c); !s.reread {
 		return nil
 	}
 	return r.apply(ctx, cp, nodes, health, c)
