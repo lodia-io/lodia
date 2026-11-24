@@ -11,7 +11,7 @@ The rule is [todo-holds-what-waits](docs/decisions/todo-holds-what-waits.md); no
 - When etcd-druid renders `listen-client-http-urls`, which gives etcd's gRPC a listener of its own ([serve.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/embed/serve.go#L128-L131)) and which v0.39.2 does not ([etcdconfig.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/configmap/etcdconfig.go#L55)), G2's step that deletes the etcd leader's pod wants zero failed requests again.
   Until then each loop may lose one, answered 500 with `Internal` or `Unknown` for a call etcd ended without a gRPC status ([gate G2](test/e2e/README.md#gate-g2-a-highly-available-control-plane)).
   Three runs failed on it while the step wanted zero: 40764385375 on #43, 42450529023 on #56 and [43430828031](https://github.com/lodia-io/lodia/actions/runs/43430828031) on #89; locally it was 1 of 193,299 reads over 30 deletions at 50 a second.
-  Asking etcd-druid to render it is one of the held asks (see [Asks of other projects](#asks-of-other-projects)).
+  The ask of etcd-druid to render it is held back with the two under [Asks of other projects](#asks-of-other-projects), and waits for the maintainer's word.
 - When an etcd-druid release's image vector carries an etcd-backup-restore that orders snapshot sets by revision ([#1089](https://github.com/gardener/etcd-backup-restore/pull/1089); [images.yaml](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/images/images.yaml#L20-L25)), take it, remove the `@todo` at the copy task's creation in `internal/controller/datastore/backup.go`, and add a test if one is feasible, such as an e2e step that saves a full snapshot of a lower revision after the `Backup`'s and checks that the copy holds the seal.
   Until then a compaction Job that lists the store before a `Backup`'s full snapshot lands and saves its own after it makes the copy take the compacted set, which ends below the seal, while the `Backup` reads `Completed`; the restore's seal check refuses it (`RestoreFailed`).
   The copier sorts by `CreatedOn` ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L175-L177)), the restore and the compactor by revision ([miscellaneous.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/miscellaneous/miscellaneous.go#L129-L150)).
@@ -20,11 +20,14 @@ The rule is [todo-holds-what-waits](docs/decisions/todo-holds-what-waits.md); no
   Until then a one-member tenant that loses its volume replays up to a day of deltas (`api/v1alpha1/datastore_types.go`), and an Event's lease that expires during the replay drops writes (#1045) or aborts it (#1046) ([lessor.go](https://github.com/etcd-io/etcd/blob/v3.5.27/server/lease/lessor.go#L482-L490)).
   The floor of 1h assumes that a replay at the quota takes less than an hour, which is not measured: `TestOneMemberRestoredThroughDeltas` replayed 2 and 3 deltas in 0.65 s and 1.05 s on kind.
 - When the etcd-backup-restore of the etcd-druid release Lodia pins reads a snapshot's key relative to its store prefix (v0.45.3 takes the last `v1/` anywhere, [snapshot.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapstore/snapshot.go#L39-L59)), remove the schema's rule (the `@todo` in `api/v1alpha1/datastore_types.go`), its cases in `test/api/validation_test.go`, its row in `docs/decisions/etcd-druid-behind-a-seam.md` and its mentions in the docs.
-  Nobody has asked etcd-backup-restore for it yet, and the ask is not one of the held asks (see [Asks of other projects](#asks-of-other-projects)).
+  Nobody has asked etcd-backup-restore for it yet; that ask is not one of the held ones, and waits for the maintainer's word.
 
 ## Kubernetes
 
 - When a fix of [kubernetes#142980](https://github.com/kubernetes/kubernetes/issues/142980), such as [#143346](https://github.com/kubernetes/kubernetes/pull/143346), is in every Kubernetes patch Lodia supports, the API server goes back to `--shutdown-delay-duration=15s` without the `preStop` sleep (the `@todo` in `internal/controller/workloads/render.go`, [api-exposure](docs/decisions/api-exposure.md)).
+- When apiserver-network-proxy reloads `--cluster-cert`, which konnectivity-server loads once ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.1/cmd/server/app/server.go#L408-L438), v0.37.1), drop `konnectivity-server` and `front-proxy-client` from `restartOnly` (`internal/controller/workloads/render.go`), and `konnectivity-kubeconfig` once its client-go reload is proven: kube-apiserver already reloads `--proxy-client-cert-file` at 1.35 to 1.37 ([apiserver.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/kube-aggregator/pkg/apiserver/apiserver.go#L304-L320)), and a leaf renewal then rolls nothing in the API server pod.
+  Until then each renewal of those leaves rolls the API server pod ([staged-credential-rotation](docs/decisions/staged-credential-rotation.md)).
+  Nobody has asked apiserver-network-proxy for it yet; that ask is not one of the held ones, and waits for the maintainer's word.
 
 ## The Gateway
 
@@ -57,7 +60,8 @@ The rule is [todo-holds-what-waits](docs/decisions/todo-holds-what-waits.md); no
 
 ## Asks of other projects
 
-Lodia asks nothing upstream without the maintainer's word, and that word is the condition of each item here.
+Lodia asks nothing upstream without the maintainer's word, and that word is the condition of each ask here and of each item above that waits on one, which names it.
+The asks here are the ones nothing in Lodia waits on.
 Some asks of etcd-druid and etcd-backup-restore are held back to go together: the two marked held below and the one on G2's listener above.
 Nobody has asked for the others yet.
 
@@ -76,6 +80,3 @@ Nobody has asked for the others yet.
 - **etcd-backup-restore, outside the held asks.**
   Ask it to reload its serving certificate when the Secret changes: the sidecar calls `ListenAndServeTLS(certFile, keyFile)` once ([httpAPI.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/server/httpAPI.go#L190)), so it keeps serving its first one (finding 3 of the [etcd spike](docs/etcd-spike-2026-10.md)).
   Lodia renews etcd's certificates as a new generation ([staged-credential-rotation](docs/decisions/staged-credential-rotation.md)); with a reload upstream a renewal in place would roll nothing and spare a one-member tenant its 20 s.
-- **apiserver-network-proxy, outside the held asks.**
-  Ask it to reload `--cluster-cert`, which konnectivity-server loads once ([server.go](https://github.com/kubernetes-sigs/apiserver-network-proxy/blob/v0.37.1/cmd/server/app/server.go#L408-L438), v0.37.1).
-  When it does, drop `konnectivity-server` and `front-proxy-client` from `restartOnly` (`internal/controller/workloads/render.go`), and `konnectivity-kubeconfig` once its client-go reload is proven: kube-apiserver already reloads `--proxy-client-cert-file` at 1.35 to 1.37 ([apiserver.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/staging/src/k8s.io/kube-aggregator/pkg/apiserver/apiserver.go#L304-L320)), and a leaf renewal then rolls nothing in the API server pod.

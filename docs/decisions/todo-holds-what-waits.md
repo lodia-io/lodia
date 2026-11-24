@@ -7,7 +7,9 @@ Built.
 
 - An item enters `todo.md` only with the condition that ends its wait as its first words: a release, an upstream fix, a need that has not come, a measurement that has no occasion yet.
   The item then says what to do when the condition holds, and names the files, tests and `@todo` markers it changes.
-- An ask of another project waits for the maintainer's word, and says so once under its heading: each item there names its project and whether it is one of the asks held back to go together.
+- An ask of another project waits for the maintainer's word.
+  An item that waits on it stays in its topic and names the ask; an ask nothing in Lodia waits on goes under "Asks of other projects", which says once that the maintainer's word is the condition of each.
+  Either names its project and whether it is one of the asks held back to go together.
 - Work that can start now is no item.
   A finding outside the task at hand goes to the task's author, who places it in the plan.
 - A pass that fixes an item removes it in the same change, with the `@todo` markers and the links in the docs that name it.
