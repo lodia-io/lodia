@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -48,7 +49,7 @@ func clusterToDump(t *testing.T) string {
 	return kubeconfigFor(t, server.URL, "kind-lodia-e2e-x", "kind-lodia-e2e-x")
 }
 
-func awaitDump(t *testing.T, name string) string {
+func awaitDump(t *testing.T, name, calls string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -63,10 +64,16 @@ func awaitDump(t *testing.T, name string) string {
 	console := filepath.Join(dumpDir, name, "containers", "e2e-node", "console.log")
 	for {
 		if _, err := os.Stat(console); err == nil {
-			return console
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("the dump %s holds no %s", name, console)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	for !slices.ContainsFunc(dockerCalls(t, calls), func(call string) bool { return strings.HasPrefix(call, "exec ") }) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the dump %s ran no journalctl", name)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -100,10 +107,10 @@ func TestADumpReplacesWhatAnEarlierRunLeftThere(t *testing.T) {
 
 func TestTheDumpBeforeTheTimeoutIsArmedWhereTheTimeoutIsGiven(t *testing.T) {
 	dumpsInto(t)
-	fakeDocker(t, nodeConsole)
+	calls := fakeDocker(t, nodeConsole)
 	cfg := envconf.NewWithKubeConfig(clusterToDump(t))
 	dumpBeforeTimeout(cfg, dumpMargin+100*time.Millisecond)
-	awaitDump(t, "timeout")
+	awaitDump(t, "timeout", calls)
 }
 
 func TestNoDumpBeforeTheTimeoutIsArmedWhereGoTestHasNoTimeout(t *testing.T) {
