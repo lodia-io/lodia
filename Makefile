@@ -7,6 +7,8 @@ ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
 E2E_DIR ?= $(CURDIR)/work/e2e/$(E2E_CLUSTER)
 E2E_LABEL = io.lodia.e2e.cluster
+E2E_RUN =
+E2E_KIND_CONFIG =
 E2E_HA_TEST ?= TestHighAvailabilityGate
 E2E_RESTORE_TEST ?= TestRestoreGate
 E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
@@ -313,7 +315,7 @@ $(e2e-needs)
 mkdir -p $(E2E_DIR)
 go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig $(if $(E2E_KIND_CONFIG),--config $(E2E_KIND_CONFIG))
 E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig E2E_DUMPS=$(E2E_DIR)/_artifacts/dumps go test -v -tags $(E2E_TAGS) -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '^$(E2E_RUN)$$') -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
-ids="$$(docker ps --all --quiet --filter label=$(E2E_LABEL)=$(E2E_CLUSTER))"; \
+ids="$$(docker ps --all --quiet --filter label=$(E2E_LABEL)=$(E2E_CLUSTER))" || status=1; \
 [ -z "$$ids" ] || docker rm --force --volumes $$ids || status=1; \
 go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
 endef
