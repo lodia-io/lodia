@@ -336,7 +336,7 @@ func TestAnObjectTheClassEmptiesWhileAnotherManagerHoldsItNamesThatManager(t *te
 				want = c.field + ", which the update of field manager " + c.manager + " holds until the JSON patch " + remove + " removes it"
 			}
 			if c.other {
-				want += "; the API server leaves an object emptied while another manager holds it null, which the Etcd's schema refuses; the rest of the refusal is in Lodia's log"
+				want += "; the API server leaves an object emptied while another manager holds it null, or empty without the fields it requires, and the Etcd's schema refuses either; the rest of the refusal is in Lodia's log"
 			}
 			ready := meta.FindStatusCondition(getControlPlane(t, ns, c.cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 			if ready == nil || ready.Reason != lodiav1alpha1.ReasonRefused || !strings.Contains(ready.Message, want) || strings.Count(ready.Message, "Lodia's log") != strings.Count(want, "Lodia's log") {
@@ -353,6 +353,51 @@ func TestAnObjectTheClassEmptiesWhileAnotherManagerHoldsItNamesThatManager(t *te
 				t.Errorf("once the manager released %s DatastoreReady says %q", c.field, message)
 			}
 		})
+	}
+}
+
+func TestAStoreTheClassDropsWhileAnotherManagerHoldsItNamesThatManager(t *testing.T) {
+	t.Parallel()
+	const cp = "held-store"
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass(cp, credentialsNamespace))
+	classTenant(t, ns, cp, cp)
+	r := operatorAt(withoutManagedFields(unpaused(k8s)), revision)
+	apply := func(spec map[string]any) {
+		t.Helper()
+		applied := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": druidv1alpha1.SchemeGroupVersion.String(),
+			"kind":       "Etcd",
+			"metadata":   map[string]any{"name": cp + "-etcd", "namespace": ns},
+		}}
+		if spec != nil {
+			applied.Object["spec"] = spec
+		}
+		if err := k8s.Apply(t.Context(), client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner("kubectl")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	apply(map[string]any{"backup": map[string]any{"store": map[string]any{}}})
+
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Backup = nil })
+	grantClass(t, ns, cp, cp)
+	if _, err := passOf(t, r, ns, cp); !apierrors.IsInvalid(err) {
+		t.Fatalf("the pass that drops a store another manager holds returned %v, want the API server's refusal", err)
+	}
+	want := "the apply empties spec.backup.store, which the apply of field manager kubectl holds until kubectl applies without it; "
+	ready := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+	if ready == nil || ready.Reason != lodiav1alpha1.ReasonRefused || !strings.Contains(ready.Message, want) || strings.Contains(ready.Message, "Lodia's log") {
+		t.Fatalf("DatastoreReady is %+v, want Refused naming %q", ready, want)
+	}
+
+	apply(nil)
+	mustPass(t, r, ns, cp)
+	if message := readyMessage(t, ns, cp); strings.Contains(message, "kubectl") {
+		t.Errorf("once kubectl released the store DatastoreReady says %q", message)
+	}
+	if store := getEtcd(t, ns, cp).Spec.Backup.Store; store != nil {
+		t.Errorf("the Etcd keeps the store %+v", store)
 	}
 }
 

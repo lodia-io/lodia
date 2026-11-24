@@ -378,34 +378,38 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, ren
 // @todo: goes with the drop in Apply once every minor a management cluster runs keeps an object its removal empties (todo.md).
 
 // HeldEmpty names each object that refused, the API server's refusal of
-// manager's apply of rendered, finds null because the apply removed manager's
-// fields in it while other field managers hold it as an empty object, as Apply
-// says, with those managers and what releases it; explained says that the
-// refusal has no other cause. It reads the Etcd's managedFields through
-// reader, which must not be the cache: the cache strips them.
+// manager's apply of rendered, finds null, or, where the API server keeps it
+// empty, without a field the schema requires, because the apply removed
+// manager's fields in it while other field managers hold it as an empty
+// object, as Apply says, with those managers and what releases it; explained
+// says that the refusal has no other cause. It reads the Etcd's managedFields
+// through reader, which must not be the cache: the cache strips them.
 func (e *Engine) HeldEmpty(ctx context.Context, reader client.Reader, manager string, rendered *Store, refused error) (held []string, explained bool, err error) {
 	var status apierrors.APIStatus
 	if !errors.As(refused, &status) || status.Status().Details == nil {
 		return nil, false, nil
 	}
-	var nulls []string
+	var emptied []string
 	explained = true
 	for _, cause := range status.Status().Details.Causes {
+		parent := strings.LastIndex(cause.Field, ".")
 		switch {
 		case cause.Type == metav1.CauseTypeTypeInvalid && strings.HasPrefix(cause.Message, `Invalid value: "null"`):
-			nulls = append(nulls, cause.Field)
+			emptied = append(emptied, cause.Field)
+		case cause.Type == metav1.CauseTypeFieldValueRequired && parent > 0:
+			emptied = append(emptied, cause.Field[:parent])
 		case cause.Field != skippedRules:
 			explained = false
 		}
 	}
-	if len(nulls) == 0 {
+	if len(emptied) == 0 {
 		return nil, false, nil
 	}
 	current := &druidv1alpha1.Etcd{}
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(rendered.etcd), current); err != nil {
 		return nil, false, client.IgnoreNotFound(err)
 	}
-	for _, field := range nulls {
+	for _, field := range emptied {
 		names := strings.Split(field, ".")
 		path := make(fieldpath.Path, 0, len(names))
 		for _, name := range names {

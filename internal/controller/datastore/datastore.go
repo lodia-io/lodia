@@ -537,7 +537,7 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 				rendered.Name(), p.generation, class, rendered.ClassGeneration())
 			held, explained, heldErr := r.Druid.HeldEmpty(ctx, r.Reader, FieldManager, rendered, err)
 			if len(held) > 0 {
-				message += ": the apply empties " + strings.Join(held, ", and ") + "; the API server leaves an object emptied while another manager holds it null, which the Etcd's schema refuses"
+				message += ": the apply empties " + strings.Join(held, ", and ") + "; the API server leaves an object emptied while another manager holds it null, or empty without the fields it requires, and the Etcd's schema refuses either"
 			}
 			switch {
 			case len(held) == 0:

@@ -40,6 +40,10 @@ func null(path ...string) *field.Error {
 	return field.TypeInvalid(field.NewPath(path[0], path[1:]...), "null", path[len(path)-1]+` in body must be of type object: "null"`)
 }
 
+func required(path ...string) *field.Error {
+	return field.Required(field.NewPath(path[0], path[1:]...), "")
+}
+
 func TestHeldEmptyNamesTheManagersThatHoldAnObjectTheRefusalFindsNull(t *testing.T) {
 	const ours = "lodia/datastore"
 	entry := func(manager string, operation metav1.ManagedFieldsOperationType, fields string) metav1.ManagedFieldsEntry {
@@ -47,6 +51,7 @@ func TestHeldEmptyNamesTheManagersThatHoldAnObjectTheRefusalFindsNull(t *testing
 	}
 	lodia := entry(ours, metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:sharedConfig":{"f:autoCompactionMode":{}},"f:etcd":{"f:resources":{"f:requests":{"f:cpu":{}},"f:limits":{"f:cpu":{}}}}}}`)
 	applied := entry("kubectl", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:sharedConfig":{}}}`)
+	storeOfLodia := entry(ours, metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:backup":{"f:store":{"f:prefix":{},"f:provider":{}}}}}`)
 	sharedConfig := refusal(null("spec", "sharedConfig"))
 	schedule := field.Invalid(field.NewPath("spec", "etcd", "defragmentationSchedule"), "0 3 * * 9", "does not match")
 	const patch = `the JSON patch [{"op":"remove","path":"/spec/sharedConfig"}] removes it`
@@ -71,6 +76,11 @@ func TestHeldEmptyNamesTheManagersThatHoldAnObjectTheRefusalFindsNull(t *testing
 			[]string{"spec.sharedConfig, which the update of field manager kubectl-edit holds until " + patch}, true},
 		{"a nested object", []metav1.ManagedFieldsEntry{lodia, entry("kubectl", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:etcd":{"f:resources":{"f:requests":{}}}}}`)}, refusal(null("spec", "etcd", "resources", "requests")),
 			[]string{"spec.etcd.resources.requests, which the apply of field manager kubectl holds until kubectl applies without it"}, true},
+		{"an object kept empty without the field its schema requires", []metav1.ManagedFieldsEntry{storeOfLodia, entry("kubectl", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:backup":{"f:store":{}}}}`)}, refusal(required("spec", "backup", "store", "prefix")),
+			[]string{"spec.backup.store, which the apply of field manager kubectl holds until kubectl applies without it"}, true},
+		{"an object no other manager holds lacks the field its schema requires", []metav1.ManagedFieldsEntry{storeOfLodia, applied}, refusal(required("spec", "backup", "store", "prefix")), nil, false},
+		{"a refusal of a field Lodia's apply sets in an object another manager holds empty", []metav1.ManagedFieldsEntry{lodia, applied}, refusal(field.NotSupported(field.NewPath("spec", "sharedConfig", "autoCompactionMode"), "hourly", []string{"periodic", "revision"})), nil, false},
+		{"a field the schema requires at the top of the object", []metav1.ManagedFieldsEntry{storeOfLodia, applied}, refusal(required("spec")), nil, false},
 		{"a refusal with another cause too", []metav1.ManagedFieldsEntry{lodia, applied}, refusal(null("spec", "sharedConfig"), schedule),
 			[]string{"spec.sharedConfig, which the apply of field manager kubectl holds until kubectl applies without it"}, false},
 		{"a refusal for another cause while another manager holds an object empty", []metav1.ManagedFieldsEntry{lodia, applied}, refusal(schedule), nil, false},
