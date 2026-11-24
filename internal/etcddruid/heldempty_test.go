@@ -65,6 +65,8 @@ func TestHeldEmptyNamesTheManagersThatHoldAnObjectTheRefusalFindsNull(t *testing
 			[]string{"spec.sharedConfig, which the update of field manager kubectl-patch holds until " + patch}, true},
 		{"one manager holds it by update and by apply", []metav1.ManagedFieldsEntry{lodia, entry("kubectl", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:sharedConfig":{}}}`), applied}, sharedConfig,
 			[]string{"spec.sharedConfig, which the apply of field manager kubectl and the update of field manager kubectl hold until " + patch}, true},
+		{"a manager that holds it by update sorts before one that holds it by apply", []metav1.ManagedFieldsEntry{lodia, applied, entry("argocd", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:sharedConfig":{}}}`)}, sharedConfig,
+			[]string{"spec.sharedConfig, which the update of field manager argocd and the apply of field manager kubectl hold until " + patch}, true},
 		{"one manager holds it by update at two versions", []metav1.ManagedFieldsEntry{lodia, entry("kubectl-edit", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:sharedConfig":{}}}`), entry("kubectl-edit", metav1.ManagedFieldsOperationUpdate, `{"f:spec":{"f:sharedConfig":{}}}`)}, sharedConfig,
 			[]string{"spec.sharedConfig, which the update of field manager kubectl-edit holds until " + patch}, true},
 		{"a nested object", []metav1.ManagedFieldsEntry{lodia, entry("kubectl", metav1.ManagedFieldsOperationApply, `{"f:spec":{"f:etcd":{"f:resources":{"f:requests":{}}}}}`)}, refusal(null("spec", "etcd", "resources", "requests")),
