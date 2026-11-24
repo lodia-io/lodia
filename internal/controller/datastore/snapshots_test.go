@@ -46,17 +46,24 @@ func TestAStoreTheStatusCannotHoldIsLeftOutAndSaid(t *testing.T) {
 			editStore(t, ns, cp, edit.patch)
 			setEtcdStatus(t, ns, cp, druidtest.Members(1, 0))
 
-			mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
-			status := getControlPlane(t, ns, cp).Status
-			if status.Datastore == nil || status.Datastore.Snapshots != nil {
-				t.Errorf("status.datastore is %+v, want it without snapshots", status.Datastore)
-			}
-			if ready := meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready == nil || ready.Reason != lodiav1alpha1.ReasonQuorumLost {
-				t.Errorf("DatastoreReady is %+v, want QuorumLost", ready)
-			}
-			backup := meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionBackupReady)
-			if backup == nil || backup.Status != metav1.ConditionFalse || backup.Reason != lodiav1alpha1.ReasonStoreUnsupported || !strings.Contains(backup.Message, edit.why) {
-				t.Errorf("BackupReady is %+v, want False, %s, naming the %s", backup, lodiav1alpha1.ReasonStoreUnsupported, edit.why)
+			for _, pass := range []struct{ name, ready string }{{"a pass", lodiav1alpha1.ReasonQuorumLost}, {"a pass of the deletion", lodiav1alpha1.ReasonDeleting}} {
+				if pass.ready == lodiav1alpha1.ReasonDeleting {
+					if err := k8s.Delete(t.Context(), getControlPlane(t, ns, cp)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
+				status := getControlPlane(t, ns, cp).Status
+				if status.Datastore == nil || status.Datastore.Snapshots != nil {
+					t.Errorf("%s: status.datastore is %+v, want it without snapshots", pass.name, status.Datastore)
+				}
+				if ready := meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready == nil || ready.Reason != pass.ready {
+					t.Errorf("%s: DatastoreReady is %+v, want %s", pass.name, ready, pass.ready)
+				}
+				backup := meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionBackupReady)
+				if backup == nil || backup.Status != metav1.ConditionFalse || backup.Reason != lodiav1alpha1.ReasonStoreUnsupported || !strings.Contains(backup.Message, edit.why) {
+					t.Errorf("%s: BackupReady is %+v, want False, %s, naming the %s", pass.name, backup, lodiav1alpha1.ReasonStoreUnsupported, edit.why)
+				}
 			}
 		})
 	}
