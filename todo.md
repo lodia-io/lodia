@@ -175,13 +175,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   Once every Envoy Gateway release still supported upstream keeps a `TLSRoute`'s `ResolvedRefs` True there, and the gateway gate pins one: remove `noEndpoints`, the clause in `RoutesReady`'s comment in `api/v1alpha1/conditions.go` and in its row of `docs/api/controlplane.md`, and the tests that write `EndpointsNotFound` (`TestRoutesWithoutReadyEndpointsAreResolvedWhileTheAPIServerIsUnavailable` in `internal/controller/workloads`, `TestReadyInGatewayModeSaysWhyTheAPIServerIsDownWhileItsRoutesHaveNoEndpoints` in `internal/controller`).
   The upstream fix is [envoyproxy/gateway#10564](https://github.com/envoyproxy/gateway/pull/10564), open on 2026-11-08.
 
-## From the CI of the refactoring (2026-11-09)
-
-- `make test` gives envtest's API servers 60 s to stop instead of the default 20 s (the `@todo` in `Makefile`): a tenant API server in `internal/controller/tenant` twice took longer, after its test's checks had passed, and nobody has measured why.
-  768 stops in loaded Linux containers took at most 1.12 s, but it did reproduce outside CI: on macOS, in both of two runs of `go test -count=1 ./internal/controller/tenant/` on 2026-11-10, as `timeout waiting for process kube-apiserver to stop` in a test's cleanup after its checks passed, without a dump, since `LODIA_APISERVER_DUMPS` was not set.
-  `verify` now keeps the log and the goroutines of a tenant API server still running 20 s into its stop, in the artifact `apiserver-dumps` (`testenv.StartDumping`, the `@todo` in `internal/controller/tenant/tenant_test.go`).
-  Read the first dump, fix what holds it past SIGTERM, then remove `KUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT` from `make test`, `StartDumping` and the artifact's step.
-
 ## From Workloads' hold (2026-11-09)
 
 - A renewed restart-only certificate rolls its component at once, or at the grant on a tenant Workloads holds, not in the tenant's window ([upgrades-and-maintenance-windows](docs/decisions/upgrades-and-maintenance-windows.md), "Who waits for the window"): holding it for the window is for phase 3's rotations, and takes a field each way between Workloads and Lifecycle, a digest of the restart hashes and a clock of the certificate the pods still run.
@@ -220,14 +213,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A kubelet client certificate cannot be revoked, and a kubelet renews its own without asking for a lifetime: its certificate manager sets no `RequestedCertificateLifetime` ([kubelet.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/kubelet/certificate/kubelet.go#L229-L248)), so the controller manager's `--cluster-signing-duration` alone sets it ([signer.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controller/certificates/signer/signer.go#L219-L237)).
   A node a platform removes therefore keeps a certificate its API server accepts for up to 30 days, and its kubelet may register its `Node` again in that time.
   `docs/decisions/staged-credential-rotation.md:22` sets the 30 days without weighing that window against the renewals a shorter lifetime costs: decide the lifetime, or a field for it, on that trade.
-
-## From the CI of the bounded reads (2026-11-13)
-
-- `TestAGrantThatChangesNoTemplateRollsNoPod` (`internal/controller/workloads/revision_test.go:268`) failed in the `verify` job of run [43357744832](https://github.com/lodia-io/lodia/actions/runs/43357744832), job 131663696983, at d378796 of #89, a pull request that touches nothing in `internal/controller/workloads`:
-  `Deployment kube-controller-manager is stamped "v0.0.0-test+running", want v0.0.1-test+next`, and the same for `kube-scheduler`.
-  Line 268 is the first `expectStamps` after the pass of the operator at the new revision: it left two of the three Deployments at the stamp of the old one, and the API server's Deployment carried the new.
-  The test passed three runs of three locally, `main` was green at bf28826, and none of the other failed runs among the last 60 of the repository names it.
-  The cause is not found.
 
 ## From the API before it freezes (2026-11-17)
 
@@ -289,10 +274,3 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - `endpoint.certSANs` stays immutable with the rest of `endpoint` but `annotations` and `sourceRanges`, although PKI issues the serving certificate again when its names change (`certs.Matches`, `internal/certs/certs.go`): a name added in front of a living tenant's address needs a new tenant.
   Let it change beside them, in the transition rule of `Endpoint` (`api/v1alpha1/controlplane_types.go`), when someone needs it.
 - Audit by source address in `loadBalancer` mode needs `externalTrafficPolicy: Local`, which Lodia does not set on the Service: with the default `Cluster` kube-proxy masquerades the traffic of a load balancer ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1104-L1110)), so the API server sees a management node and audit `sourceIPs` name no client, while `Local` keeps the source address in most cases ([proxier.go](https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/proxy/iptables/proxier.go#L1111-L1114)).
-
-## From the flake of a held pass's report (2026-11-23)
-
-- Two more tests move `status.target` with `setTargetAt` and then cause a pass that can read the target from before the move out of Workloads' cache, which decides a hold from it (`held`, `internal/controller/workloads/workloads.go`): `TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves/a_held_pass` and `TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes` (`internal/controller/workloads/authentication_test.go`), where `setIngress` lands 16 to 19 ms after the target.
-  A pass on the old target, run by hand through the suite's stale client, writes the authentication ConfigMap and gives the next held pass another `APIServerReady`, which each test's checks refuse; no CI run has failed on either yet.
-  A write cannot be undone as the image of `TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable` is set again, so each needs a deterministic setup: `pause`, then the passes it means, by hand.
-- No test catches a held pass that rewrites the API server's Deployment while its report is outside the running table: a held pass that force-applies the render there passes the whole package, since `TestAHeldPassOutsideTheRunningTableReportsWhatRuns/a_reported` (`internal/controller/workloads/revision_test.go`) keeps a Deployment equal to the render.

@@ -139,12 +139,12 @@ func TestTheStepWithoutEnvtestRunsExactlyTheTestsThatSkipOutsideItAndTheMainRunL
 	}
 	for _, want := range []string{
 		"APART_TESTS = $(subst $(space),|,$(strip $(APART)))\n",
-		"\tKUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS=\"$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)\" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)\n" +
+		"\tKUBEBUILDER_ASSETS=\"$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)\" go test -race -skip '^($(APART_TESTS))$$' $(RACE_PACKAGES)\n" +
 			"\tout=\"$$(mktemp)\" && st=\"$$(mktemp)\" && { " + WithoutEnvtestEnv + "=1 go test -race -count=1 -v -run '^($(APART_TESTS))$$' ./internal/controller/health; echo $$? > \"$$st\"; } 2>&1 | tee \"$$out\"; \\\n" +
 			"\tstatus=\"$$(cat \"$$st\")\"; [ -n \"$$status\" ] || status=1; \\\n" +
 			"\tfor t in $(APART); do grep -q \"^--- PASS: $$t (\" \"$$out\" || { echo \"$$t did not pass in the step without envtest\"; status=1; }; done; \\\n" +
 			"\trm -f \"$$out\" \"$$st\"; exit $$status\n" +
-			"\tKUBEBUILDER_CONTROLPLANE_STOP_TIMEOUT=60s KUBEBUILDER_ASSETS=\"$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)\" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health\n",
+			"\tKUBEBUILDER_ASSETS=\"$$(go tool setup-envtest use $(ENVTEST_K8S_VERSION) -p path)\" go test -count=1 -run '^TestATenantOfMaxNodesNodesIsCountedWholeAtTheOperatorsTimeout$$' ./internal/controller/health\n",
 	} {
 		if strings.Count(string(makefile), want) != 1 {
 			t.Errorf("the Makefile does not hold exactly once, in a row, the lines %q", want)

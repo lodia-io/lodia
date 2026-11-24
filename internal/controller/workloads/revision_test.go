@@ -421,6 +421,10 @@ func TestAHeldPassOutsideTheRunningTableReportsWhatRuns(t *testing.T) {
 			cp := running(t)
 			ready := *condition(t, cp)
 			pause(t, cp)
+			if c.report != "" {
+				d := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: cp.Name + "-kube-apiserver"}}
+				byHand(t, d, func() { d.Spec.Template.Spec.Containers[0].Image = "registry.k8s.io/kube-apiserver:" + c.report })
+			}
 			reader := interceptor.NewClient(k8s, interceptor.Funcs{
 				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if err := cl.Get(ctx, key, obj, opts...); err != nil {

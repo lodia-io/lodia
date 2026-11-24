@@ -716,7 +716,11 @@ func TestTheSecretsOfTheAccessAreReadThroughOneReaderHealthAndTheEtcdSamplerShar
 	if err != nil {
 		t.Fatal(err)
 	}
-	cp := createControlPlane(t, k8s)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "operator-"}}
+	if err := k8s.Create(t.Context(), ns); err != nil {
+		t.Fatal(err)
+	}
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns.Name}}
 	ca, err := certs.NewCA("etcd", time.Now(), time.Hour)
 	if err != nil {
 		t.Fatal(err)
