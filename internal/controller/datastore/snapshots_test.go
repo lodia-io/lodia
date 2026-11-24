@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -63,12 +64,27 @@ func TestAStoreTheStatusCannotHoldIsLeftOutAndSaid(t *testing.T) {
 
 func TestABackupWaitsWhileItsSourceNamesAStoreItsStatusCannotHold(t *testing.T) {
 	t.Parallel()
-	s := newSource(t, nil, nil)
-	editStore(t, s.ns, sourceName, storeEdits[0].patch)
-	createBackup(t, s.ns, "b", nil)
-	passes(t, s.reconciler(k8s), s.ns, "b", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "status.snapshots cannot hold"))
-	if backup := getBackup(t, s.ns, "b"); backup.Status.StartedAt != nil || backup.Status.Snapshots != nil {
-		t.Errorf("the Backup started on a store its status cannot hold: %+v", backup.Status)
+	prefix := func(prefix string) string { return `{"spec":{"backup":{"store":{"prefix":"` + prefix + `"}}}}` }
+	for _, c := range []struct{ name, patch, message string }{
+		{"an unknown provider", storeEdits[0].patch, "Etcd src-etcd names a backup store that status.datastore.snapshots cannot hold: its provider is none of"},
+		{"no prefix", prefix(""), "Etcd src-etcd names a backup store that status.datastore.snapshots cannot hold: its prefix is not 1 to 512 characters long"},
+		{"a prefix of 513 characters", prefix(strings.Repeat("p", 513)), "Etcd src-etcd names a backup store that status.datastore.snapshots cannot hold: its prefix is not 1 to 512 characters long"},
+		{"a prefix of 504 characters whose Backup's is longer", prefix(strings.Repeat("p", 500) + "/a/b"), "the location of the Backup's copy in the store of Etcd src-etcd is one status.snapshots cannot hold: its prefix is not 1 to 512 characters long"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			s := newSource(t, nil, nil)
+			editStore(t, s.ns, sourceName, c.patch)
+			createBackup(t, s.ns, "b", nil)
+			r := s.reconciler(k8s)
+			passes(t, r, s.ns, "b", readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, c.message))
+			if result, err := reconcileBackup(r, s.ns, "b"); err != nil || result.RequeueAfter != 10*time.Second {
+				t.Errorf("the waiting pass returned %+v, %v, want a retry in 10 seconds", result, err)
+			}
+			if backup := getBackup(t, s.ns, "b"); backup.Status.StartedAt != nil || backup.Status.Snapshots != nil {
+				t.Errorf("the Backup started on a store its status cannot hold: %+v", backup.Status)
+			}
+		})
 	}
 }
 
