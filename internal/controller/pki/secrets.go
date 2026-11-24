@@ -993,33 +993,53 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 
 // backupKeys reads the providers a restore copies into its first encryption
 // configuration, and only for that one, from the Backup of the UID
-// status.restore names once it is set; it waits on a configuration whose
-// record names another. A Get that finds nothing leaves its object empty: an
-// absent Backup is not Completed, an absent Secret not the Backup's. Keys
-// being deleted are taken: the backup reconciler holds them until this
-// restore has them.
+// status.restore names once it is set. It waits on a configuration whose
+// record names another Backup than the one now of that name, or, once
+// status.restore is set, than the one restored, and never replaces it: a
+// lost status.restore is rebuilt while the API server runs. A Get that finds
+// nothing leaves its object empty: an absent Backup is not Completed, an
+// absent Secret not the Backup's. Keys being deleted are taken: the backup
+// reconciler holds them until this restore has them.
 func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	from := t.cp.Spec.RestoreFrom
 	if from == nil {
 		return nil
 	}
+	name := from.BackupRef.Name
+	key := client.ObjectKey{Namespace: t.cp.Namespace, Name: name}
 	restored := t.cp.Status.Restore
+	backup := &lodiav1alpha1.Backup{}
 	if s := t.existing[t.secret(lodiav1alpha1.EncryptionConfigSecret)]; s != nil {
-		if uid, ok := s.Labels[backupUIDLabel]; ok && restored != nil && uid != string(restored.Backup.UID) {
-			t.waitingForBackup = fmt.Sprintf("%s holds the keys of Backup %s with UID %s, and the restore was of UID %s, whose keys the restored data needs; restore another Backup",
-				s.Name, from.BackupRef.Name, uid, restored.Backup.UID)
+		uid, ok := s.Labels[backupUIDLabel]
+		if !ok {
+			return nil
+		}
+		if restored != nil {
+			if uid != string(restored.Backup.UID) {
+				t.waitingForBackup = fmt.Sprintf("%s holds the keys of Backup %s with UID %s, and the restore was of UID %s, whose keys the restored data needs; restore another Backup",
+					s.Name, name, uid, restored.Backup.UID)
+			}
+			return nil
+		}
+		if err := client.IgnoreNotFound(r.Get(ctx, key, backup)); err != nil {
+			return err
+		}
+		if backup.UID != "" && string(backup.UID) != uid {
+			t.waitingForBackup = fmt.Sprintf("%s holds the keys of Backup %s with UID %s, and the Backup of that name now has UID %s, whose data they cannot read; waiting for the restore to name the one it restored",
+				s.Name, name, uid, backup.UID)
 		}
 		return nil
 	}
-	name := from.BackupRef.Name
-	backup := &lodiav1alpha1.Backup{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: t.cp.Namespace, Name: name}, backup)
+	err := r.Get(ctx, key, backup)
 	if client.IgnoreNotFound(err) != nil {
 		return err
 	}
 	ready := meta.FindStatusCondition(backup.Status.Conditions, lodiav1alpha1.ConditionReady)
 	switch {
-	case restored != nil && backup.UID != "" && backup.UID != restored.Backup.UID:
+	case restored != nil && backup.UID == "":
+		t.waitingForBackup = fmt.Sprintf("Backup %s with UID %s, which the restore was of, is gone, and its keys with it; restore another Backup", name, restored.Backup.UID)
+		return nil
+	case restored != nil && backup.UID != restored.Backup.UID:
 		t.waitingForBackup = fmt.Sprintf("Backup %s has UID %s, and the restore was of UID %s, whose keys the restored data needs; restore another Backup", name, backup.UID, restored.Backup.UID)
 		return nil
 	case restore.Failed(backup, ready):

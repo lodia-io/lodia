@@ -261,12 +261,17 @@ func TestARestoreCopiesTheBackupsKeysBehindANewOne(t *testing.T) {
 		}
 	}
 	restarted := newReconciler(time.Hour)
-	restarted.Client = noBackupReads{controller}
 	restarted.Reader = noBackupKeyReads{apiReader}
-	reconcile(t, restarted, cp)
-	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
-	if got := secretOf(t, cp, "dev-encryption-config").Data[lodiav1alpha1.EncryptionConfigKey]; !bytes.Equal(got, written) {
-		t.Errorf("the configuration changed once the Backup was gone:\n%s", got)
+	for _, restore := range []bool{false, true} {
+		if restore {
+			restored(t, cp, b)
+			restarted.Client = noBackupReads{controller}
+		}
+		reconcile(t, restarted, cp)
+		expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+		if got := secretOf(t, cp, "dev-encryption-config").Data[lodiav1alpha1.EncryptionConfigKey]; !bytes.Equal(got, written) {
+			t.Errorf("the configuration changed once the Backup was gone, status.restore set %t:\n%s", restore, got)
+		}
 	}
 }
 
@@ -433,8 +438,8 @@ func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
 			if !c.copied {
 				restored(t, cp, first)
 				reconcile(t, r, cp)
-				if got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady).Message; got != "Backup "+backupName+" is not sealed yet" {
-					t.Errorf("without a Backup of its name the message is %q", got)
+				if got, want := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady).Message, "Backup "+backupName+" with UID "+string(first.UID)+", which the restore was of, is gone, and its keys with it; restore another Backup"; got != want {
+					t.Errorf("without a Backup of its name the message is %q, want %q", got, want)
 				}
 			}
 			second := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
@@ -469,6 +474,50 @@ func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
 				t.Fatalf("the configuration was not written again for the new provider: %+v", first)
 			}
 			mismatch()
+		})
+	}
+}
+
+func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNamesOne(t *testing.T) {
+	for i, c := range []struct {
+		name      string
+		successor bool
+	}{
+		{"a restore of the successor", true},
+		{"a restore of the predecessor", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cp := controlPlane(t, fmt.Sprintf("pki-restore-replaced-%d", i), restoring)
+			publishEndpoint(t, cp)
+			first := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+			copied := backupProviders(t, first)
+			r := newReconciler(time.Hour)
+			reconcile(t, r, cp)
+			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+			removedByHand(t, first)
+			second := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+			mismatch := func(when, says string) {
+				t.Helper()
+				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+				if got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonWaitingForBackup || !strings.Contains(got.Message, string(first.UID)) || !strings.Contains(got.Message, string(second.UID)) || !strings.HasSuffix(got.Message, says) {
+					t.Errorf("%s: CertificatesReady is %s %s: %q, want WaitingForBackup naming UIDs %s and %s and ending %q", when, got.Status, got.Reason, got.Message, first.UID, second.UID, says)
+				}
+			}
+			reconcile(t, r, cp)
+			mismatch("before status.restore", "waiting for the restore to name the one it restored")
+
+			if c.successor {
+				restored(t, cp, second)
+				reconcile(t, r, cp)
+				mismatch("once status.restore names the successor", "restore another Backup")
+			} else {
+				restored(t, cp, first)
+				reconcile(t, r, cp)
+				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+			}
+			if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, copied) {
+				t.Errorf("the configuration holds %+v after its new key, want the keys it copied", got)
+			}
 		})
 	}
 }
