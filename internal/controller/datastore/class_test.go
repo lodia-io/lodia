@@ -161,6 +161,46 @@ func TestAClassEditWaitsUntilItsGenerationIsGranted(t *testing.T) {
 	}
 }
 
+func TestAGrantedClassEditThatEmptiesAnObjectOfTheEtcdRemovesIt(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name, cp string
+		edit     func(*lodiav1alpha1.EtcdSettings)
+		removed  func(*druidv1alpha1.Etcd) bool
+	}{
+		{"autoCompaction removed", "emptied-compaction",
+			func(settings *lodiav1alpha1.EtcdSettings) { settings.AutoCompaction = nil },
+			func(etcd *druidv1alpha1.Etcd) bool { return etcd.Spec.Common == druidv1alpha1.SharedConfig{} }},
+		{"resources emptied", "emptied-resources",
+			func(settings *lodiav1alpha1.EtcdSettings) { settings.Resources = &corev1.ResourceRequirements{} },
+			func(etcd *druidv1alpha1.Etcd) bool { return etcd.Spec.Etcd.Resources == nil }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ns := namespace(t)
+			class := newClass(c.cp, "Retain")
+			class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{
+				AutoCompaction: &lodiav1alpha1.AutoCompaction{Mode: "revision", Retention: "1000"},
+				Resources:      &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m")}},
+			}
+			createClass(t, class)
+			r := classTenant(t, ns, c.cp, c.cp)
+			if etcd := getEtcd(t, ns, c.cp); c.removed(etcd) {
+				t.Fatalf("the Etcd of the class's first generation lacks the field: %+v", etcd.Spec)
+			}
+
+			editClass(t, c.cp, func(class *lodiav1alpha1.DatastoreClass) { c.edit(class.Spec.Etcd) })
+			grantClass(t, ns, c.cp, c.cp)
+			mustPass(t, r, ns, c.cp)
+			rollOut(t, r, ns, c.cp)
+			runsClass(t, ns, c.cp, "4Gi", "2")
+			readyMessage(t, ns, c.cp)
+			if etcd := getEtcd(t, ns, c.cp); !c.removed(etcd) {
+				t.Errorf("the Etcd of the granted edit keeps the field: %+v", etcd.Spec)
+			}
+		})
+	}
+}
+
 func classOf(name, quotaBytes string) *lodiav1alpha1.DatastoreClass {
 	class := newClass(name, "Retain")
 	quota(quotaBytes)(class)
