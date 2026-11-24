@@ -55,7 +55,6 @@ var gatewayAddress string
 
 func init() {
 	beforeLodia = append(beforeLodia, installGateway)
-	afterNodes = append(afterNodes, removeDNS)
 }
 
 func tenantsGateway(namespaces ...string) *gatewayv1.Gateway {

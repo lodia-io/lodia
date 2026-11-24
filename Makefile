@@ -5,7 +5,10 @@
 
 ENVTEST_K8S_VERSION ?= 1.35.0
 E2E_CLUSTER ?= lodia-e2e-local
-E2E_DIR ?= $(CURDIR)/work/e2e
+E2E_DIR ?= $(CURDIR)/work/e2e/$(E2E_CLUSTER)
+E2E_LABEL = io.lodia.e2e.cluster
+E2E_RUN =
+E2E_KIND_CONFIG =
 E2E_HA_TEST ?= TestHighAvailabilityGate
 E2E_RESTORE_TEST ?= TestRestoreGate
 E2E_UPGRADE_TEST ?= TestMinorUpgradeGate
@@ -307,104 +310,111 @@ verify: ## the check that says a change is done
 	$(MAKE) --no-print-directory kube-api-linter
 	$(MAKE) --no-print-directory chart verify-release lint monitoring test restore-keys
 
+define e2e-needs
+@docker info > /dev/null 2>&1 || { echo "Docker is not installed or its daemon is not running: the suite starts containers and ko builds into the kind cluster through it"; exit 1; }
+@command -v helm > /dev/null || { echo "helm is not on the PATH: the suite installs the chart with it"; exit 1; }
+endef
+
+define e2e-on-kind
+$(e2e-needs)
+mkdir -p $(E2E_DIR)
+go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig $(if $(E2E_KIND_CONFIG),--config $(E2E_KIND_CONFIG))
+E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig E2E_DUMPS=$(E2E_DIR)/_artifacts/dumps go test -v -tags $(E2E_TAGS) -count=1 -timeout $(E2E_TIMEOUT) $(if $(E2E_RUN),-run '^$(E2E_RUN)$$') -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
+ids="$$(docker ps --all --quiet --no-trunc --filter label=$(E2E_LABEL)=$(E2E_CLUSTER))" || status=1; \
+[ -z "$$ids" ] || docker rm --force --volumes $$ids || status=1; \
+go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+endef
+
 .PHONY: e2e
+e2e: E2E_TAGS = e2e
+e2e: E2E_TIMEOUT = 30m
 e2e: ## the e2e suite against E2E_KUBECONFIG, else against a kind cluster of its own that it deletes afterwards
 ifdef E2E_KUBECONFIG
-	E2E_KUBECONFIG=$(abspath $(E2E_KUBECONFIG)) go test -v -tags e2e -count=1 -timeout 30m ./test/e2e/...
+	$(e2e-needs)
+	E2E_KUBECONFIG=$(abspath $(E2E_KUBECONFIG)) go test -v -tags $(E2E_TAGS) -count=1 -timeout $(E2E_TIMEOUT) ./test/e2e/...
 else
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e -count=1 -timeout 30m ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 endif
 
 .PHONY: e2e-ha
+e2e-ha: E2E_TAGS = e2e,ha
+e2e-ha: E2E_TIMEOUT = 40m
+e2e-ha: E2E_RUN = $(E2E_HA_TEST)
+e2e-ha: E2E_KIND_CONFIG = test/e2e/testdata/kind-ha.yaml
 e2e-ha: ## gate G2 against a highly available tenant, on a kind cluster of its own with three workers in three zones, that it deletes afterwards; E2E_HA_TEST=TestHighAvailabilityRemovedAndRestored runs the nightly test instead
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,ha -count=1 -timeout 40m -run '^$(E2E_HA_TEST)$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-restore
+e2e-restore: E2E_TAGS = e2e,restore
+e2e-restore: E2E_TIMEOUT = 40m
+e2e-restore: E2E_RUN = $(E2E_RESTORE_TEST)
 e2e-restore: ## gate G3, a Backup of a tenant and a restore from it, against an S3 store in the cluster, on a kind cluster of its own that it deletes afterwards; E2E_RESTORE_TEST=TestOneMemberRestoredThroughDeltas runs the nightly restore of a one-member tenant instead
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,restore -count=1 -timeout 40m -run '^$(E2E_RESTORE_TEST)$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-gateway
+e2e-gateway: E2E_TAGS = e2e,gateway
+e2e-gateway: E2E_TIMEOUT = 40m
+e2e-gateway: E2E_RUN = TestGatewayGate
 e2e-gateway: ## the gateway gate: tenants behind Envoy Gateway by SNI, a node joined by hostname, pods reaching their API through apiserver-proxy, hostname ownership, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,gateway -count=1 -timeout 40m -run '^TestGatewayGate$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-dns || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-gateway-g6
+e2e-gateway-g6: E2E_TAGS = e2e,gateway
+e2e-gateway-g6: E2E_TIMEOUT = 40m
+e2e-gateway-g6: E2E_RUN = TestGatewayOverhead
 e2e-gateway-g6: ## gate G6, what the Gateway and the tunnel add to the API's p99 over a direct path, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts; results in $(E2E_DIR)/_artifacts
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,gateway -count=1 -timeout 40m -run '^TestGatewayOverhead$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-dns || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-loadbalancer
+e2e-loadbalancer: E2E_TAGS = e2e,loadbalancer
+e2e-loadbalancer: E2E_TIMEOUT = 40m
+e2e-loadbalancer: E2E_RUN = TestLoadBalancerGate
 e2e-loadbalancer: ## the loadBalancer gate: tenants behind MetalLB at an IP host, at a name and at a discovered host name, nodes joined, pods reaching their API, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,loadbalancer -count=1 -timeout 40m -run '^TestLoadBalancerGate$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-dns || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-hold
+e2e-hold: E2E_TAGS = e2e,hold
+e2e-hold: E2E_TIMEOUT = 45m
+e2e-hold: E2E_RUN = TestControllerManagerHold
+e2e-hold: E2E_KIND_CONFIG = test/e2e/testdata/kind-ha.yaml
 e2e-hold: ## gate G4: both nodes of a highly available tenant behind the Gateway cut off for 10 minutes, then one of them, on a kind cluster of its own from kind-ha.yaml that it deletes afterwards with the DNS container the gate starts
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,hold -count=1 -timeout 45m -run '^TestControllerManagerHold$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-dns || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-upgrade
+e2e-upgrade: E2E_TAGS = e2e,upgrade
+e2e-upgrade: E2E_TIMEOUT = 40m
+e2e-upgrade: E2E_RUN = $(E2E_UPGRADE_TEST)
 e2e-upgrade: ## gate G1, a minor upgrade under two loops, on a kind cluster of its own that it deletes afterwards; E2E_UPGRADE_TEST=TestMinorUpgradeChain runs the nightly chain instead
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,upgrade -count=1 -timeout 40m -run '^$(E2E_UPGRADE_TEST)$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-tenant-node-3 || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-upgrade-ha
+e2e-upgrade-ha: E2E_TAGS = e2e,upgrade
+e2e-upgrade-ha: E2E_TIMEOUT = 45m
+e2e-upgrade-ha: E2E_RUN = TestHighAvailabilityUpgrade
+e2e-upgrade-ha: E2E_KIND_CONFIG = test/e2e/testdata/kind-ha.yaml
 e2e-upgrade-ha: ## the nightly upgrade of a highly available tenant, on a kind cluster of its own with three workers in three zones, that it deletes afterwards
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig --config test/e2e/testdata/kind-ha.yaml
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,upgrade -count=1 -timeout 45m -run '^TestHighAvailabilityUpgrade$$' ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: e2e-maintenance
+e2e-maintenance: E2E_TAGS = e2e,maintenance
+e2e-maintenance: E2E_TIMEOUT = 40m
+e2e-maintenance: E2E_RUN = $(E2E_MAINTENANCE_TEST)
 e2e-maintenance: ## gate G5, an operator upgrade that re-renders tenants only in their windows, on a kind cluster of its own that it deletes afterwards; E2E_MAINTENANCE_TEST=TestFleetLimitInQueueOrder or TestEtcdDruidPatchUpgradeUnderAHeldTenant runs a nightly instead
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,maintenance -count=1 -timeout 40m -run '^$(E2E_MAINTENANCE_TEST)$$' ./test/e2e/...; status=$$?; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: conformance-gateway
+conformance-gateway: E2E_TAGS = e2e,gateway
+conformance-gateway: E2E_TIMEOUT = 110m
+conformance-gateway: E2E_RUN = TestGatewayConformance
 conformance-gateway: ## the Kubernetes conformance suite through hydrophone against a tenant with two nodes behind the Gateway, on a kind cluster of its own that it deletes afterwards with the DNS container the gate starts; results in $(E2E_DIR)/_artifacts; CONFORMANCE_FOCUS=<regexp> runs only the tests it matches
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,gateway -count=1 -timeout 110m -run '^TestGatewayConformance$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 $(E2E_CLUSTER)-dns || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 .PHONY: conformance
+conformance: E2E_TAGS = e2e,conformance
+conformance: E2E_TIMEOUT = 110m
+conformance: E2E_RUN = TestConformance
 conformance: ## the Kubernetes conformance suite through hydrophone against a tenant with two nodes, on a kind cluster of its own that it deletes afterwards; results in $(E2E_DIR)/_artifacts; CONFORMANCE_FOCUS=<regexp> runs only the tests it matches
-	mkdir -p $(E2E_DIR)
-	go tool kind create cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig
-	E2E_KUBECONFIG=$(E2E_DIR)/kubeconfig go test -v -tags e2e,conformance -count=1 -timeout 110m -run '^TestConformance$$' -artifacts -outputdir $(E2E_DIR) ./test/e2e/...; status=$$?; \
-	docker rm --force --volumes $(E2E_CLUSTER)-tenant-node-1 $(E2E_CLUSTER)-tenant-node-2 || status=1; \
-	go tool kind delete cluster --name $(E2E_CLUSTER) --kubeconfig $(E2E_DIR)/kubeconfig; exit $$status
+	$(e2e-on-kind)
 
 COMMIT ?= HEAD
 

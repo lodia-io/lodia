@@ -17,7 +17,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -700,10 +699,9 @@ func waitForAgents(ctx context.Context, t *testing.T, access *tenantAccess, coun
 }
 
 var (
-	startedNodes []string
-	nodeDNS      string
-	nodeImage    = defaults.Image
-	nodeImages   []reference.NamedTagged
+	nodeDNS    string
+	nodeImage  = defaults.Image
+	nodeImages []reference.NamedTagged
 )
 
 func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) string {
@@ -713,20 +711,10 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 		t.Fatal(err)
 	}
 	name := cluster + "-tenant-node-" + strconv.Itoa(i)
-	if !slices.Contains(startedNodes, name) {
-		startedNodes = append(startedNodes, name)
-	}
 	if _, err := docker(ctx, "rm", "--force", "--volumes", name); err != nil {
 		t.Fatal(err)
 	}
-	run := []string{"run", "--detach", "--tty", "--name", name, "--hostname", name, "--network", "kind",
-		"--privileged", "--security-opt", "seccomp=unconfined", "--security-opt", "apparmor=unconfined",
-		"--cgroupns=private", "--tmpfs", "/tmp", "--tmpfs", "/run", "--volume", "/var",
-		"--volume", "/lib/modules:/lib/modules:ro", "--restart=on-failure:1", "--init=false"}
-	if nodeDNS != "" {
-		run = append(run, "--dns", nodeDNS)
-	}
-	if _, err := docker(ctx, append(run, nodeImage)...); err != nil {
+	if _, err := docker(ctx, nodeRunArgs(cluster, name, nodeDNS, nodeImage)...); err != nil {
 		t.Fatal(err)
 	}
 	until(ctx, t, time.Minute, "container "+name+" booted", func(ctx context.Context) error {
@@ -748,23 +736,16 @@ func startNode(ctx context.Context, t *testing.T, kubeconfig string, i int) stri
 	return name
 }
 
-func removeNodes(ctx context.Context, _ *envconf.Config) (context.Context, error) {
-	if len(startedNodes) == 0 {
-		return ctx, nil
-	}
-	_, err := docker(ctx, append([]string{"rm", "--force", "--volumes"}, startedNodes...)...)
+func removeContainers(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+	cluster, err := kindCluster(cfg.KubeconfigFile())
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "remove the node containers:", err)
+		return ctx, err
 	}
-	return ctx, err
-}
-
-func docker(ctx context.Context, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("docker %s: %w\n%s", args[0], err, out)
+	if err := removeSuiteContainers(ctx, cluster); err != nil {
+		fmt.Fprintln(os.Stderr, "remove the containers the suite started:", err)
+		return ctx, err
 	}
-	return string(out), nil
+	return ctx, nil
 }
 
 func installCNI(ctx context.Context, t *testing.T, access *tenantAccess, node string) {

@@ -47,7 +47,6 @@ var (
 
 func init() {
 	beforeLodia = append(beforeLodia, installLoadBalancer)
-	afterNodes = append(afterNodes, removeDNS)
 }
 
 func installLoadBalancer(ctx context.Context, cfg *envconf.Config) (context.Context, error) {

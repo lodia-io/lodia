@@ -53,7 +53,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   `docs/operations.md` names the symptom.
 - Backup credentials scoped to one tenant's prefix, so a tenant namespace's `<cp>-etcd-backup` reaches only that tenant's snapshots and not every tenant's on the class (`docs/README.md`, Identity and tenancy).
   A `Backup`'s copy, `<prefix>/<namespace UID>/backups/<Backup UID>`, sits under the same namespace UID as its source's snapshots, so one scope per namespace covers both.
-- `make e2e` could check for Docker and `helm` before it creates its cluster.
 
 ## From the PKI controller (2026-10-25)
 
@@ -128,7 +127,8 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 ## From high availability (2026-10-27)
 
 - The e2e suites reach a tenant through `status.endpoint`, a kind node's address on the docker network `kind`, which Docker Desktop does not route to a macOS host, so `make e2e` and `make e2e-ha` run on Linux alone, as on GitHub's runners.
-  Running `go test` in a container attached to that network would bring them back to macOS.
+  Running `go test` in a container attached to that network would bring them back to macOS, but it is not a small change: the container needs Go, git, `helm` and the Docker CLI, the Docker socket and the repository mounted, and `go tool kind get kubeconfig --internal`, since the kubeconfig kind writes names 127.0.0.1, which the container does not reach.
+  Every one of the twelve targets would run through it.
 - Lodia sets etcd-druid's annotation `resources.druid.gardener.cloud/allow-unhealthy-pod-eviction` on a highly available `Etcd`, which etcd-druid marks as one that may be removed at any time and is not meant for general use ([poddisruptionbudget.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/component/poddistruptionbudget/poddisruptionbudget.go#L35-L38)).
   Check it with every etcd-druid upgrade, and ask upstream for a field of the `Etcd` in its place.
 - Ask etcd-druid whether a scale-in can leave the remaining member running: the members' pod template carries a checksum of the ConfigMap whose `initial-cluster` names every member, so removing `highAvailability` restarts the last member: about 20 seconds without `Ready`, in which the controller manager and the scheduler lose their leases.
@@ -197,18 +197,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
 - A person's edit of the `Etcd`'s `spec.backup.store` to a value the schema of `status.datastore.snapshots` refuses fails every status apply while `keep` or `copied` carries the store: while the class waits for its grant or is held for its credentials, while the operator revision is held, and while the recorded class is gone, until a class of its name is created again and granted; `DatastoreReady`, `BackupReady` and `status.datastore` stop being written meanwhile.
   A store a person adds under a class without one, or an `endpointOverride` under a class whose store names no endpoint, is a field Lodia's apply does not own: it stays, and every status apply fails, held or not, until a class edit that renders that field is granted.
   etcd-druid's schema takes any provider or none, `Local` among them, no container, and a prefix and an endpoint of any length ([store.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/api/core/v1alpha1/store.go#L13-L35)); the status takes S3, GCS, ABS and Swift, a bucket of at least one character, a prefix of 1 to 512 characters and an endpoint of at most 512.
-
-## From the provider's audit (2026-11-11)
-
-- A failed e2e run leaves nothing to read: the suite dumps no objects, events or logs, and the jobs upload no artifacts.
-  A dump on failure that fits under go test's `-timeout`, and an upload step under `if: always()`.
-- `E2E_DIR` is one directory for every kind cluster (`Makefile:9`): two runs in one checkout share `work/e2e/kubeconfig`, kind makes the second cluster current in it, and the first run's helm, which reads the file on every call, follows it.
-  A directory per cluster, `work/e2e/$(E2E_CLUSTER)`.
-- The suite does not refuse the `HELM_KUBE*` variables, which helm lays over `--kubeconfig` ([environment.go](https://github.com/helm/helm/blob/v4.3.1/pkg/cli/environment.go#L102-L109)), so the chart install can reach another API server than the one the guard checked ([e2e-on-a-named-cluster](docs/decisions/e2e-on-a-named-cluster.md)).
-- `test/e2e/suite_test.go:123-132` runs ko through `go run` with `Output()` and no `WaitDelay`: a cancelled context kills `go`, ko keeps the pipe open, and the test waits for ko to end.
-  A `GOARCH` in the environment also makes ko refuse `--platform`; ko's environment should drop it.
-- The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
-  A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.
 
 ## From the kubelet certificates' lifetime (2026-11-12)
 

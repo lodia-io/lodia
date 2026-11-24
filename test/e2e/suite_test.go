@@ -8,6 +8,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
@@ -52,7 +52,7 @@ var (
 	examples = filepath.Join(root, "docs", "api", "examples")
 )
 
-var beforeLodia, afterNodes []env.Func
+var beforeLodia []env.Func
 
 func TestMain(m *testing.M) {
 	path := os.Getenv("E2E_KUBECONFIG")
@@ -60,10 +60,17 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	testenv = env.NewWithConfig(envconf.NewWithKubeConfig(path))
+	flag.Parse()
+	testenv = dumping{env.NewWithConfig(envconf.NewWithKubeConfig(path))}
+	testenv.Setup(armTimeoutDump)
 	testenv.Setup(append(beforeLodia, installLodia)...)
-	testenv.Finish(append([]env.Func{removeNodes}, afterNodes...)...)
+	testenv.Finish(removeContainers)
 	os.Exit(testenv.Run(m))
+}
+
+func armTimeoutDump(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+	dumpBeforeTimeout(cfg, flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration))
+	return ctx, nil
 }
 
 func installLodia(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
@@ -127,7 +134,8 @@ func buildAs(ctx context.Context, kubeconfig, dir, command, version string, tags
 	}
 	ko := exec.CommandContext(ctx, "go", append(args, command)...)
 	ko.Dir = dir
-	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+cluster, "VERSION="+version)
+	ko.Env = koEnvironment(cluster, version)
+	ko.WaitDelay = 5 * time.Second
 	var stderr bytes.Buffer
 	ko.Stderr = &stderr
 	out, err := ko.Output()
@@ -143,14 +151,6 @@ func buildAs(ctx context.Context, kubeconfig, dir, command, version string, tags
 		return nil, fmt.Errorf("ko named %s without a tag", named)
 	}
 	return tagged, nil
-}
-
-func kindCluster(kubeconfig string) (string, error) {
-	cfg, err := clientcmd.LoadFromFile(kubeconfig)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimPrefix(cfg.CurrentContext, "kind-"), nil
 }
 
 func newClient(t *testing.T, cfg *envconf.Config) client.WithWatch {
