@@ -208,8 +208,6 @@ Nothing here is a decision — a decision is a file in `docs/decisions/`.
   A dump on failure that fits under go test's `-timeout`, and an upload step under `if: always()`.
 - `E2E_DIR` is one directory for every kind cluster (`Makefile:9`): two runs in one checkout share `work/e2e/kubeconfig`, kind makes the second cluster current in it, and the first run's helm, which reads the file on every call, follows it.
   A directory per cluster, `work/e2e/$(E2E_CLUSTER)`.
-- `test/e2e/suite_test.go:123-132` runs ko through `go run` with `Output()` and no `WaitDelay`: a cancelled context kills `go`, ko keeps the pipe open, and the test waits for ko to end.
-  A `GOARCH` in the environment also makes ko refuse `--platform`; ko's environment should drop it.
 - Six Markdown files are hard-wrapped against `CONTRIBUTING.md:27`: `CLAUDE.md`, `SECURITY.md`, `ADOPTERS.md`, `CODE_OF_CONDUCT.md`, `docs/review-checklist.md` and `docs/etcd-spike-2026-10.md`.
 - The ten e2e targets of the Makefile repeat create, run, remove and delete, each with its own list of node containers to remove, and the suite's `Finish` removes them again.
   A label that `startNode` (`test/e2e/gate_test.go`) puts on each container, a removal by that label, and one `define` recipe would leave one copy.

@@ -127,7 +127,8 @@ func buildAs(ctx context.Context, kubeconfig, dir, command, version string, tags
 	}
 	ko := exec.CommandContext(ctx, "go", append(args, command)...)
 	ko.Dir = dir
-	ko.Env = append(os.Environ(), "KO_DOCKER_REPO=kind.local", "KIND_CLUSTER_NAME="+cluster, "VERSION="+version)
+	ko.Env = koEnvironment(cluster, version)
+	ko.WaitDelay = 5 * time.Second
 	var stderr bytes.Buffer
 	ko.Stderr = &stderr
 	out, err := ko.Output()
