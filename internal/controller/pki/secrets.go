@@ -1025,7 +1025,7 @@ func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 			return err
 		}
 		if backup.UID != "" && string(backup.UID) != uid {
-			t.waitingForBackup = fmt.Sprintf("%s holds the keys of Backup %s with UID %s, and the Backup of that name now has UID %s, whose data they cannot read; waiting for the restore to name the one it restored",
+			t.waitingForBackup = fmt.Sprintf("%s holds the keys of Backup %s with UID %s, and the Backup of that name now has UID %s, whose data they cannot read; waiting for the restore to name the one it restored, unless DatastoreReady is RestoreFailed: then restore another Backup",
 				s.Name, name, uid, backup.UID)
 		}
 		return nil

@@ -493,11 +493,12 @@ func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
 
 func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNamesOne(t *testing.T) {
 	for i, c := range []struct {
-		name      string
-		successor bool
+		name              string
+		successor, failed bool
 	}{
-		{"a restore of the successor", true},
-		{"a restore of the predecessor", false},
+		{"a restore of the successor", true, false},
+		{"a restore of the predecessor", false, false},
+		{"a restore of the predecessor beside a failed successor", false, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cp := controlPlane(t, fmt.Sprintf("pki-restore-replaced-%d", i), restoring)
@@ -508,7 +509,13 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 			reconcile(t, r, cp)
 			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 			removedByHand(t, first)
-			second := seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+			var second *lodiav1alpha1.Backup
+			if c.failed {
+				second = newBackup(t, cp.Namespace)
+				setReady(t, second, metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore)
+			} else {
+				second = seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
+			}
 			mismatch := func(when, says string) {
 				t.Helper()
 				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
@@ -517,12 +524,12 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 				}
 			}
 			reconcile(t, r, cp)
-			mismatch("before status.restore", "waiting for the restore to name the one it restored")
+			mismatch("before status.restore", "waiting for the restore to name the one it restored, unless DatastoreReady is RestoreFailed: then restore another Backup")
 
 			if c.successor {
 				restored(t, cp, second)
 				reconcile(t, r, cp)
-				mismatch("once status.restore names the successor", "restore another Backup")
+				mismatch("once status.restore names the successor", "and the restore was of UID "+string(second.UID)+", whose keys the restored data needs; restore another Backup")
 			} else {
 				restored(t, cp, first)
 				reconcile(t, r, cp)
