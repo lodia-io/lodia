@@ -533,9 +533,15 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name(), err)
 		if apistatus.Refused(err) && !replaced(err) {
 			class, _ := rendered.Class()
-			message := fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s; the reason is in Lodia's log",
+			message := fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s",
 				rendered.Name(), p.generation, class, rendered.ClassGeneration())
-			return &outcome{etcd: p.current, restore: p.check.restored, condition: notReady(lodiav1alpha1.ReasonRefused, message)}, err
+			held, heldErr := r.Druid.HeldEmpty(ctx, r.Reader, FieldManager, rendered)
+			if len(held) > 0 {
+				message += ": the apply empties " + strings.Join(held, ", and ") + "; the API server leaves an object emptied under another manager null, which the Etcd's schema refuses, until that manager releases it with an apply of its own without the field"
+			} else {
+				message += "; the reason is in Lodia's log"
+			}
+			return &outcome{etcd: p.current, restore: p.check.restored, condition: notReady(lodiav1alpha1.ReasonRefused, message)}, errors.Join(err, heldErr)
 		}
 		return nil, err
 	}

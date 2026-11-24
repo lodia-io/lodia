@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -196,6 +197,76 @@ func TestAGrantedClassEditThatEmptiesAnObjectOfTheEtcdRemovesIt(t *testing.T) {
 			readyMessage(t, ns, c.cp)
 			if etcd := getEtcd(t, ns, c.cp); !c.removed(etcd) {
 				t.Errorf("the Etcd of the granted edit keeps the field: %+v", etcd.Spec)
+			}
+		})
+	}
+}
+
+func TestAnObjectTheClassEmptiesWhileAnotherManagerHoldsItNamesThatManager(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		field, cp string
+		held      map[string]any
+		edit      func(*lodiav1alpha1.DatastoreClass)
+	}{
+		{"spec.sharedConfig", "held-compaction", map[string]any{"sharedConfig": map[string]any{}},
+			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.AutoCompaction = nil }},
+		{"spec.etcd.resources", "held-resources", map[string]any{"etcd": map[string]any{"resources": map[string]any{}}},
+			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.Resources = &corev1.ResourceRequirements{} }},
+		{"spec.schedulingConstraints", "held-placement", map[string]any{"schedulingConstraints": map[string]any{}},
+			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Placement = nil }},
+	} {
+		t.Run(c.field, func(t *testing.T) {
+			ns := namespace(t)
+			class := newClass(c.cp, "Retain")
+			class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{
+				AutoCompaction: &lodiav1alpha1.AutoCompaction{Mode: "revision", Retention: "1000"},
+				Resources:      &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m")}},
+			}
+			class.Spec.Placement = &lodiav1alpha1.Placement{Tolerations: []corev1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists}}}
+			createClass(t, class)
+			r := classTenant(t, ns, c.cp, c.cp)
+			hold := func(spec map[string]any) {
+				t.Helper()
+				applied := &unstructured.Unstructured{Object: map[string]any{
+					"apiVersion": druidv1alpha1.SchemeGroupVersion.String(),
+					"kind":       "Etcd",
+					"metadata":   map[string]any{"name": c.cp + "-etcd", "namespace": ns},
+				}}
+				if spec != nil {
+					applied.Object["spec"] = spec
+				}
+				if err := k8s.Apply(t.Context(), client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner("kubectl")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			hold(c.held)
+
+			editClass(t, c.cp, c.edit)
+			grantClass(t, ns, c.cp, c.cp)
+			_, err := passOf(t, r, ns, c.cp)
+			if err == nil {
+				etcd := &unstructured.Unstructured{}
+				etcd.SetGroupVersionKind(druidv1alpha1.SchemeGroupVersion.WithKind("Etcd"))
+				if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: c.cp + "-etcd"}, etcd); err != nil {
+					t.Fatal(err)
+				}
+				if kept, found, _ := unstructured.NestedMap(etcd.Object, strings.Split(c.field, ".")...); found && len(kept) == 0 {
+					t.Skipf("this API server keeps %s as an empty object", c.field)
+				}
+			}
+			if !apierrors.IsInvalid(err) {
+				t.Fatalf("the pass that empties %s held by another manager returned %v, want the API server's refusal", c.field, err)
+			}
+			ready := meta.FindStatusCondition(getControlPlane(t, ns, c.cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+			if ready == nil || ready.Reason != lodiav1alpha1.ReasonRefused || !strings.Contains(ready.Message, c.field+", which field manager kubectl holds") {
+				t.Errorf("DatastoreReady is %+v, want Refused naming %s and the field manager kubectl", ready, c.field)
+			}
+
+			hold(nil)
+			mustPass(t, r, ns, c.cp)
+			if message := readyMessage(t, ns, c.cp); strings.Contains(message, "kubectl") {
+				t.Errorf("once the manager released %s DatastoreReady says %q", c.field, message)
 			}
 		})
 	}

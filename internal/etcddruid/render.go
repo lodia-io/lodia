@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
@@ -342,22 +343,9 @@ func nodeAffinity(nodeSelector map[string]string) *corev1.Affinity {
 // Apply applies the rendered Etcd with c as manager and returns the Etcd the
 // API server answers with.
 func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, rendered *Store) (*Store, error) {
-	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(rendered.etcd)
+	content, _, err := toApply(rendered)
 	if err != nil {
 		return nil, err
-	}
-	// The typed Etcd marshals its deprecated selector as null and its status
-	// as an empty object; neither is a field to apply. Nor are the objects
-	// render leaves empty without the class or spec fields they come from:
-	// applied as an empty object where the apply set fields in it before, an
-	// object comes back null, which the schema refuses
-	// (sigs.k8s.io/structured-merge-diff/v6@v6.4.2 typed/remove.go#L171-L173).
-	unstructured.RemoveNestedField(content, "spec", "selector")
-	unstructured.RemoveNestedField(content, "status")
-	for _, object := range [][]string{{"spec", "schedulingConstraints"}, {"spec", "sharedConfig"}, {"spec", "etcd", "resources"}} {
-		if fields, _, _ := unstructured.NestedMap(content, object...); len(fields) == 0 {
-			unstructured.RemoveNestedField(content, object...)
-		}
 	}
 	applied := &unstructured.Unstructured{Object: content}
 	if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(manager), client.ForceOwnership); err != nil {
@@ -368,6 +356,90 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, ren
 		return nil, err
 	}
 	return &Store{etcd: result}, nil
+}
+
+// toApply is what an apply of rendered sends, and the objects it leaves out
+// as empty. The typed Etcd marshals its deprecated selector as null and its
+// status as an empty object; neither is a field to apply. Nor are the objects
+// render leaves empty without the class or spec fields they come from:
+// applied as an empty object where the apply set fields in it before, an
+// object comes back null, which the schema refuses
+// (sigs.k8s.io/structured-merge-diff/v6@v6.4.2 typed/remove.go#L171-L173).
+func toApply(rendered *Store) (map[string]any, [][]string, error) {
+	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(rendered.etcd)
+	if err != nil {
+		return nil, nil, err
+	}
+	unstructured.RemoveNestedField(content, "spec", "selector")
+	unstructured.RemoveNestedField(content, "status")
+	var empty [][]string
+	// @todo: the drop goes once every minor a management cluster runs keeps an object its removal empties (todo.md).
+	for _, object := range [][]string{{"spec", "schedulingConstraints"}, {"spec", "sharedConfig"}, {"spec", "etcd", "resources"}} {
+		if fields, _, _ := unstructured.NestedMap(content, object...); len(fields) == 0 {
+			unstructured.RemoveNestedField(content, object...)
+			empty = append(empty, object)
+		}
+	}
+	return content, empty, nil
+}
+
+// @todo: goes with the drop in toApply once every minor a management cluster runs keeps an object its removal empties (todo.md).
+
+// HeldEmpty names each object an apply of rendered leaves out while another
+// field manager holds it as an empty object and only manager's apply holds
+// fields in it: removing those leaves the object null, as toApply says, which
+// the schema refuses. It reads the Etcd's managedFields through reader, which
+// must not be the cache: the cache strips them.
+func (e *Engine) HeldEmpty(ctx context.Context, reader client.Reader, manager string, rendered *Store) ([]string, error) {
+	_, empty, err := toApply(rendered)
+	if err != nil || len(empty) == 0 {
+		return nil, err
+	}
+	current := &druidv1alpha1.Etcd{}
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(rendered.etcd), current); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+	var held []string
+	for _, object := range empty {
+		path := make(fieldpath.Path, 0, len(object))
+		for _, name := range object {
+			path = append(path, fieldpath.PathElement{FieldName: &name})
+		}
+		ours, others := false, false
+		var holders []string
+		for _, entry := range current.ManagedFields {
+			if entry.FieldsV1 == nil {
+				continue
+			}
+			set := &fieldpath.Set{}
+			if err := set.FromJSON(entry.FieldsV1.GetRawReader()); err != nil {
+				return nil, fmt.Errorf("read the managedFields of Etcd %s: %w", current.Name, err)
+			}
+			inside := set
+			for _, element := range path {
+				inside = inside.WithPrefix(element)
+			}
+			switch {
+			case entry.Manager == manager && entry.Operation == metav1.ManagedFieldsOperationApply:
+				ours = !inside.Empty()
+			case !inside.Empty():
+				others = true
+			case set.Has(path):
+				holders = append(holders, entry.Manager)
+			}
+		}
+		if !ours || others || len(holders) == 0 {
+			continue
+		}
+		slices.Sort(holders)
+		holders = slices.Compact(holders)
+		which := "field manager " + holders[0] + " holds"
+		if len(holders) > 1 {
+			which = "field managers " + strings.Join(holders, " and ") + " hold"
+		}
+		held = append(held, strings.Join(object, ".")+", which "+which)
+	}
+	return held, nil
 }
 
 // Delete deletes the Etcd under its UID.
