@@ -421,7 +421,9 @@ func clientEndpoint(etcd *druidv1alpha1.Etcd) (string, int32) {
 }
 
 // Snapshots is where the Etcd's store puts its snapshots, nil without a
-// store.
+// store. etcd-druid's schema takes any provider or none, no container, and a
+// prefix and an endpoint of any length
+// (etcd-druid@v0.39.2 api/core/v1alpha1/store.go#L13-L35).
 func (s *Store) Snapshots() *lodiav1alpha1.SnapshotLocation {
 	store := s.etcd.Spec.Backup.Store
 	if store == nil {

@@ -156,6 +156,7 @@ const (
 	ReasonBackupSucceeded  = "BackupSucceeded"
 	ReasonBackupFailed     = "BackupFailed"
 	ReasonSnapshotsPending = "SnapshotsPending"
+	ReasonStoreUnsupported = "StoreUnsupported"
 )
 
 // A Backup's Ready.
@@ -251,6 +252,7 @@ var WarningReasons = map[string]WarningGroup{
 	ReasonTooManyNodes:               WarningRefusal,
 	ReasonAuthenticationInvalid:      WarningRefusal,
 	ReasonAddressMismatch:            WarningRefusal,
+	ReasonStoreUnsupported:           WarningRefusal,
 
 	ReasonFailed:                   WarningFailure,
 	ReasonMaintenanceFailed:        WarningFailure,

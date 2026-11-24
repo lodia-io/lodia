@@ -232,6 +232,9 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	if status.StartedAt == nil {
+		if why := unrecordable(location.SnapshotLocation); why != "" {
+			return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("Etcd %s names a backup store that status.snapshots cannot hold: %s", etcd.Name(), why), 10*time.Second)
+		}
 		status.Source = &lodiav1alpha1.UIDReference{Name: source.Name, UID: source.UID}
 		if source.Status.Kubernetes != nil && source.Status.Kubernetes.Version != "" {
 			status.KubernetesVersion = source.Status.Kubernetes.Version

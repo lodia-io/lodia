@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -223,7 +224,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if readErr != nil {
 		return ctrl.Result{}, errors.Join(err, readErr)
 	}
-	ready, backup := out.condition, r.Druid.BackupReady(out.etcd)
+	ready, backup := out.condition, r.backupReady(out.etcd)
 	if r.held(cp) {
 		ready.ObservedGeneration, backup.ObservedGeneration = described(cp, ready.Type), described(cp, backup.Type)
 	}
@@ -874,7 +875,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 	if err != nil {
 		return 0, err
 	}
-	if err := r.applyStatus(ctx, cp, datastore, cp.Status.Restore, deleting, r.Druid.BackupReady(etcd)); err != nil {
+	if err := r.applyStatus(ctx, cp, datastore, cp.Status.Restore, deleting, r.backupReady(etcd)); err != nil {
 		return 0, err
 	}
 	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
@@ -973,7 +974,7 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 		Endpoints: []lodiav1alpha1.HostPort{{Host: host, Port: port}},
 		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Members(), Ready: etcd.ReadyMembers()}, Updated: etcd.UpdatedMembers(rollout)},
 	}
-	status.Snapshots = etcd.Snapshots()
+	status.Snapshots, _ = snapshots(etcd)
 	if stamp := etcd.Revision(); etcd.RolledOut(rollout) && len(stamp) <= maxRevision {
 		status.Class, status.OperatorRevision = etcd.ClassStatus(), stamp
 		return status, nil
@@ -988,6 +989,51 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 		status.Class = c
 	}
 	return status, nil
+}
+
+// snapshots is where the Etcd's store puts its snapshots, nil without a store
+// or with one that status.datastore.snapshots cannot hold, which the message
+// says.
+func snapshots(etcd *etcddruid.Store) (*lodiav1alpha1.SnapshotLocation, string) {
+	if etcd == nil {
+		return nil, ""
+	}
+	location := etcd.Snapshots()
+	if location == nil {
+		return nil, ""
+	}
+	if why := unrecordable(*location); why != "" {
+		return nil, fmt.Sprintf("Etcd %s names a backup store that status.datastore.snapshots cannot hold, and it is left out: %s", etcd.Name(), why)
+	}
+	return location, ""
+}
+
+// unrecordable says why a status cannot hold location, empty when it can: an
+// edit of the Etcd's store by hand can take values its schema refuses.
+func unrecordable(location lodiav1alpha1.SnapshotLocation) string {
+	var why []string
+	if !slices.Contains([]lodiav1alpha1.StoreProvider{"S3", "GCS", "ABS", "Swift"}, location.Provider) {
+		why = append(why, "its provider is none of S3, GCS, ABS and Swift")
+	}
+	if n := utf8.RuneCountInString(location.Bucket); n < 1 || n > 63 {
+		why = append(why, "its bucket is not 1 to 63 characters long")
+	}
+	if n := utf8.RuneCountInString(location.Prefix); n < 1 || n > 512 {
+		why = append(why, "its prefix is not 1 to 512 characters long")
+	}
+	if utf8.RuneCountInString(location.Endpoint) > 512 {
+		why = append(why, "its endpoint is longer than 512 characters")
+	}
+	return strings.Join(why, ", ")
+}
+
+// backupReady is etcd-druid's report of the Etcd's snapshots, but for a store
+// that status.datastore.snapshots cannot hold.
+func (r *Reconciler) backupReady(etcd *etcddruid.Store) metav1.Condition {
+	if _, why := snapshots(etcd); why != "" {
+		return metav1.Condition{Type: lodiav1alpha1.ConditionBackupReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonStoreUnsupported, Message: why}
+	}
+	return r.Druid.BackupReady(etcd)
 }
 
 // applyStatus writes DatastoreReady and BackupReady together: the conditions
