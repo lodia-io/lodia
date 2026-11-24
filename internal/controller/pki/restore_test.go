@@ -492,14 +492,36 @@ func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
 }
 
 func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNamesOne(t *testing.T) {
+	sealed := func(t *testing.T, namespace string) *lodiav1alpha1.Backup {
+		return seal(t, namespace, encryptionConfiguration(t, secretboxKey()))
+	}
+	at := func(reason string) func(*testing.T, string) *lodiav1alpha1.Backup {
+		return func(t *testing.T, namespace string) *lodiav1alpha1.Backup {
+			b := newBackup(t, namespace)
+			setReady(t, b, metav1.ConditionFalse, reason)
+			return b
+		}
+	}
+	ofAnotherMinor := func(t *testing.T, namespace string) *lodiav1alpha1.Backup {
+		b := sealed(t, namespace)
+		b.Status.KubernetesVersion = "v1.36.4"
+		if err := k8s.Status().Update(t.Context(), b); err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
 	for i, c := range []struct {
-		name                            string
-		successor, failed, incompatible bool
+		name      string
+		successor func(*testing.T, string) *lodiav1alpha1.Backup
+		restores  string
 	}{
-		{"a restore of the successor", true, false, false},
-		{"a restore of the predecessor", false, false, false},
-		{"a restore of the predecessor beside a failed successor", false, true, false},
-		{"no restore beside a sealed successor of another minor", false, false, true},
+		{"a sealed successor before the copy", sealed, "successor"},
+		{"a sealed successor after the copy and before the cleanup", sealed, ""},
+		{"a sealed successor after the cleanup", sealed, "predecessor"},
+		{"a failed successor before the copy", at(lodiav1alpha1.ReasonNoBackupStore), ""},
+		{"a failed successor after the cleanup", at(lodiav1alpha1.ReasonNoBackupStore), "predecessor"},
+		{"a successor never sealed, its source gone", at(lodiav1alpha1.ReasonControlPlaneNotFound), ""},
+		{"a sealed successor of another minor", ofAnotherMinor, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cp := controlPlane(t, fmt.Sprintf("pki-restore-replaced-%d", i), restoring)
@@ -510,19 +532,7 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 			reconcile(t, r, cp)
 			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 			removedByHand(t, first)
-			var second *lodiav1alpha1.Backup
-			if c.failed {
-				second = newBackup(t, cp.Namespace)
-				setReady(t, second, metav1.ConditionFalse, lodiav1alpha1.ReasonNoBackupStore)
-			} else {
-				second = seal(t, cp.Namespace, encryptionConfiguration(t, secretboxKey()))
-			}
-			if c.incompatible {
-				second.Status.KubernetesVersion = "v1.36.4"
-				if err := k8s.Status().Update(t.Context(), second); err != nil {
-					t.Fatal(err)
-				}
-			}
+			second := c.successor(t, cp.Namespace)
 			mismatch := func(when, says string) {
 				t.Helper()
 				got := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
@@ -531,21 +541,21 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 				}
 			}
 			reconcile(t, r, cp)
-			wait := "waiting for the restore to name the one it restored, unless DatastoreReady is RestoreFailed or BackupIncompatible: then restore another Backup"
+			wait := "they fit the restore only if it restores UID " + string(first.UID) + ", which status.restore then names; DatastoreReady says how the restore goes"
 			mismatch("before status.restore", wait)
 
-			switch {
-			case c.incompatible:
-				reconcile(t, r, cp)
-				mismatch("while no restore names one", wait)
-			case c.successor:
+			switch c.restores {
+			case "successor":
 				restored(t, cp, second)
 				reconcile(t, r, cp)
 				mismatch("once status.restore names the successor", "and the restore was of UID "+string(second.UID)+", whose keys the restored data needs; restore another Backup")
-			default:
+			case "predecessor":
 				restored(t, cp, first)
 				reconcile(t, r, cp)
 				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+			default:
+				reconcile(t, r, cp)
+				mismatch("while status.restore is unset", wait)
 			}
 			if got := writtenProviders(t, cp)[1:]; !reflect.DeepEqual(got, copied) {
 				t.Errorf("the configuration holds %+v after its new key, want the keys it copied", got)
