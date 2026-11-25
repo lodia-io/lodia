@@ -45,7 +45,7 @@
   ],
   packageRules: [
     {
-      matchPackageNames: ["*", "!go"],
+      matchPackageNames: ["!go"],
       matchUpdateTypes: ["minor", "patch", "digest"],
       groupName: "all non-major dependencies",
     },
