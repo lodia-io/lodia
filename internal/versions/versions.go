@@ -35,7 +35,7 @@ type Images struct {
 // endOfSupport is the minor's End of Life, https://kubernetes.io/releases/.
 var minors = map[string]struct{ coreDNS, konnectivity, latest, endOfSupport string }{
 	"1.35": {"v1.13.1", "v0.35.0", "v1.35.10", "2027-02-28"},
-	"1.36": {"v1.14.2", "v0.36.0", "v1.36.6", "2027-06-28"},
+	"1.36": {"v1.14.2", "v0.36.0", "v1.36.7", "2027-06-28"},
 	"1.37": {"v1.14.6", "v0.37.1", "v1.37.2", "2027-10-28"},
 }
 
