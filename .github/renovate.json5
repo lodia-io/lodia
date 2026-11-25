@@ -1,5 +1,5 @@
 {
-  extends: ["config:recommended"],
+  extends: ["config:recommended", "schedule:weekly"],
   ignorePresets: [":ignoreModulesAndTests"],
   postUpdateOptions: ["gomodTidyAll"],
   customManagers: [
@@ -45,6 +45,11 @@
   ],
   packageRules: [
     {
+      matchPackageNames: ["!go"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      groupName: "all non-major dependencies",
+    },
+    {
       matchPackageNames: [
         "github.com/gardener/etcd-druid/api",
         "europe-docker.pkg.dev/gardener-project/releases/charts/gardener/etcd-druid",
@@ -56,6 +61,7 @@
     {
       matchManagers: ["gomod"],
       matchPackageNames: ["k8s.io/*", "sigs.k8s.io/controller-runtime"],
+      matchUpdateTypes: ["minor", "major"],
       groupName: "kubernetes",
     },
     {
