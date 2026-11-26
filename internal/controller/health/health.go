@@ -838,6 +838,9 @@ func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string)
 	if err != nil {
 		return 0, err
 	}
+	// net/http drains a body closed before its end to reuse its connection: a
+	// probe reads no body and reuses no connection, so it asks to close.
+	req.Close = true
 	resp, err := prober.Do(req)
 	if err != nil {
 		return 0, err
