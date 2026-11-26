@@ -640,6 +640,10 @@ const (
 )
 
 // ControlPlaneStatus is what Lodia observed and did.
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.memberRestore) || has(self.memberRestore)",message="memberRestore cannot be removed once set"
+// +kubebuilder:validation:XValidation:rule="!oldSelf.?components.?apiServer.?memberRestoreDetectedAt.hasValue() || self.?components.?apiServer.?memberRestoreDetectedAt.hasValue()",message="components.apiServer.memberRestoreDetectedAt cannot be removed once set"
+// +kubebuilder:validation:XValidation:rule="!oldSelf.?components.?controllerManager.?memberRestoreDetectedAt.hasValue() || self.?components.?controllerManager.?memberRestoreDetectedAt.hasValue()",message="components.controllerManager.memberRestoreDetectedAt cannot be removed once set"
+// +kubebuilder:validation:XValidation:rule="!oldSelf.?components.?scheduler.?memberRestoreDetectedAt.hasValue() || self.?components.?scheduler.?memberRestoreDetectedAt.hasValue()",message="components.scheduler.memberRestoreDetectedAt cannot be removed once set"
 type ControlPlaneStatus struct {
 	// conditions are each written by the one controller that owns its type, and
 	// Progressing and Ready by Lifecycle.
@@ -692,6 +696,15 @@ type ControlPlaneStatus struct {
 	// without a store.
 	// +optional
 	Restore *RestoreStatus `json:"restore,omitempty"`
+
+	// memberRestore is the last member of the dedicated etcd that the
+	// Datastore controller found restored from the store's snapshots or
+	// started empty, a new data life the API server's watch cache does not
+	// know: Workloads rolls the API server, then the controller manager and
+	// the scheduler, once for each. The next one replaces it, and it is kept
+	// for the ControlPlane's life, with or without a store.
+	// +optional
+	MemberRestore *MemberRestoreStatus `json:"memberRestore,omitempty"`
 
 	// nodes summarise the tenant's nodes.
 	// +optional
@@ -810,6 +823,17 @@ type ComponentStatus struct {
 	RolloutCount `json:",inline"`
 
 	Rendered `json:",inline"`
+
+	// memberRestoreDetectedAt is the value of the annotation
+	// lodia.io/member-restore-detected-at that Workloads rendered for the
+	// component, once every replica runs a template that carries it, its new
+	// replicas all available, old pods that still terminate aside, and the
+	// previous value until then. The API server's template carries
+	// memberRestore.detectedAt, and the controller manager's and the
+	// scheduler's the API server's memberRestoreDetectedAt.
+	// +optional
+	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="memberRestoreDetectedAt cannot move back"
+	MemberRestoreDetectedAt *metav1.Time `json:"memberRestoreDetectedAt,omitempty"`
 }
 
 // Rendered is what a renderer rolled out in full: for a component, its
@@ -960,6 +984,47 @@ type RestoreStatus struct {
 	// +required
 	CompletedAt metav1.Time `json:"completedAt"`
 }
+
+// MemberRestoreStatus is a member of the dedicated etcd that came back with a
+// new data life: restored by etcd-backup-restore from the store's snapshots,
+// at the revision of the last delta snapshot, or started empty.
+type MemberRestoreStatus struct {
+	// member is the member's name.
+	// +required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Member string `json:"member"`
+
+	// detectedAt is when an operator replica found the new data life, up to
+	// about two minutes after it began, or one second after the detectedAt of
+	// the record it replaced when that is not earlier.
+	// +required
+	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="memberRestore.detectedAt cannot move back"
+	DetectedAt metav1.Time `json:"detectedAt"`
+
+	// from is Snapshots for a member restored from the store's snapshots, and
+	// Empty for one that started empty.
+	// +required
+	From MemberRestoreFrom `json:"from"`
+
+	// reportedAt is when DatastoreReady first reported it, as MemberRestored.
+	// +optional
+	ReportedAt *metav1.Time `json:"reportedAt,omitempty"`
+}
+
+// MemberRestoreFrom is what a member's new data life came from.
+// +kubebuilder:validation:Enum=Snapshots;Empty
+type MemberRestoreFrom string
+
+const (
+	// MemberRestoreFromSnapshots is a member restored from the store's
+	// snapshots: the writes etcd acknowledged after the last delta snapshot
+	// are lost.
+	MemberRestoreFromSnapshots MemberRestoreFrom = "Snapshots"
+	// MemberRestoreFromEmpty is a member that started empty: every write is
+	// lost.
+	MemberRestoreFromEmpty MemberRestoreFrom = "Empty"
+)
 
 // RolloutCount counts a component's replicas or an etcd's members: how many
 // the spec asks for, how many of them are ready, and how many run the current

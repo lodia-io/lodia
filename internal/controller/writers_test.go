@@ -75,6 +75,7 @@ var fieldWriters = map[string]string{
 	"health":                "lodia/health-nodes",
 	"kubernetes":            "lodia/lifecycle",
 	"maintenance":           "lodia/lifecycle",
+	"memberRestore":         "lodia/datastore",
 	"nodes":                 "lodia/health-nodes",
 	"restore":               "lodia/datastore",
 	"target":                "lodia/lifecycle",
