@@ -16,6 +16,7 @@ package testetcd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -63,6 +64,11 @@ type Config struct {
 	AdvertiseClientURL string
 	// NoStrictReconfigCheck is --strict-reconfig-check=false.
 	NoStrictReconfigCheck bool
+	// Name, PeerURL and Token are what the member bootstraps under in place
+	// of m<i>, its socket and the test's name. It still listens on its
+	// socket, which is enough for a member alone: no member dials its own
+	// peer URL.
+	Name, PeerURL, Token string
 }
 
 // Cluster is the members that share one directory and one token.
@@ -86,9 +92,10 @@ type Member struct {
 	// PeerURL is where the other members reach it, from Prepare on.
 	PeerURL string
 
-	cluster  *Cluster
-	cfg      Config
-	attempts int
+	listenPeer string
+	cluster    *Cluster
+	cfg        Config
+	attempts   int
 
 	mu       sync.Mutex
 	proc     *process
@@ -129,11 +136,13 @@ func StartCluster(t testing.TB, n int, configure func(i int, cfg *Config)) *Clus
 // MemberAdd takes. Join starts it.
 func (c *Cluster) Prepare(name string, cfg Config) *Member {
 	c.t.Helper()
+	socket := "unix://127.0.0.1:" + strconv.Itoa(int(c.sockets.Add(1)))
 	m := &Member{
-		Name:    name,
-		PeerURL: "unix://127.0.0.1:" + strconv.Itoa(int(c.sockets.Add(1))),
-		cluster: c,
-		cfg:     cfg,
+		Name:       cmp.Or(cfg.Name, name),
+		PeerURL:    cmp.Or(cfg.PeerURL, socket),
+		listenPeer: socket,
+		cluster:    c,
+		cfg:        cfg,
 	}
 	c.all = append(c.all, m)
 	return m
@@ -269,11 +278,11 @@ func (m *Member) launch(binary, state, initial string) {
 		"--unsafe-no-fsync",
 		"--listen-client-urls", m.ClientURL,
 		"--advertise-client-urls", advertise,
-		"--listen-peer-urls", m.PeerURL,
+		"--listen-peer-urls", m.listenPeer,
 		"--initial-advertise-peer-urls", m.PeerURL,
 		"--initial-cluster", initial,
 		"--initial-cluster-state", state,
-		"--initial-cluster-token", c.token,
+		"--initial-cluster-token", cmp.Or(m.cfg.Token, c.token),
 	}
 	if m.cfg.QuotaBackendBytes > 0 {
 		args = append(args, "--quota-backend-bytes", strconv.FormatInt(m.cfg.QuotaBackendBytes, 10))
