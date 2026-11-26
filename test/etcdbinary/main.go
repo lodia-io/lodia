@@ -3,9 +3,9 @@
 
 // Command etcdbinary prints the path of etcd's release binary at
 // versions.EtcdVersion for this machine, for make test, which hands it to the
-// tests in LODIA_ETCD_BINARY. It fetches the release into the directory it is
-// given when the binary is not there, and checks the archive against the
-// SHA-256 versions.EtcdArchives pins first.
+// tests in LODIA_ETCD_BINARY, with etcdutl beside it. It fetches the release
+// into the directory it is given when either binary is not there, and checks
+// the archive against the SHA-256 versions.EtcdArchives pins first.
 package main
 
 import (
@@ -25,6 +25,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -36,6 +37,10 @@ const (
 	maxArchive = 128 << 20
 	maxBinary  = 256 << 20
 )
+
+// binaries are what the cache holds of the archive, in the order they are
+// written: etcd last, so that a cache that holds etcd holds both.
+var binaries = []string{"etcdutl", "etcd"}
 
 func main() {
 	if len(os.Args) != 2 {
@@ -85,9 +90,9 @@ func ensure(ctx context.Context, base, dir, version, goos, goarch string, pinned
 	if !ok {
 		return "", fmt.Errorf("no SHA-256 is pinned for %s", name)
 	}
-	target := filepath.Join(dir, version+"-"+goos+"-"+goarch, "etcd")
-	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o100 != 0 { //nolint:gosec // G703: the directory is this program's argument, which make test gives it
-		return target, nil
+	target := filepath.Join(dir, version+"-"+goos+"-"+goarch)
+	if !slices.ContainsFunc(binaries, func(binary string) bool { return !executable(filepath.Join(target, binary)) }) {
+		return filepath.Join(target, "etcd"), nil
 	}
 	fmt.Fprintf(os.Stderr, "etcdbinary: fetching %s/%s/%s\n", base, version, name)
 	archive, err := get(ctx, base+"/"+version+"/"+name, maxArchive)
@@ -97,32 +102,51 @@ func ensure(ctx context.Context, base, dir, version, goos, goarch string, pinned
 	if got := sha256.Sum256(archive); hex.EncodeToString(got[:]) != want {
 		return "", fmt.Errorf("%s has the SHA-256 %x, not the pinned %s", name, got, want)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil { //nolint:gosec // G703: the directory is this program's argument, which make test gives it
+	if err := os.MkdirAll(target, 0o750); err != nil { //nolint:gosec // G703: the directory is this program's argument, which make test gives it
 		return "", err
 	}
-	file, err := os.CreateTemp(filepath.Dir(target), "etcd-*")
-	if err != nil {
-		return "", err
+	files := map[string]*os.File{}
+	defer func() {
+		for _, file := range files {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+		}
+	}()
+	writers := map[string]io.Writer{}
+	for _, binary := range binaries {
+		file, err := os.CreateTemp(target, binary+"-*")
+		if err != nil {
+			return "", err
+		}
+		files[binary], writers[binary] = file, file
 	}
-	defer func() { _ = os.Remove(file.Name()) }() //nolint:gosec // G703: the directory is this program's argument, which make test gives it
 	if strings.HasSuffix(name, ".zip") {
-		err = fromZip(file, archive)
+		err = fromZip(writers, archive)
 	} else {
-		err = fromTar(file, archive)
-	}
-	if err == nil {
-		err = file.Chmod(0o750)
-	}
-	if closed := file.Close(); err == nil {
-		err = closed
+		err = fromTar(writers, archive)
 	}
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", name, err)
 	}
-	if err := os.Rename(file.Name(), target); err != nil { //nolint:gosec // G703: the directory is this program's argument, which make test gives it
-		return "", err
+	for _, binary := range binaries {
+		file := files[binary]
+		err := file.Chmod(0o750)
+		if closed := file.Close(); err == nil {
+			err = closed
+		}
+		if err == nil {
+			err = os.Rename(file.Name(), filepath.Join(target, binary)) //nolint:gosec // G703: the directory is this program's argument, which make test gives it
+		}
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
 	}
-	return target, nil
+	return filepath.Join(target, "etcd"), nil
+}
+
+func executable(path string) bool {
+	info, err := os.Stat(path) //nolint:gosec // G703: the directory is this program's argument, which make test gives it
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o100 != 0
 }
 
 func get(ctx context.Context, url string, limit int64) ([]byte, error) {
@@ -150,56 +174,77 @@ func get(ctx context.Context, url string, limit int64) ([]byte, error) {
 	return body, nil
 }
 
-func fromZip(dst io.Writer, archive []byte) error {
+// fromZip and fromTar copy each binary the archive holds under the name of a
+// writer into that writer.
+func fromZip(writers map[string]io.Writer, archive []byte) error {
 	reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
 	if err != nil {
 		return err
 	}
+	copied := map[string]bool{}
 	for _, f := range reader.File {
-		if path.Base(f.Name) == "etcd" && !f.FileInfo().IsDir() {
-			return copyZipped(dst, f)
+		binary := path.Base(f.Name)
+		if dst, ok := writers[binary]; ok && !copied[binary] && !f.FileInfo().IsDir() {
+			if err := copyZipped(dst, binary, f); err != nil {
+				return err
+			}
+			copied[binary] = true
 		}
 	}
-	return errors.New("no etcd in the archive")
+	return missing(writers, copied)
 }
 
-func copyZipped(dst io.Writer, f *zip.File) error {
+func copyZipped(dst io.Writer, binary string, f *zip.File) error {
 	src, err := f.Open()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = src.Close() }()
-	return copyBinary(dst, src)
+	return copyBinary(dst, binary, src)
 }
 
-func fromTar(dst io.Writer, archive []byte) error {
+func fromTar(writers map[string]io.Writer, archive []byte) error {
 	unzipped, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return err
 	}
 	defer func() { _ = unzipped.Close() }()
 	reader := tar.NewReader(unzipped)
+	copied := map[string]bool{}
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
-			return errors.New("no etcd in the archive")
+			return missing(writers, copied)
 		}
 		if err != nil {
 			return err
 		}
-		if header.Typeflag == tar.TypeReg && path.Base(header.Name) == "etcd" {
-			return copyBinary(dst, reader)
+		binary := path.Base(header.Name)
+		if dst, ok := writers[binary]; ok && !copied[binary] && header.Typeflag == tar.TypeReg {
+			if err := copyBinary(dst, binary, reader); err != nil {
+				return err
+			}
+			copied[binary] = true
 		}
 	}
 }
 
-func copyBinary(dst io.Writer, src io.Reader) error {
+func missing(writers map[string]io.Writer, copied map[string]bool) error {
+	for _, binary := range binaries {
+		if _, wanted := writers[binary]; wanted && !copied[binary] {
+			return fmt.Errorf("no %s in the archive", binary)
+		}
+	}
+	return nil
+}
+
+func copyBinary(dst io.Writer, binary string, src io.Reader) error {
 	n, err := io.CopyN(dst, src, maxBinary+1)
 	if errors.Is(err, io.EOF) {
 		return nil
 	}
 	if err == nil {
-		return fmt.Errorf("etcd is more than %d bytes (read %d)", maxBinary, n)
+		return fmt.Errorf("%s is more than %d bytes (read %d)", binary, maxBinary, n)
 	}
 	return err
 }

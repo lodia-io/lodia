@@ -219,6 +219,18 @@ func (l *liveSecrets) List(context.Context, client.ObjectList, ...client.ListOpt
 	return nil
 }
 
+func TestTheSamplerTellsTheDatastoreThroughOneStoreAndReadsTheRecordFromTheAPIServer(t *testing.T) {
+	reader := &liveSecrets{}
+	in := Inputs{Config: DefaultConfig(), Version: "v1.0.0", SignerImage: "signer", TunnelImage: "tunnel", EtcdDruidVersion: "v0.39.2", EtcdDruidNamespace: "druid", EtcdDruidStatusSync: 15 * time.Second, OperatorNamespace: "lodia"}
+	c := newControllers(managerOf{cache: cacheOf{}, reader: reader}, in, "v1.0.0+0")
+	if c.sampler.Latches == nil || c.sampler.Latches != c.datastore.Latches {
+		t.Errorf("the sampler tells %p and the Datastore controller takes from %p, want one store", c.sampler.Latches, c.datastore.Latches)
+	}
+	if c.sampler.Reader != client.Reader(reader) {
+		t.Errorf("the sampler reads the record through %T, want the manager's API reader", c.sampler.Reader)
+	}
+}
+
 func TestEveryReconcilerThatReadsTheAccessSecretsReadsThemThroughTheOneReader(t *testing.T) {
 	ca, err := certs.NewCA("etcd", time.Now(), time.Hour)
 	if err != nil {

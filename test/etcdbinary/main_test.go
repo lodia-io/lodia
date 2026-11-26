@@ -23,10 +23,9 @@ import (
 	"go.lodia.io/lodia/internal/versions"
 )
 
-const (
-	version = "v9.9.9"
-	payload = "the etcd binary"
-)
+const version = "v9.9.9"
+
+var payloads = map[string]string{"etcd": "the etcd binary", "etcdutl": "the etcdutl binary"}
 
 type release struct {
 	server   *httptest.Server
@@ -70,8 +69,8 @@ func serve(t *testing.T, change func(name string, archive []byte) (pinned, serve
 func build(t *testing.T, name string) []byte {
 	t.Helper()
 	dir := strings.TrimSuffix(strings.TrimSuffix(name, ".zip"), ".tar.gz") + "/"
-	entries := map[string]string{dir + "etcdctl": "the other binary", dir + "etcd": payload, dir + "README.md": "readme"}
-	order := []string{dir + "README.md", dir + "etcdctl", dir + "etcd"}
+	entries := map[string]string{dir + "etcdctl": "the other binary", dir + "etcd": payloads["etcd"], dir + "etcdutl": payloads["etcdutl"], dir + "README.md": "readme"}
+	order := []string{dir + "README.md", dir + "etcdctl", dir + "etcd", dir + "etcdutl"}
 	var out bytes.Buffer
 	if strings.HasSuffix(name, ".zip") {
 		w := zip.NewWriter(&out)
@@ -104,7 +103,7 @@ func build(t *testing.T, name string) []byte {
 	return out.Bytes()
 }
 
-func TestTheBinaryOfEachArchiveIsExtractedAndExecutable(t *testing.T) {
+func TestTheBinariesOfEachArchiveAreExtractedAndExecutable(t *testing.T) {
 	r := serve(t, nil)
 	for _, c := range []struct{ goos, goarch string }{{"darwin", "arm64"}, {"darwin", "amd64"}, {"linux", "amd64"}, {"linux", "arm64"}} {
 		t.Run(c.goos+"/"+c.goarch, func(t *testing.T) {
@@ -116,16 +115,19 @@ func TestTheBinaryOfEachArchiveIsExtractedAndExecutable(t *testing.T) {
 			if want := filepath.Join(dir, version+"-"+c.goos+"-"+c.goarch, "etcd"); got != want {
 				t.Errorf("the binary is at %s, want %s", got, want)
 			}
-			content, err := os.ReadFile(got)
-			if err != nil || string(content) != payload {
-				t.Errorf("the binary holds %q, %v, want %q", content, err, payload)
-			}
-			if info, err := os.Stat(got); err != nil || info.Mode().Perm()&0o111 == 0 {
-				t.Errorf("the binary is %v, %v, want it executable", info, err)
+			for binary, payload := range payloads {
+				file := filepath.Join(filepath.Dir(got), binary)
+				content, err := os.ReadFile(file)
+				if err != nil || string(content) != payload {
+					t.Errorf("%s holds %q, %v, want %q", binary, content, err, payload)
+				}
+				if info, err := os.Stat(file); err != nil || info.Mode().Perm()&0o111 == 0 {
+					t.Errorf("%s is %v, %v, want it executable", binary, info, err)
+				}
 			}
 			entries, err := os.ReadDir(filepath.Dir(got))
-			if err != nil || len(entries) != 1 {
-				t.Errorf("its directory holds %v, %v, want the binary alone", entries, err)
+			if err != nil || len(entries) != len(payloads) {
+				t.Errorf("its directory holds %v, %v, want etcd and etcdutl alone", entries, err)
 			}
 		})
 	}
@@ -148,6 +150,30 @@ func TestAWarmCacheMakesNoRequest(t *testing.T) {
 	}
 	if n := r.requests.Load(); n != fetched {
 		t.Errorf("the second run made %d requests more, want none", n-fetched)
+	}
+}
+
+func TestACacheWithoutEtcdutlFetchesBoth(t *testing.T) {
+	r := serve(t, nil)
+	dir := t.TempDir()
+	cached := filepath.Join(dir, version+"-linux-amd64")
+	if err := os.MkdirAll(cached, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cached, "etcd"), []byte("an etcd fetched alone"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ensure(t.Context(), r.server.URL, dir, version, "linux", "amd64", r.pinned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := r.requests.Load(); n != 1 {
+		t.Errorf("a cache holding etcd alone made %d requests, want the archive", n)
+	}
+	for binary, payload := range payloads {
+		if content, err := os.ReadFile(filepath.Join(filepath.Dir(got), binary)); err != nil || string(content) != payload {
+			t.Errorf("%s holds %q, %v, want %q", binary, content, err, payload)
+		}
 	}
 }
 
@@ -176,26 +202,35 @@ func TestAnArchiveThatDiffersFromItsPinnedChecksumLeavesNothingInTheCache(t *tes
 	}
 }
 
-func TestAnArchiveWithoutEtcdLeavesNothingInTheCache(t *testing.T) {
-	r := serve(t, func(name string, _ []byte) ([]byte, []byte) {
-		var out bytes.Buffer
-		gz := gzip.NewWriter(&out)
-		w := tar.NewWriter(gz)
-		if err := w.WriteHeader(&tar.Header{Name: strings.TrimSuffix(name, ".tar.gz") + "/etcdctl", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}); err != nil {
-			t.Fatal(err)
-		}
-		_, _ = w.Write([]byte("x"))
-		_ = w.Close()
-		_ = gz.Close()
-		return out.Bytes(), out.Bytes()
-	})
-	dir := t.TempDir()
-	_, err := ensure(t.Context(), r.server.URL, dir, version, "linux", "amd64", r.pinned)
-	if err == nil || !strings.Contains(err.Error(), "no etcd in the archive") {
-		t.Fatalf("an archive without etcd gave %v, want no etcd in the archive", err)
-	}
-	if left := leftIn(dir); len(left) > 0 {
-		t.Errorf("the cache holds %v after a refused archive, want nothing", left)
+func TestAnArchiveWithoutEitherBinaryLeavesNothingInTheCache(t *testing.T) {
+	for _, lacking := range []string{"etcd", "etcdutl"} {
+		t.Run(lacking, func(t *testing.T) {
+			r := serve(t, func(name string, _ []byte) ([]byte, []byte) {
+				var out bytes.Buffer
+				gz := gzip.NewWriter(&out)
+				w := tar.NewWriter(gz)
+				for _, binary := range []string{"etcdctl", "etcd", "etcdutl"} {
+					if binary == lacking {
+						continue
+					}
+					if err := w.WriteHeader(&tar.Header{Name: strings.TrimSuffix(name, ".tar.gz") + "/" + binary, Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}); err != nil {
+						t.Fatal(err)
+					}
+					_, _ = w.Write([]byte("x"))
+				}
+				_ = w.Close()
+				_ = gz.Close()
+				return out.Bytes(), out.Bytes()
+			})
+			dir := t.TempDir()
+			_, err := ensure(t.Context(), r.server.URL, dir, version, "linux", "amd64", r.pinned)
+			if want := "no " + lacking + " in the archive"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("an archive without %s gave %v, want %s", lacking, err, want)
+			}
+			if left := leftIn(dir); len(left) > 0 {
+				t.Errorf("the cache holds %v after a refused archive, want nothing", left)
+			}
+		})
 	}
 }
 

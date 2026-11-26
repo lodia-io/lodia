@@ -93,9 +93,12 @@ type Member struct {
 	PeerURL string
 
 	listenPeer string
-	cluster    *Cluster
-	cfg        Config
-	attempts   int
+	data       string
+	// keep starts the member on the data directory it has.
+	keep     bool
+	cluster  *Cluster
+	cfg      Config
+	attempts int
 
 	mu       sync.Mutex
 	proc     *process
@@ -141,6 +144,7 @@ func (c *Cluster) Prepare(name string, cfg Config) *Member {
 		Name:       cmp.Or(cfg.Name, name),
 		PeerURL:    cmp.Or(cfg.PeerURL, socket),
 		listenPeer: socket,
+		data:       filepath.Join(c.dir, name),
 		cluster:    c,
 		cfg:        cfg,
 	}
@@ -163,6 +167,52 @@ func (m *Member) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopLocked()
+}
+
+// Restart starts the member again on its data directory, under the names cfg
+// gives, of which a member with data takes only its name and its URLs, and
+// returns when it is ready to serve clients.
+func (m *Member) Restart(cfg Config) {
+	m.cluster.t.Helper()
+	m.relaunch(cfg, true)
+}
+
+// StartEmpty starts the member again on an empty data directory, as a cluster
+// of its own under the names cfg gives.
+func (m *Member) StartEmpty(cfg Config) {
+	m.cluster.t.Helper()
+	m.relaunch(cfg, false)
+}
+
+// Restore stops the member and replaces its data directory with snapshot,
+// restored under the names cfg gives by the release's etcdutl, beside the etcd
+// binary, as etcd-backup-restore restores a member; Restart starts it.
+func (m *Member) Restore(snapshot string, cfg Config) {
+	c := m.cluster
+	c.t.Helper()
+	m.Stop()
+	if err := os.RemoveAll(m.data); err != nil {
+		c.t.Fatal(err)
+	}
+	peer := cmp.Or(cfg.PeerURL, m.listenPeer)
+	name := cmp.Or(cfg.Name, m.Name)
+	cmd := exec.CommandContext(c.t.Context(), filepath.Join(filepath.Dir(c.binary()), "etcdutl"), "snapshot", "restore", snapshot, //nolint:gosec // G204: etcdutl beside the binary BinaryEnv names
+		"--name", name, "--initial-cluster", name+"="+peer, "--initial-cluster-token", cmp.Or(cfg.Token, c.token),
+		"--initial-advertise-peer-urls", peer, "--data-dir", m.data)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		c.t.Fatalf("etcdutl snapshot restore %s: %v\n%s", snapshot, err, out)
+	}
+}
+
+func (m *Member) relaunch(cfg Config, keep bool) {
+	c := m.cluster
+	m.Stop()
+	m.mu.Lock()
+	m.cfg, m.keep = cfg, keep
+	m.Name, m.PeerURL = cmp.Or(cfg.Name, m.Name), cmp.Or(cfg.PeerURL, m.listenPeer)
+	m.attempts = 0
+	m.mu.Unlock()
+	c.boot([]*Member{m}, "new", c.initialCluster([]*Member{m}))
 }
 
 func newCluster(t testing.TB) *Cluster {
@@ -264,9 +314,10 @@ func (m *Member) launch(binary, state, initial string) {
 		c.t.Fatal(err)
 	}
 	m.ClientURL = "http://127.0.0.1:" + port
-	data := filepath.Join(c.dir, m.Name)
-	if err := os.RemoveAll(data); err != nil {
-		c.t.Fatal(err)
+	if !m.keep {
+		if err := os.RemoveAll(m.data); err != nil {
+			c.t.Fatal(err)
+		}
 	}
 	advertise := m.ClientURL
 	if m.cfg.AdvertiseClientURL != "" {
@@ -274,7 +325,7 @@ func (m *Member) launch(binary, state, initial string) {
 	}
 	args := []string{
 		"--name", m.Name,
-		"--data-dir", data,
+		"--data-dir", m.data,
 		"--unsafe-no-fsync",
 		"--listen-client-urls", m.ClientURL,
 		"--advertise-client-urls", advertise,

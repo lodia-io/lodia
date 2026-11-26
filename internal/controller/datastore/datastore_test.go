@@ -135,7 +135,7 @@ func TestMain(m *testing.M) {
 	}
 	mgr := env.Manager(asDatastore, false)
 	managerReads = &reads{Client: mgr.GetClient(), etcdReady: map[client.ObjectKey]druidv1alpha1.Condition{}, paused: map[client.ObjectKey]int64{}}
-	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 10); err != nil {
+	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}).SetupWithManager(mgr, 10); err != nil {
 		env.Fatal("controller", err)
 	}
 	ctx := env.StartManager(mgr)
