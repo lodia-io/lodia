@@ -580,7 +580,7 @@ func transportOf(t *testing.T, tenant *tenant) *http.Transport {
 // A socket counts from its first write to its Close, not from its dial: the
 // transport hands the place of a connection it closes to a waiting dial before
 // it closes the socket (persistConn.closeLocked,
-// https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L2997-L3013),
+// https://github.com/golang/go/blob/go1.27.4/src/net/http/transport.go#L3173-L3194),
 // so a count from the dial reads the cap plus one.
 type socketCount struct {
 	open, peak atomic.Int64

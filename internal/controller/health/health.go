@@ -851,7 +851,7 @@ func (r *Reconciler) probe(ctx context.Context, prober *http.Client, url string)
 // verified against the bundle, as a pod's own connection through
 // apiserver-proxy does.
 // net/http dials and hands the inner TLS over on a context of its own, detached
-// from the request's (https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L1524-L1529),
+// from the request's (https://github.com/golang/go/blob/go1.27.4/src/net/http/transport.go#L1591-L1596),
 // so the dial and both handshakes need Timeout's bound here: without them a
 // stalled Gateway would keep a goroutine for every probe.
 func (r *Reconciler) throughTunnel(p *prober, tunnel lodiav1alpha1.HostPort) *http.Client {
