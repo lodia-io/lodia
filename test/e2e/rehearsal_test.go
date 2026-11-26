@@ -230,12 +230,12 @@ func watchTenantEtcd(ctx context.Context, t *testing.T, cfg *envconf.Config, k8s
 			for _, e := range resp.Events {
 				op := "update"
 				switch {
-				case e.Type == clientv3.EventTypeDelete:
+				case e.GetType() == clientv3.EventTypeDelete:
 					op = "delete"
 				case e.IsCreate():
 					op = "create"
 				}
-				w.events = append(w.events, etcdEvent{at: now, key: string(e.Kv.GetKey()), op: op})
+				w.events = append(w.events, etcdEvent{at: now, key: string(e.GetKv().GetKey()), op: op})
 			}
 			w.mu.Unlock()
 		}

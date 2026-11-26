@@ -35,7 +35,9 @@ func TestTheCacheHoldsNoDataOfASecretWhicheverInformerReadsIt(t *testing.T) {
 	go func() { stopped <- informers.Start(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-stopped
+		if err := <-stopped; err != nil {
+			t.Error(err)
+		}
 	})
 	admin, err := client.New(cfg, client.Options{Scheme: operator.Scheme()})
 	if err != nil {

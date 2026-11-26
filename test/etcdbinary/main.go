@@ -86,7 +86,7 @@ func ensure(ctx context.Context, base, dir, version, goos, goarch string, pinned
 		return "", fmt.Errorf("no SHA-256 is pinned for %s", name)
 	}
 	target := filepath.Join(dir, version+"-"+goos+"-"+goarch, "etcd")
-	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o100 != 0 {
+	if info, err := os.Stat(target); err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o100 != 0 { //nolint:gosec // G703: the directory is this program's argument, which make test gives it
 		return target, nil
 	}
 	fmt.Fprintf(os.Stderr, "etcdbinary: fetching %s/%s/%s\n", base, version, name)
@@ -97,14 +97,14 @@ func ensure(ctx context.Context, base, dir, version, goos, goarch string, pinned
 	if got := sha256.Sum256(archive); hex.EncodeToString(got[:]) != want {
 		return "", fmt.Errorf("%s has the SHA-256 %x, not the pinned %s", name, got, want)
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil { //nolint:gosec // G703: the directory is this program's argument, which make test gives it
 		return "", err
 	}
 	file, err := os.CreateTemp(filepath.Dir(target), "etcd-*")
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = os.Remove(file.Name()) }()
+	defer func() { _ = os.Remove(file.Name()) }() //nolint:gosec // G703: the directory is this program's argument, which make test gives it
 	if strings.HasSuffix(name, ".zip") {
 		err = fromZip(file, archive)
 	} else {
@@ -119,7 +119,7 @@ func ensure(ctx context.Context, base, dir, version, goos, goarch string, pinned
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", name, err)
 	}
-	if err := os.Rename(file.Name(), target); err != nil {
+	if err := os.Rename(file.Name(), target); err != nil { //nolint:gosec // G703: the directory is this program's argument, which make test gives it
 		return "", err
 	}
 	return target, nil

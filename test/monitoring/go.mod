@@ -2,7 +2,7 @@ module go.lodia.io/lodia/test/monitoring
 
 go 1.26.7
 
-toolchain go1.26.11
+toolchain go1.27.4
 
 require (
 	github.com/prometheus/client_golang v1.25.0
