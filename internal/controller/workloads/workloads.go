@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -1127,9 +1128,10 @@ func (r *Reconciler) controlled(ctx context.Context, cp *lodiav1alpha1.ControlPl
 }
 
 // components counts the replicas of the Deployments this ControlPlane controls
-// and reports the version each runs. A component starts from its previous
-// report, which cp holds as the API server does, and a Deployment that is gone
-// keeps it: an apply that leaves a field out removes it.
+// and reports the version each runs, and the memberRestore.detectedAt each
+// rolled for. A component starts from its previous report, which cp holds as
+// the API server does, and a Deployment that is gone keeps it: an apply that
+// leaves a field out removes it.
 func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
 	controlled, err := r.controlled(ctx, cp)
 	if err != nil {
@@ -1141,7 +1143,7 @@ func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPl
 	}
 	out := &lodiav1alpha1.ComponentsStatus{}
 	for _, component := range components {
-		*slot(out, component) = rolledOut(controlled[component], component, *slot(&previous, component))
+		*slot(out, component) = rolledOut(controlled[component], component, *slot(&previous, component), rollsFor(cp, component))
 	}
 	if *out == (lodiav1alpha1.ComponentsStatus{}) {
 		return nil, nil
@@ -1161,27 +1163,36 @@ func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.C
 
 // rolledOut is d's counts, with the version of its image and the revision of
 // its stamp once every replica runs the template, 0 of 0 included, and
-// previous's report until then. A component with neither a Deployment nor a
-// report is absent. A stamp longer than the field is not reported, as a
-// hand-edited image is not.
-func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.ComponentStatus) *lodiav1alpha1.ComponentStatus {
+// previous's report until then, old pods that still terminate aside, as
+// kubectl's rollout status counts done. Its memberRestoreDetectedAt moves only
+// to rendered, the value the pass renders for the component, once the
+// template carries it: a cache behind a finished roll shows an older template
+// rolled out, which moves no report back. A component with neither a
+// Deployment nor a report is absent. A stamp longer than the field is not
+// reported, as a hand-edited image is not.
+func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.ComponentStatus, rendered *metav1.Time) *lodiav1alpha1.ComponentStatus {
 	var report lodiav1alpha1.Rendered
+	var detectedAt *metav1.Time
 	if previous != nil {
-		report = previous.Rendered
+		report, detectedAt = previous.Rendered, previous.MemberRestoreDetectedAt
 	}
 	if d == nil {
-		if report == (lodiav1alpha1.Rendered{}) {
+		if report == (lodiav1alpha1.Rendered{}) && detectedAt == nil {
 			return nil
 		}
-		return &lodiav1alpha1.ComponentStatus{Rendered: report}
+		return &lodiav1alpha1.ComponentStatus{Rendered: report, MemberRestoreDetectedAt: detectedAt}
 	}
-	status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d), Rendered: report}
+	status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d), Rendered: report, MemberRestoreDetectedAt: detectedAt}
 	if status.Updated != nil && *status.Updated == status.Total {
 		if version := imageVersion(d, component); version != "" {
 			status.Version = version
 		}
 		if stamp := d.Annotations[lodiav1alpha1.OperatorRevisionAnnotation]; stamp != "" && len(stamp) <= maxRevision {
 			status.OperatorRevision = stamp
+		}
+		// @todo: stop this roll for a member restored from snapshots once etcd-backup-restore restores with RevisionBump and MarkCompacted; a member that starts empty keeps it (todo.md).
+		if rendered != nil && d.Spec.Template.Annotations[lodiav1alpha1.MemberRestoreDetectedAtAnnotation] == annotated(*rendered) {
+			status.MemberRestoreDetectedAt = rendered
 		}
 	}
 	return status
@@ -1239,11 +1250,15 @@ func (r *Reconciler) deletePodDisruptionBudgets(ctx context.Context, cp *lodiav1
 
 // apply writes obj, fills it with the object the API server stores, and says
 // whether it wrote. A held pass writes only a missing object, and fills obj
-// with a stored one as it is.
+// with a stored one as it is, but for the repair after a restored member.
 func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, obj client.Object) (bool, error) {
 	if r.held(cp) {
+		repair := restoreAnnotation(obj)
 		if stored, err := r.stored(ctx, cp, obj); err != nil || stored {
-			return false, err
+			if err != nil {
+				return false, err
+			}
+			return r.repair(ctx, obj, repair)
 		}
 	}
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
@@ -1257,6 +1272,33 @@ func (r *Reconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, 
 		return false, fmt.Errorf("apply %s %s: %w", applied.GetKind(), applied.GetName(), err)
 	}
 	return true, runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, obj)
+}
+
+func restoreAnnotation(obj client.Object) string {
+	if d, ok := obj.(*appsv1.Deployment); ok {
+		return d.Spec.Template.Annotations[lodiav1alpha1.MemberRestoreDetectedAtAnnotation]
+	}
+	return ""
+}
+
+// repair writes value, the annotation of a repair after a restored member
+// the render gives, into a stored Deployment whose template carries another,
+// with a merge patch of that one annotation: an apply of a partial object
+// would drop Workloads' other fields. The repair rolls at once, on a held
+// tenant too (docs/decisions/upgrades-and-maintenance-windows.md).
+func (r *Reconciler) repair(ctx context.Context, obj client.Object, value string) (bool, error) {
+	d, ok := obj.(*appsv1.Deployment)
+	if !ok || value == "" || d.Spec.Template.Annotations[lodiav1alpha1.MemberRestoreDetectedAtAnnotation] == value {
+		return false, nil
+	}
+	patch, err := json.Marshal(map[string]any{"spec": map[string]any{"template": map[string]any{"metadata": map[string]any{"annotations": map[string]string{lodiav1alpha1.MemberRestoreDetectedAtAnnotation: value}}}}})
+	if err != nil {
+		return false, err
+	}
+	if err := r.Patch(ctx, d, client.RawPatch(types.MergePatchType, patch), client.FieldOwner(FieldManager)); err != nil {
+		return false, fmt.Errorf("patch Deployment %s: %w", d.Name, err)
+	}
+	return true, nil
 }
 
 // stored fills obj with the object stored under its name and says whether
