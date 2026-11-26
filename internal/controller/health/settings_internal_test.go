@@ -4,12 +4,17 @@
 package health
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
+	"encoding/pem"
 	"errors"
+	"io"
 	"net"
 	"net/http"
+	"os"
 	"runtime"
 	"slices"
 	"strings"
@@ -110,6 +115,65 @@ func TestAGzipAnswerSentUnaskedIsAFailedReadThatKeepsNothingOfItsResponse(t *tes
 				}
 			})
 		}
+	}
+}
+
+type readCounted struct {
+	net.Conn
+	read *atomic.Int64
+}
+
+func (c readCounted) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.read.Add(int64(n))
+	return n, err
+}
+
+// A probe answered with a chunked body and no Connection: close closes its connection without reading what the server sends after.
+func TestAProbeAnsweredWithABodyAndNoConnectionCloseReadsNothingMoreOfItAndClosesItsConnection(t *testing.T) {
+	config, certificate := localTLS(t)
+	raw, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener := tls.NewListener(raw, config)
+	t.Cleanup(func() { _ = listener.Close() })
+	returned, ended := make(chan struct{}), make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			ended <- err
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+			ended <- err
+			return
+		}
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nsent\r\n")
+		<-returned
+		_, _ = io.WriteString(conn, "5\r\nafter\r\n0\r\n\r\n")
+		_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		_, err = conn.Read(make([]byte, 1))
+		ended <- err
+	}()
+	var read atomic.Int64
+	r := &Reconciler{Timeout: 5 * time.Second, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return readCounted{conn, &read}, nil
+	}}
+	p := r.prober(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}))
+	code, err := r.probe(t.Context(), p.direct, "https://"+raw.Addr().String()+"/readyz")
+	before := read.Load()
+	close(returned)
+	if code != http.StatusOK {
+		t.Fatalf("the probe answered %d, %v, want 200", code, err)
+	}
+	if err := <-ended; errors.Is(err, os.ErrDeadlineExceeded) || read.Load() != before {
+		t.Errorf("the server's read after the probe returned %v, and the probe read %d bytes of what the server sent after, want the connection closed and none of it read", err, read.Load()-before)
 	}
 }
 

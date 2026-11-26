@@ -48,7 +48,9 @@ func TestTheDeleteOfASecretInTheClusterDropsItsCopyAndARecreatedOneIsReadAgain(t
 	go func() { stopped <- informers.Start(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-stopped
+		if err := <-stopped; err != nil {
+			t.Error(err)
+		}
 	})
 	admin, err := client.New(cfg, client.Options{Scheme: scheme})
 	if err != nil {

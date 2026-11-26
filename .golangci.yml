@@ -36,7 +36,8 @@ linters:
   settings:
     exhaustive:
       default-signifies-exhaustive: true
-      ignore-enum-types: ^(google\.golang\.org/grpc/codes\.Code|github\.com/stripe/stripe-go/v\d+\.EventType)$
+      ignore-types:
+        - ^(google\.golang\.org/grpc/codes\.Code|github\.com/stripe/stripe-go/v\d+\.EventType)$
     forbidigo:
       analyze-types: true
       forbid:

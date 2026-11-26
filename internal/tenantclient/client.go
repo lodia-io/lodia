@@ -72,7 +72,7 @@ func New(cfg *rest.Config, opts Options) (*Client, error) {
 	// the transport counts and caps its connections, which an HTTP/2 pool does
 	// not.
 	cfg.NextProtos = []string{"http/1.1"}
-	// net/http then asks for no gzip and decodes none (https://github.com/golang/go/blob/go1.26.11/src/net/http/transport.go#L2845-L2862),
+	// net/http then asks for no gzip and decodes none (https://github.com/golang/go/blob/go1.27.4/src/net/http/transport.go#L3021-L3038),
 	// so no gzip reader is made, whose pool keeps one past the read.
 	cfg.DisableCompression = true
 	cfg.Dial = opts.dialContext

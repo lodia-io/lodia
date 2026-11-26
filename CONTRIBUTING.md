@@ -7,7 +7,7 @@ Taking part means following the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Build and test
 
-You need Go (the version in `go.mod`), Docker for the end-to-end suite, [golangci-lint](https://golangci-lint.run/) v2.13.2, [Helm](https://helm.sh/) v4.3.1, promtool from [Prometheus v3.15.1](https://github.com/prometheus/prometheus/releases/tag/v3.15.1) and dashboard-linter [v0.4.0](https://github.com/grafana/dashboard-linter/releases/tag/v0.4.0).
+You need Go (the version in `go.mod`), Docker for the end-to-end suite, [golangci-lint](https://golangci-lint.run/) v2.15.0, [Helm](https://helm.sh/) v4.3.1, promtool from [Prometheus v3.15.1](https://github.com/prometheus/prometheus/releases/tag/v3.15.1) and dashboard-linter [v0.4.0](https://github.com/grafana/dashboard-linter/releases/tag/v0.4.0).
 Every other tool runs through `go tool`, except ko, hydrophone, yq and crane, which run through `go run` at a version of their own (`Makefile`).
 
 | command | does |

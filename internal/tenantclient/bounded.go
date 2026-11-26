@@ -4,6 +4,7 @@
 package tenantclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -55,12 +56,14 @@ type (
 )
 
 func (c cappedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp, err := c.next.RoundTrip(req)
+	ctx, cancel := context.WithCancel(req.Context())
+	resp, err := c.next.RoundTrip(req.WithContext(ctx))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	cut, _ := req.Context().Value(cutKey{}).(*bool)
-	resp.Body = cappedBody{http.MaxBytesReader(nil, resp.Body, MaxResponseBytes), cut}
+	resp.Body = cappedBody{http.MaxBytesReader(nil, resp.Body, MaxResponseBytes), cut, cancel}
 	return resp, nil
 }
 
@@ -70,7 +73,8 @@ func (c cappedTransport) WrappedRoundTripper() http.RoundTripper { return c.next
 
 type cappedBody struct {
 	io.ReadCloser
-	cut *bool
+	cut    *bool
+	cancel context.CancelFunc
 }
 
 func (b cappedBody) Read(p []byte) (int, error) {
@@ -82,4 +86,13 @@ func (b cappedBody) Read(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// Close cancels the request before it closes the body: net/http drains a body
+// closed before its end to reuse its connection, keeping the answer meanwhile,
+// and Lodia wants neither for an answer it refused. A body read to its end has
+// given its connection back already.
+func (b cappedBody) Close() error {
+	b.cancel()
+	return b.ReadCloser.Close()
 }
