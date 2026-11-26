@@ -171,7 +171,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		d = decide(gathered)
 	}
-	version, err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).ApplyVersion(ctx, current, d.status, d.fieldsDiffer(current), d.movesMinor)
+	var lock string
+	if d.movesMinor {
+		lock = current.ResourceVersion
+	}
+	version, err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}).ApplyVersion(ctx, current, d.status, d.fieldsDiffer(current), lock)
 	if fenced && d.takesSlot {
 		written := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: current.Namespace, Name: current.Name, ResourceVersion: version}}
 		err = r.slots.Wrote(ctx, r.Client, written, err)

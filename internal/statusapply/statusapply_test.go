@@ -599,14 +599,50 @@ func TestALockedStatusApplyConflictsOnAnEditSinceItsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	desired := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "decided from the read", earlier)}}
-	if _, err := writer().ApplyVersion(t.Context(), read, desired, false, true); !apierrors.IsConflict(err) {
+	if _, err := writer().ApplyVersion(t.Context(), read, desired, false, read.ResourceVersion); !apierrors.IsConflict(err) {
 		t.Fatalf("error %v, want a conflict", err)
 	}
 	if c := meta.FindStatusCondition(stored(t, cp).Status.Conditions, lodiav1alpha1.ConditionReady); c != nil {
 		t.Errorf("Ready is %+v, want nothing written", c)
 	}
-	if _, err := writer().ApplyVersion(t.Context(), stored(t, cp), desired, false, true); err != nil {
+	current := stored(t, cp)
+	if _, err := writer().ApplyVersion(t.Context(), current, desired, false, current.ResourceVersion); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type noRead struct {
+	client.Reader
+	t *testing.T
+}
+
+func (r noRead) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	r.t.Error("a locked apply read the object")
+	return errors.New("no read")
+}
+
+func TestALockedApplyReadsNothingAndGoesOnFromTheConditionsItWrote(t *testing.T) {
+	cp := controlPlane(t, namespace(t))
+	if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "before", earlier)}}, false); err != nil {
+		t.Fatal(err)
+	}
+	read := stored(t, cp)
+	w := statusapply.Writer{Client: k8s, Reader: noRead{t: t}, Manager: manager}
+	after := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition(metav1.ConditionTrue, "after", later)}}
+	version, err := w.ApplyVersion(t.Context(), read, after, false, read.ResourceVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := stored(t, cp)
+	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); version != got.ResourceVersion || c.Message != "after" || !c.LastTransitionTime.Equal(&earlier) {
+		t.Errorf("the server holds %+v at resourceVersion %s after a write that returned %s, want the message after since %s", c, got.ResourceVersion, version, earlier)
+	}
+	if c := meta.FindStatusCondition(read.Status.Conditions, lodiav1alpha1.ConditionReady); c.Message != "after" || !c.LastTransitionTime.Equal(&earlier) {
+		t.Errorf("the copy is left with %+v, not what was written", c)
+	}
+	again, err := (statusapply.Writer{Client: noWrite{t}, Reader: noRead{t: t}, Manager: manager}).ApplyVersion(t.Context(), read, after, false, version)
+	if err != nil || again != "" {
+		t.Errorf("the same conditions applied again on the copy returned %q, %v, want nothing written", again, err)
 	}
 }
 

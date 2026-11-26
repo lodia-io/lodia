@@ -58,7 +58,7 @@ func unpaused(c client.WithWatch) client.WithWatch {
 }
 
 func operatorAt(c client.WithWatch, operatorRevision string) *datastore.Reconciler {
-	return &datastore.Reconciler{Client: c, Reader: k8s, Druid: newDruid(), Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}}
+	return &datastore.Reconciler{Client: c, Reader: k8s, Druid: newDruid(), Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 }
 
 func ahead(r *datastore.Reconciler, by time.Duration) *datastore.Reconciler {

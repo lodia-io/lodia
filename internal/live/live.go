@@ -1,8 +1,10 @@
 // Copyright 2026 The Lodia Authors.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package live reads a writer's own conditions, Datastore's status.datastore
-// and status.restore, Workloads' status.components and status.endpoint, the
+// Package live reads a writer's own conditions, Datastore's status.datastore,
+// status.restore and status.memberRestore with status.components, which it
+// ends MemberRestored on, Workloads' status.components and status.endpoint
+// with status.memberRestore, which it renders from, the
 // rehearsal's status.rehearsal, Tenant's status.addons, PKI's
 // status.credentials and Health's status.nodes and status.health,
 // and for Lifecycle's decisions the whole object, as the API server holds
@@ -36,27 +38,29 @@ func Conditions(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Con
 	return err
 }
 
-// Datastore replaces cp's status.datastore, status.restore and its
-// conditions of the given types with the API server's, read through reader,
-// which must not be a cache.
-func Datastore(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) error {
+// Datastore replaces cp's status.datastore, status.restore,
+// status.memberRestore, status.components and its conditions of the given
+// types with the API server's, read through reader, which must not be a
+// cache, and returns the resourceVersion of that read, which it leaves out of
+// cp: cp's own stays the cached copy's.
+func Datastore(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) (string, error) {
 	current, err := conditions(ctx, reader, cp, conditionTypes)
 	if err != nil {
-		return err
+		return "", err
 	}
-	cp.Status.Datastore, cp.Status.Restore = current.Status.Datastore, current.Status.Restore
-	return nil
+	cp.Status.Datastore, cp.Status.Restore, cp.Status.MemberRestore, cp.Status.Components = current.Status.Datastore, current.Status.Restore, current.Status.MemberRestore, current.Status.Components
+	return current.ResourceVersion, nil
 }
 
-// Components replaces cp's status.components, status.endpoint and its
-// conditions of the given types with the API server's, read through reader,
-// which must not be a cache.
+// Components replaces cp's status.components, status.endpoint,
+// status.memberRestore and its conditions of the given types with the API
+// server's, read through reader, which must not be a cache.
 func Components(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) error {
 	current, err := conditions(ctx, reader, cp, conditionTypes)
 	if err != nil {
 		return err
 	}
-	cp.Status.Components, cp.Status.Endpoint = current.Status.Components, current.Status.Endpoint
+	cp.Status.Components, cp.Status.Endpoint, cp.Status.MemberRestore = current.Status.Components, current.Status.Endpoint, current.Status.MemberRestore
 	return nil
 }
 

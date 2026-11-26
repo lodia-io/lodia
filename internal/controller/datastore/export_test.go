@@ -4,7 +4,10 @@
 package datastore
 
 import (
+	"context"
+
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -26,3 +29,5 @@ func Latched(l *Latches, key types.NamespacedName) *lodiav1alpha1.MemberRestoreS
 	}
 	return nil
 }
+
+func Send(ctx context.Context, l *Latches, cp client.Object) { l.send(ctx, cp) }
