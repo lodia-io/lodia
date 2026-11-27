@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -55,11 +55,19 @@ func encryptionKeys(t *testing.T, cp *lodiav1alpha1.ControlPlane) []encryptionKe
 	return keys
 }
 
-func setEncryption(t *testing.T, cp *lodiav1alpha1.ControlPlane, provider lodiav1alpha1.EncryptionProvider) {
+func editEncryption(t *testing.T, cp *lodiav1alpha1.ControlPlane, first apiserverv1.ProviderConfiguration) {
 	t.Helper()
-	patch := client.MergeFrom(cp.DeepCopy())
-	cp.Spec.APIServer = &lodiav1alpha1.APIServer{Encryption: &lodiav1alpha1.Encryption{Provider: provider}}
-	if err := k8s.Patch(t.Context(), cp, patch); err != nil {
+	s := secretsOf(t, cp)[cp.Name+"-encryption-config"]
+	cfg := apiserverv1.EncryptionConfiguration{
+		TypeMeta:  metav1.TypeMeta{APIVersion: apiserverv1.SchemeGroupVersion.String(), Kind: "EncryptionConfiguration"},
+		Resources: []apiserverv1.ResourceConfiguration{{Resources: []string{"secrets"}, Providers: append([]apiserverv1.ProviderConfiguration{first}, providersIn(t, s)...)}},
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Data = map[string][]byte{lodiav1alpha1.EncryptionConfigKey: data}
+	if err := k8s.Update(t.Context(), s); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -80,17 +88,16 @@ func TestANewEncryptionKeyIsNamedAfterItsNanosecond(t *testing.T) {
 	}
 }
 
-func TestAProviderChangedBackGetsAKeyNameOfItsOwn(t *testing.T) {
+// TestAProviderAHandEditMovedGetsAKeyNameOfItsOwnBack puts the spec's provider back first under a new name.
+func TestAProviderAHandEditMovedGetsAKeyNameOfItsOwnBack(t *testing.T) {
 	r := newReconciler(time.Hour)
 	cp := controlPlane(t, "pki-provider-back")
 	reconcile(t, r, cp)
-	for _, provider := range []lodiav1alpha1.EncryptionProvider{"aescbc", "secretbox"} {
-		setEncryption(t, cp, provider)
-		reconcile(t, r, cp)
-	}
+	editEncryption(t, cp, aescbcKey())
+	reconcile(t, r, cp)
 	keys := encryptionKeys(t, cp)
 	if got := fmt.Sprint(keys); len(keys) != 3 || keys[0].provider != "secretbox" || keys[1].provider != "aescbc" || keys[2].provider != "secretbox" {
-		t.Fatalf("keys %s, want the second secretbox key, the aescbc key, the first secretbox key", got)
+		t.Fatalf("keys %s, want a new secretbox key, the edit's aescbc key, the first secretbox key", got)
 	}
 	names := map[string]bool{}
 	for _, k := range keys {
@@ -117,13 +124,13 @@ func TestAnExistingKeyKeepsItsName(t *testing.T) {
 		t.Fatalf("a pass on the same provider rewrote the configuration:\n%s", got)
 	}
 
-	setEncryption(t, cp, "aescbc")
+	editEncryption(t, cp, aescbcKey())
 	reconcile(t, r, cp)
 	keys := encryptionKeys(t, cp)
-	if len(keys) != 2 || keys[0].provider != "aescbc" || !newKeyName.MatchString(keys[0].name) {
-		t.Fatalf("keys %v, want a new aescbc key named key-<unix nanoseconds> first", keys)
+	if len(keys) != 3 || keys[0].provider != "secretbox" || !newKeyName.MatchString(keys[0].name) || keys[1].provider != "aescbc" {
+		t.Fatalf("keys %v, want a new secretbox key named key-<unix nanoseconds> first, then the edit's aescbc key", keys)
 	}
-	if keys[1] != (encryptionKey{"secretbox", "key1", secret}) {
-		t.Errorf("the existing key became %s, want secretbox/key1 with its secret unchanged", keys[1])
+	if keys[2] != (encryptionKey{"secretbox", "key1", secret}) {
+		t.Errorf("the existing key became %s, want secretbox/key1 with its secret unchanged", keys[2])
 	}
 }

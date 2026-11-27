@@ -481,14 +481,10 @@ func TestARestoreTakesKeysOnlyFromTheBackupItsStatusNames(t *testing.T) {
 				}
 				return
 			}
-			changed := freshControlPlane(t, cp)
-			changed.Spec.APIServer = &lodiav1alpha1.APIServer{Encryption: &lodiav1alpha1.Encryption{Provider: "aescbc"}}
-			if err := k8s.Update(t.Context(), changed); err != nil {
-				t.Fatal(err)
-			}
+			editEncryption(t, cp, aescbcKey())
 			reconcile(t, r, cp)
-			if first := writtenProviders(t, cp)[0]; first.AESCBC == nil {
-				t.Fatalf("the configuration was not written again for the new provider: %+v", first)
+			if first := writtenProviders(t, cp)[0]; first.Secretbox == nil {
+				t.Fatalf("the configuration a hand edit moved was not written again for the spec's provider: %+v", first)
 			}
 			mismatch()
 		})

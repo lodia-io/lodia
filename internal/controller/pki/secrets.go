@@ -965,8 +965,10 @@ func isServiceAccountKey(pem []byte) bool {
 	return err == nil && ok && rsaKey.N.BitLen() >= serviceAccountKeyBits
 }
 
-// encryptionConfig puts a changed provider first with a new key, and keeps
-// the previous providers so that what they encrypted stays readable, their
+// encryptionConfig puts the spec's provider first with a new key when the
+// configuration's first provider is another, which only a hand edit of the
+// Secret gives, since the schema keeps a ControlPlane's provider, and keeps
+// the providers it found so that what they encrypted stays readable, their
 // keys under the names the API server wrote into every value they encrypted
 // (kubernetes@v1.37.0 staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L645-L661,
 // #L695-L711). A configuration it cannot read is never replaced: the data its

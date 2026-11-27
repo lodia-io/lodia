@@ -460,7 +460,9 @@ spec:
                             && b.issuer.discoveryURL == a.issuer.discoveryURL))
                     type: object
                   encryption:
-                    description: encryption configures encryption of Secrets at rest.
+                    description: |-
+                      encryption configures encryption of Secrets at rest; its provider
+                      cannot change, an absent one counting as secretbox.
                     properties:
                       provider:
                         default: secretbox
@@ -1483,6 +1485,14 @@ spec:
                 : has(self.controllerManager) && has(self.controllerManager.extraArgs)
                 && ''node-cidr-mask-size'' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs[''node-cidr-mask-size''])
                 : 64) - cidr(c).prefixLength() <= 16))'
+            - message: 'apiServer.encryption.provider is immutable, an absent one
+                counting as secretbox: with another provider first, an API server
+                that has not reloaded the configuration cannot read what one that
+                has writes'
+              rule: '(has(self.apiServer) && has(self.apiServer.encryption) && has(self.apiServer.encryption.provider)
+                ? self.apiServer.encryption.provider : ''secretbox'') == (has(oldSelf.apiServer)
+                && has(oldSelf.apiServer.encryption) && has(oldSelf.apiServer.encryption.provider)
+                ? oldSelf.apiServer.encryption.provider : ''secretbox'')'
             - message: kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer
               rule: '!has(self.serviceAccount) || !has(self.serviceAccount.issuer)
                 || !has(self.apiServer) || !has(self.apiServer.authentication) ||

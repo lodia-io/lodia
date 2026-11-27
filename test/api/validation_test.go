@@ -784,6 +784,49 @@ func TestExtraArgsRefuseBindAddressInEverySpellingAndMode(t *testing.T) {
 	}
 }
 
+// TestTheEncryptionProviderCannotChange holds the provider an object was created with, an absent one counting as secretbox.
+func TestTheEncryptionProviderCannotChange(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const immutable = "apiServer.encryption.provider is immutable, an absent one counting as secretbox"
+	encryption := func(provider string) map[string]any {
+		if provider == "" {
+			return map[string]any{"encryption": map[string]any{}}
+		}
+		return map[string]any{"encryption": map[string]any{"provider": provider}}
+	}
+	for i, c := range []struct {
+		name     string
+		from, to map[string]any
+		want     string
+	}{
+		{"absent, then secretbox", nil, encryption("secretbox"), ""},
+		{"absent, then an empty encryption", nil, encryption(""), ""},
+		{"absent, then aescbc", nil, encryption("aescbc"), immutable},
+		{"absent, then None", nil, encryption("None"), immutable},
+		{"aescbc, then encryption removed", encryption("aescbc"), map[string]any{}, immutable},
+		{"aescbc, then apiServer removed", encryption("aescbc"), nil, immutable},
+		{"aescbc, then an empty encryption", encryption("aescbc"), encryption(""), immutable},
+		{"aescbc kept beside another change", encryption("aescbc"), map[string]any{"replicas": int64(2), "encryption": map[string]any{"provider": "aescbc"}}, ""},
+		{"secretbox, then encryption removed", encryption("secretbox"), map[string]any{}, ""},
+		{"None, then secretbox", encryption("None"), encryption("secretbox"), immutable},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("encryption-%d", i))
+			if c.from != nil {
+				set(t, obj, c.from, "spec", "apiServer")
+			}
+			update(t, obj, func(t *testing.T, o *unstructured.Unstructured) {
+				if c.to == nil {
+					unstructured.RemoveNestedField(o.Object, "spec", "apiServer")
+					return
+				}
+				set(t, o, c.to, "spec", "apiServer")
+			}, c.want)
+		})
+	}
+}
+
 func TestControlPlaneNames(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
