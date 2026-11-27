@@ -76,6 +76,7 @@ sequenceDiagram
 ```
 
 An etcd that loses quorum turns `DatastoreReady` False with `QuorumLost`; Workloads leaves the Deployments alone and PKI keeps renewing certificates.
+A member that comes back restored from the store's snapshots, or empty, is recorded in `status.memberRestore`, `DatastoreReady` reads True `MemberRestored`, and Workloads rolls the API server, then the controller manager and the scheduler, whose caches hold what etcd lost ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
 
 ## A tenant namespace
 

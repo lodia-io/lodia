@@ -5,7 +5,7 @@ What stays true moves into that decision, `docs/README.md` and `docs/operations.
 Its files are in [`hack/etcd-spike/` at 005734e](https://github.com/lodia-io/lodia/tree/005734e/hack/etcd-spike).
 
 Moved on 2026-10-25, with the Datastore controller: the **DatastoreClass → Etcd** table into [`README.md`](README.md#a-tenant-namespace), where the code is checked against it; what findings 1, 3 and 6 made the controller do into [the decision](decisions/dedicated-etcd-by-default.md) and [`operations.md`](operations.md); installing etcd-druid from its chart at the tag, as **How to run it again** does, into the e2e suite ([`test/e2e`](../test/e2e/README.md)).
-The findings stay as the spike's record; the open questions stay open.
+The findings stay as the spike's record; the open questions stay open, but for how the Datastore controller learns of a restore (finding 5), which [upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md) answers.
 
 ## For the decision
 
@@ -95,7 +95,6 @@ What each field of the `DatastoreClass` becomes in the `Etcd` is the table in [`
 
 ## Open questions
 
-- How the Datastore controller learns that a restore happened, to roll the API server (finding 5): the sidecar logs it; no condition of the `Etcd` said so.
 - In which order the sidecars defragment three members (finding 7 kept them from running here).
 - Restore, scale and snapshot times at gigabytes, and etcd-druid at a few hundred `Etcd` objects — phase 4.
 
