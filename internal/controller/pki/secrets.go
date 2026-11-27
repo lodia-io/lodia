@@ -25,7 +25,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver/validation"
@@ -1068,20 +1071,34 @@ func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	return nil
 }
 
-// readEncryptionConfig accepts what the API server's own validator accepts
-// and PKI writes: one resource entry, for secrets. Reload is on, as the API
-// server Lodia runs reloads the file.
+// encryptionScheme and encryptionCodecs are kube-apiserver's for its
+// encryption configuration (k8s.io/apiserver@v0.37.3
+// pkg/server/options/encryptionconfig/config.go#L141-L145).
+var encryptionScheme, encryptionCodecs = func() (*runtime.Scheme, serializer.CodecFactory) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(apiserver.AddToScheme(scheme))
+	utilruntime.Must(apiserverv1.AddToScheme(scheme))
+	return scheme, serializer.NewCodecFactory(scheme, serializer.EnableStrict)
+}()
+
+// readEncryptionConfig accepts a configuration of PKI's shape, one resource
+// entry, for secrets, that decodes and validates as kube-apiserver loads it,
+// with reload on, as the API server Lodia runs reloads the file
+// (k8s.io/apiserver@v0.37.3
+// pkg/server/options/encryptionconfig/config.go#L519-L535), and that holds no
+// KMS v1 provider, which kube-apiserver refuses unless its KMSv1 gate is on,
+// off by default since 1.29 (config.go#L743-L747,
+// pkg/features/kube_features.go#L404-L408).
 func readEncryptionConfig(content []byte) (*apiserverv1.EncryptionConfiguration, bool) {
+	decoded, err := runtime.Decode(encryptionCodecs.UniversalDecoder(), content)
+	internal, ok := decoded.(*apiserver.EncryptionConfiguration)
+	if err != nil || !ok || len(internal.Resources) != 1 || !slices.Equal(internal.Resources[0].Resources, []string{"secrets"}) ||
+		len(validation.ValidateEncryptionConfiguration(internal, true)) > 0 ||
+		slices.ContainsFunc(internal.Resources[0].Providers, func(p apiserver.ProviderConfiguration) bool { return p.KMS != nil && p.KMS.APIVersion == "v1" }) {
+		return nil, false
+	}
 	cfg := &apiserverv1.EncryptionConfiguration{}
-	if err := yaml.Unmarshal(content, cfg); err != nil || cfg.APIVersion != apiserverv1.SchemeGroupVersion.String() || cfg.Kind != "EncryptionConfiguration" ||
-		len(cfg.Resources) != 1 || !slices.Equal(cfg.Resources[0].Resources, []string{"secrets"}) {
-		return nil, false
-	}
-	internal := &apiserver.EncryptionConfiguration{}
-	if err := apiserverv1.Convert_v1_EncryptionConfiguration_To_apiserver_EncryptionConfiguration(cfg, internal, nil); err != nil {
-		return nil, false
-	}
-	return cfg, len(validation.ValidateEncryptionConfiguration(internal, true)) == 0
+	return cfg, encryptionScheme.Convert(internal, cfg, nil) == nil
 }
 
 func providerOf(p apiserverv1.ProviderConfiguration) lodiav1alpha1.EncryptionProvider {
