@@ -4,7 +4,6 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -79,7 +78,7 @@ type EtcdSettings struct {
 
 	// resources of each member.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // AutoCompaction is etcd's compaction mode and retention.

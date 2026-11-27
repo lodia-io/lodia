@@ -287,7 +287,7 @@ func fullClass(name, credentialsNamespace string) *lodiav1alpha1.DatastoreClass 
 				QuotaBackendBytes: new(resource.MustParse("2Gi")),
 				AutoCompaction:    &lodiav1alpha1.AutoCompaction{Mode: "revision", Retention: "1000"},
 				Defragmentation:   &lodiav1alpha1.Defragmentation{Schedule: "0 3 * * *"},
-				Resources: &corev1.ResourceRequirements{
+				Resources: &lodiav1alpha1.Resources{
 					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m"), corev1.ResourceMemory: resource.MustParse("150M")},
 					Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 				},
@@ -303,8 +303,8 @@ func fullClass(name, credentialsNamespace string) *lodiav1alpha1.DatastoreClass 
 				Retention:            &lodiav1alpha1.BackupRetention{FullSnapshots: 30},
 			},
 			Placement: &lodiav1alpha1.Placement{
-				NodeSelector:      map[string]string{"node-role.example.com/control-planes": "true"},
-				Tolerations:       []corev1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
+				NodeSelector:      map[string]lodiav1alpha1.LabelValue{"node-role.example.com/control-planes": "true"},
+				Tolerations:       []lodiav1alpha1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
 				PriorityClassName: "control-plane",
 			},
 		},

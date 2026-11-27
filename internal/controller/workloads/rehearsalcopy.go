@@ -48,7 +48,7 @@ func copyName(cp string) string { return cp + "-rehearsal" }
 // docs/decisions/rehearse-a-minor-step.md lists, on an etcd of its own that an
 // init container restores from a fresh snapshot of the tenant's, with quota
 // and resources the DatastoreClass's.
-func (r rendering) rehearsalCopy(version string, generation int64, quota resource.Quantity, etcdResources *corev1.ResourceRequirements) *corev1.Pod {
+func (r rendering) rehearsalCopy(version string, generation int64, quota resource.Quantity, etcdResources *lodiav1alpha1.Resources) *corev1.Pod {
 	cp := r.cp
 	pod := r.apiServer().Spec.Template.Spec
 	api := pod.Containers[0]
@@ -165,7 +165,7 @@ func copyRestore() corev1.Container {
 	}
 }
 
-func copyEtcdServer(quota resource.Quantity, resources *corev1.ResourceRequirements) corev1.Container {
+func copyEtcdServer(quota resource.Quantity, resources *lodiav1alpha1.Resources) corev1.Container {
 	health := corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"etcdctl", "--endpoints=" + copyEtcd, "endpoint", "health"}}}
 	c := corev1.Container{
 		Name:          "etcd",
@@ -189,7 +189,7 @@ func copyEtcdServer(quota resource.Quantity, resources *corev1.ResourceRequireme
 		VolumeMounts:             []corev1.VolumeMount{{Name: "rehearsal", MountPath: copyDir}},
 	}
 	if resources != nil {
-		c.Resources = *resources
+		c.Resources = resources.Requirements()
 	}
 	return c
 }

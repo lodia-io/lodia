@@ -369,7 +369,7 @@ type APIServer struct {
 
 	// resources override the operator's defaults.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // Encryption is how Secrets are encrypted in the datastore.
@@ -425,7 +425,7 @@ type Component struct {
 
 	// resources override the operator's defaults.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // Scheduler configures kube-scheduler.
@@ -458,7 +458,7 @@ type Scheduler struct {
 
 	// resources override the operator's defaults.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // Addons are the components Lodia runs inside the tenant cluster.
@@ -561,23 +561,50 @@ type CoreDNS struct {
 	Replicas *int32 `json:"replicas,omitempty"`
 }
 
-// Placement says where a control plane's pods run.
+// Placement says where pods run, as pod validation takes it.
 type Placement struct {
-	// nodeSelector for every control plane pod.
+	// nodeSelector for every pod: label names and values.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=16
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="self.all(k, size(k) <= 317 && k.matches('^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$') && (k.contains('/') ? size(k.split('/')[0]) <= 253 && size(k.split('/')[1]) <= 63 : size(k) <= 63))",message="a key must be a label's name: at most 63 alphanumerics, dashes, underscores and dots that begin and end with an alphanumeric, after a lowercase DNS subdomain of at most 253 characters and a slash"
+	NodeSelector map[string]LabelValue `json:"nodeSelector,omitempty"`
 
-	// tolerations for every control plane pod.
+	// tolerations for every pod.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=16
-	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	Tolerations []Toleration `json:"tolerations,omitempty"`
 
-	// priorityClassName for every control plane pod.
+	// priorityClassName for every pod, a lowercase DNS subdomain.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$')",message="must be a lowercase DNS subdomain"
 	PriorityClassName string `json:"priorityClassName,omitempty"`
+}
+
+// PodNodeSelector is p's node selector as a pod takes it.
+func (p *Placement) PodNodeSelector() map[string]string {
+	if len(p.NodeSelector) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(p.NodeSelector))
+	for k, v := range p.NodeSelector {
+		out[k] = string(v)
+	}
+	return out
+}
+
+// PodTolerations are p's tolerations as a pod takes them.
+func (p *Placement) PodTolerations() []corev1.Toleration {
+	var out []corev1.Toleration
+	for _, t := range p.Tolerations {
+		toleration := corev1.Toleration{Key: t.Key, Operator: t.Operator, Value: string(t.Value), Effect: t.Effect}
+		if t.TolerationSeconds != nil {
+			toleration.TolerationSeconds = new(*t.TolerationSeconds)
+		}
+		out = append(out, toleration)
+	}
+	return out
 }
 
 // Maintenance is when Lodia may roll the changes it initiates.

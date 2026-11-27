@@ -560,7 +560,7 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	pod.AutomountServiceAccountToken = new(false)
 	pod.EnableServiceLinks = new(false)
 	if p := cp.Spec.Placement; p != nil {
-		pod.NodeSelector, pod.Tolerations, pod.PriorityClassName = p.NodeSelector, p.Tolerations, p.PriorityClassName
+		pod.NodeSelector, pod.Tolerations, pod.PriorityClassName = p.PodNodeSelector(), p.PodTolerations(), p.PriorityClassName
 	}
 	if ha := cp.Spec.HighAvailability; ha != nil {
 		pod.TopologySpreadConstraints = spread(ha.FailureTolerance, labels, replicas)
@@ -771,9 +771,9 @@ func httpsProbe(path string, port intstr.IntOrString, initialDelay, timeout, fai
 	}
 }
 
-func resources(override *corev1.ResourceRequirements, cpu, memory string) corev1.ResourceRequirements {
+func resources(override *lodiav1alpha1.Resources, cpu, memory string) corev1.ResourceRequirements {
 	if override != nil {
-		return *override
+		return override.Requirements()
 	}
 	return corev1.ResourceRequirements{Requests: corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse(cpu),

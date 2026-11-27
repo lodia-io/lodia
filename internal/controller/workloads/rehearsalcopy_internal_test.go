@@ -102,8 +102,8 @@ func flagsOf(command []string) map[string]string {
 }
 
 func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
-	resources := &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
-	etcd := &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}}
+	resources := &lodiav1alpha1.Resources{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
+	etcd := &lodiav1alpha1.Resources{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}}
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
@@ -121,8 +121,8 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 				Resources:    resources,
 			},
 			Placement: &lodiav1alpha1.Placement{
-				NodeSelector:      map[string]string{"pool": "control-planes"},
-				Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
+				NodeSelector:      map[string]lodiav1alpha1.LabelValue{"pool": "control-planes"},
+				Tolerations:       []lodiav1alpha1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
 				PriorityClassName: "tenant-control-planes",
 			},
 		},
@@ -145,7 +145,7 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 	if got := flagsOf(api.Command); !maps.Equal(got, want) {
 		t.Errorf("the copy's flags are %v, want %v", got, want)
 	}
-	if api.Image != "registry.k8s.io/kube-apiserver:v1.37.1" || !equality.Semantic.DeepEqual(api.Resources, *resources) {
+	if api.Image != "registry.k8s.io/kube-apiserver:v1.37.1" || !equality.Semantic.DeepEqual(api.Resources, resources.Requirements()) {
 		t.Errorf("the copy's API server runs %s with %+v", api.Image, api.Resources)
 	}
 	if api.LivenessProbe != nil || api.StartupProbe != nil || api.Lifecycle != nil || api.ReadinessProbe.PeriodSeconds != 1 || api.ReadinessProbe.HTTPGet.Path != "/readyz" {
@@ -168,7 +168,7 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 	if !slices.Equal(initContainers, []string{"snapshot", "restore", "etcd", "lodia-signer"}) {
 		t.Errorf("the copy's init containers are %v", initContainers)
 	}
-	if e := pod.Spec.InitContainers[2]; !equality.Semantic.DeepEqual(e.Resources, *etcd) || !slices.Contains(e.Command, "--quota-backend-bytes=8589934592") {
+	if e := pod.Spec.InitContainers[2]; !equality.Semantic.DeepEqual(e.Resources, etcd.Requirements()) || !slices.Contains(e.Command, "--quota-backend-bytes=8589934592") {
 		t.Errorf("the copy's etcd runs %v with %+v", e.Command, e.Resources)
 	}
 	var volumes []string

@@ -304,7 +304,7 @@ func (r *RehearsalReconciler) place(ctx context.Context, cp *lodiav1alpha1.Contr
 
 // class is the quota and the member resources of the DatastoreClass the etcd
 // runs, the default quota while it names none or is gone.
-func (r *RehearsalReconciler) class(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (resource.Quantity, *corev1.ResourceRequirements, error) {
+func (r *RehearsalReconciler) class(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (resource.Quantity, *lodiav1alpha1.Resources, error) {
 	quota := resource.MustParse(lodiav1alpha1.DefaultQuotaBackendBytes)
 	running := cp.Status.Datastore.Class
 	if running == nil {

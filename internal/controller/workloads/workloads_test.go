@@ -469,14 +469,14 @@ func TestTheSpecIsRendered(t *testing.T) {
 		spec.APIServer = &lodiav1alpha1.APIServer{
 			ExtraArgs:    map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700", "enable-admission-plugins": "PodSecurity,NodeRestriction"},
 			FeatureGates: map[string]bool{"B": false, "A": true},
-			Resources:    &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}},
+			Resources:    &lodiav1alpha1.Resources{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}},
 		}
 		spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"terminated-pod-gc-threshold": "100", "controllers": "-ttl-controller"}}
 		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: "https://issuer.example.com"}
 		spec.Addons = &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.37.2"}}
 		spec.Placement = &lodiav1alpha1.Placement{
-			NodeSelector:      map[string]string{"node-role.example.com/control-plane": ""},
-			Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
+			NodeSelector:      map[string]lodiav1alpha1.LabelValue{"node-role.example.com/control-plane": ""},
+			Tolerations:       []lodiav1alpha1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
 			PriorityClassName: "system-cluster-critical",
 		}
 	})

@@ -138,7 +138,9 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	quota, capped := cappedQuota(class, volume, etcd.Name)
 	etcd.Spec.Etcd.Quota = &quota
 	if settings := spec.Etcd; settings != nil {
-		etcd.Spec.Etcd.Resources = settings.Resources
+		if settings.Resources != nil {
+			etcd.Spec.Etcd.Resources = new(settings.Resources.Requirements())
+		}
 		if settings.Defragmentation != nil {
 			etcd.Spec.Etcd.DefragmentationSchedule = new(string(settings.Defragmentation.Schedule))
 		}
@@ -163,12 +165,12 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		}
 	}
 	if placement := spec.Placement; placement != nil {
-		etcd.Spec.SchedulingConstraints.Tolerations = placement.Tolerations
+		etcd.Spec.SchedulingConstraints.Tolerations = placement.PodTolerations()
 		if placement.PriorityClassName != "" {
 			etcd.Spec.PriorityClassName = new(placement.PriorityClassName)
 		}
 		if len(placement.NodeSelector) > 0 {
-			etcd.Spec.SchedulingConstraints.Affinity = nodeAffinity(placement.NodeSelector)
+			etcd.Spec.SchedulingConstraints.Affinity = nodeAffinity(placement.PodNodeSelector())
 		}
 	}
 	return etcd, capped

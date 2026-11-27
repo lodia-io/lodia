@@ -174,7 +174,7 @@ func TestAGrantedClassEditThatEmptiesAnObjectOfTheEtcdRemovesIt(t *testing.T) {
 			func(settings *lodiav1alpha1.EtcdSettings) { settings.AutoCompaction = nil },
 			func(etcd *druidv1alpha1.Etcd) bool { return etcd.Spec.Common == druidv1alpha1.SharedConfig{} }},
 		{"resources emptied", "emptied-resources",
-			func(settings *lodiav1alpha1.EtcdSettings) { settings.Resources = &corev1.ResourceRequirements{} },
+			func(settings *lodiav1alpha1.EtcdSettings) { settings.Resources = &lodiav1alpha1.Resources{} },
 			func(etcd *druidv1alpha1.Etcd) bool { return etcd.Spec.Etcd.Resources == nil }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -182,7 +182,7 @@ func TestAGrantedClassEditThatEmptiesAnObjectOfTheEtcdRemovesIt(t *testing.T) {
 			class := newClass(c.cp, "Retain")
 			class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{
 				AutoCompaction: &lodiav1alpha1.AutoCompaction{Mode: "revision", Retention: "1000"},
-				Resources:      &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m")}},
+				Resources:      &lodiav1alpha1.Resources{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m")}},
 			}
 			createClass(t, class)
 			r := classTenant(t, ns, c.cp, c.cp)
@@ -241,17 +241,17 @@ func TestAnObjectTheClassEmptiesWhileAnotherManagerHoldsItNamesThatManager(t *te
 		{"held-compaction-and-more", "spec.sharedConfig", "kubectl", false, true, compaction, noCompaction},
 		{"held-resources", "spec.etcd.resources", "kubectl", false, false,
 			func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &corev1.ResourceRequirements{Requests: cpu}}
+				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &lodiav1alpha1.Resources{Requests: cpu}}
 			},
-			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.Resources = &corev1.ResourceRequirements{} }},
+			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.Resources = &lodiav1alpha1.Resources{} }},
 		{"held-requests", "spec.etcd.resources.requests", "kubectl", false, false,
 			func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &corev1.ResourceRequirements{Requests: cpu, Limits: cpu}}
+				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &lodiav1alpha1.Resources{Requests: cpu, Limits: cpu}}
 			},
 			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.Resources.Requests = nil }},
 		{"held-placement", "spec.schedulingConstraints", "kubectl", false, false,
 			func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Placement = &lodiav1alpha1.Placement{Tolerations: []corev1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists}}}
+				class.Spec.Placement = &lodiav1alpha1.Placement{Tolerations: []lodiav1alpha1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists}}}
 			},
 			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Placement = nil }},
 	} {

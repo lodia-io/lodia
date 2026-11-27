@@ -622,37 +622,6 @@ spec:
                   resources:
                     description: resources override the operator's defaults.
                     properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This field depends on the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -660,10 +629,15 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: limits are the most the container may use.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                       requests:
                         additionalProperties:
                           anyOf:
@@ -671,13 +645,22 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: requests are what the container is scheduled
+                          by.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                     type: object
+                    x-kubernetes-validations:
+                    - message: a request cannot exceed its limit
+                      rule: '!has(self.requests) || !has(self.limits) || self.requests.all(k,
+                        !(k in self.limits) || quantity(string(self.requests[k])).compareTo(quantity(string(self.limits[k])))
+                        <= 0)'
                 type: object
               controllerManager:
                 description: controllerManager configures kube-controller-manager.
@@ -782,37 +765,6 @@ spec:
                   resources:
                     description: resources override the operator's defaults.
                     properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This field depends on the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -820,10 +772,15 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: limits are the most the container may use.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                       requests:
                         additionalProperties:
                           anyOf:
@@ -831,13 +788,22 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: requests are what the container is scheduled
+                          by.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                     type: object
+                    x-kubernetes-validations:
+                    - message: a request cannot exceed its limit
+                      rule: '!has(self.requests) || !has(self.limits) || self.requests.all(k,
+                        !(k in self.limits) || quantity(string(self.requests[k])).compareTo(quantity(string(self.limits[k])))
+                        <= 0)'
                 type: object
               datastore:
                 description: |-
@@ -1146,53 +1112,101 @@ spec:
                 properties:
                   nodeSelector:
                     additionalProperties:
+                      description: |-
+                        LabelValue is a label's value: empty, or at most 63 alphanumerics, dashes,
+                        underscores and dots that begin and end with an alphanumeric.
+                      maxLength: 63
                       type: string
-                    description: nodeSelector for every control plane pod.
+                      x-kubernetes-validations:
+                      - message: 'must be a label''s value: empty, or alphanumerics,
+                          dashes, underscores and dots that begin and end with an
+                          alphanumeric'
+                        rule: self.matches('^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$')
+                    description: 'nodeSelector for every pod: label names and values.'
                     maxProperties: 16
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'a key must be a label''s name: at most 63 alphanumerics,
+                        dashes, underscores and dots that begin and end with an alphanumeric,
+                        after a lowercase DNS subdomain of at most 253 characters
+                        and a slash'
+                      rule: 'self.all(k, size(k) <= 317 && k.matches(''^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$'')
+                        && (k.contains(''/'') ? size(k.split(''/'')[0]) <= 253 &&
+                        size(k.split(''/'')[1]) <= 63 : size(k) <= 63))'
                   priorityClassName:
-                    description: priorityClassName for every control plane pod.
+                    description: priorityClassName for every pod, a lowercase DNS
+                      subdomain.
                     maxLength: 253
                     type: string
+                    x-kubernetes-validations:
+                    - message: must be a lowercase DNS subdomain
+                      rule: self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$')
                   tolerations:
-                    description: tolerations for every control plane pod.
+                    description: tolerations for every pod.
                     items:
                       description: |-
-                        The pod this Toleration is attached to tolerates any taint that matches
-                        the triple <key,value,effect> using the matching operator <operator>.
+                        Toleration is a pod's toleration as pod validation takes it, without the
+                        operators Lt and Gt.
                       properties:
                         effect:
                           description: |-
-                            Effect indicates the taint effect to match. Empty means match all taint effects.
-                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                            effect is the taint's effect, NoSchedule, PreferNoSchedule or NoExecute;
+                            without it the toleration matches every effect.
+                          enum:
+                          - NoSchedule
+                          - PreferNoSchedule
+                          - NoExecute
                           type: string
                         key:
                           description: |-
-                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
-                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                            key is the taint's key, a label's name; without it, and with operator
+                            Exists, the toleration matches every taint.
+                          maxLength: 317
                           type: string
+                          x-kubernetes-validations:
+                          - message: 'must be a label''s name: at most 63 alphanumerics,
+                              dashes, underscores and dots that begin and end with
+                              an alphanumeric, after a lowercase DNS subdomain of
+                              at most 253 characters and a slash'
+                            rule: 'size(self) == 0 || self.matches(''^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$'')
+                              && (self.contains(''/'') ? size(self.split(''/'')[0])
+                              <= 253 && size(self.split(''/'')[1]) <= 63 : size(self)
+                              <= 63)'
                         operator:
                           description: |-
-                            Operator represents a key's relationship to the value.
-                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
-                            Exists is equivalent to wildcard for value, so that a pod can
-                            tolerate all taints of a particular category.
-                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                            operator is Equal, the taint's value equal to value, or Exists, any
+                            value; Equal by default.
+                          enum:
+                          - Equal
+                          - Exists
                           type: string
                         tolerationSeconds:
                           description: |-
-                            TolerationSeconds represents the period of time the toleration (which must be
-                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
-                            it is not set, which means tolerate the taint forever (do not evict). Zero and
-                            negative values will be treated as 0 (evict immediately) by the system.
+                            tolerationSeconds is how long a pod stays on a node tainted NoExecute;
+                            without it, for as long as the taint.
                           format: int64
                           type: integer
                         value:
-                          description: |-
-                            Value is the taint value the toleration matches to.
-                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          description: value is the taint's value that operator Equal
+                            matches.
+                          maxLength: 63
                           type: string
+                          x-kubernetes-validations:
+                          - message: 'must be a label''s value: empty, or alphanumerics,
+                              dashes, underscores and dots that begin and end with
+                              an alphanumeric'
+                            rule: self.matches('^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$')
                       type: object
+                      x-kubernetes-validations:
+                      - message: a toleration without a key has operator Exists
+                        rule: has(self.key) && size(self.key) > 0 || has(self.operator)
+                          && self.operator == 'Exists'
+                      - message: tolerationSeconds is set only with effect NoExecute
+                        rule: '!has(self.tolerationSeconds) || has(self.effect) &&
+                          self.effect == ''NoExecute'''
+                      - message: a toleration with operator Exists has no value
+                        rule: '!has(self.operator) || self.operator != ''Exists''
+                          || !has(self.value) || size(self.value) == 0'
                     maxItems: 16
                     type: array
                     x-kubernetes-list-type: atomic
@@ -1299,37 +1313,6 @@ spec:
                   resources:
                     description: resources override the operator's defaults.
                     properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This field depends on the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -1337,10 +1320,15 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: limits are the most the container may use.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                       requests:
                         additionalProperties:
                           anyOf:
@@ -1348,13 +1336,22 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: requests are what the container is scheduled
+                          by.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                     type: object
+                    x-kubernetes-validations:
+                    - message: a request cannot exceed its limit
+                      rule: '!has(self.requests) || !has(self.limits) || self.requests.all(k,
+                        !(k in self.limits) || quantity(string(self.requests[k])).compareTo(quantity(string(self.limits[k])))
+                        <= 0)'
                 type: object
               serviceAccount:
                 description: serviceAccount configures the tokens the API server issues.
