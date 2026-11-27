@@ -136,11 +136,12 @@ func TestAddonsTakesTheAPIServersStatus(t *testing.T) {
 	reader, server := held(t)
 	cp := cachedAs(server.UID)
 	cp.Status.Addons = &lodiav1alpha1.Rendered{Version: "v1.36.9"}
+	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: "v1.36.9"}}}
 	if err := live.Addons(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		t.Fatal(err)
 	}
-	if !equality.Semantic.DeepEqual(cp.Status.Addons, server.Status.Addons) {
-		t.Errorf("status.addons %+v, want the API server's %+v", cp.Status.Addons, server.Status.Addons)
+	if !equality.Semantic.DeepEqual(cp.Status.Addons, server.Status.Addons) || !equality.Semantic.DeepEqual(cp.Status.Components, server.Status.Components) {
+		t.Errorf("status.addons %+v and status.components %+v, want the API server's %+v and %+v", cp.Status.Addons, cp.Status.Components, server.Status.Addons, server.Status.Components)
 	}
 	for _, c := range []struct {
 		conditionType string
@@ -151,8 +152,8 @@ func TestAddonsTakesTheAPIServersStatus(t *testing.T) {
 			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
 		}
 	}
-	if cp.Status.Components != nil || cp.Status.Endpoint != nil {
-		t.Errorf("status.components %+v and status.endpoint %+v, want the cache's, none", cp.Status.Components, cp.Status.Endpoint)
+	if cp.Status.Endpoint != nil {
+		t.Errorf("status.endpoint %+v, want the cache's, none", cp.Status.Endpoint)
 	}
 }
 

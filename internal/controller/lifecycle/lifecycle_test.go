@@ -129,17 +129,17 @@ func TestReadyFollowsTheReadinessConditions(t *testing.T) {
 
 	setCondition(t, cp, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready")
 	testenv.Eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "APIServerReady: kube-apiserver has 0 of 1 replicas ready", 1, 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "APIServerReady: kube-apiserver has 0 of 1 replicas ready; also ControllersLeading (SchedulerNotLeading)", 1, 1)
 	})
 
 	setCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "dev-ca-bundle is not written yet")
 	testenv.Eventually(t, func() error {
-		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1, 1)
+		return expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet; also APIServerReady (Unavailable), ControllersLeading (SchedulerNotLeading)", 1, 1)
 	})
 
 	setVersion(t, cp, "v1.37.2")
 	testenv.Eventually(t, func() error {
-		if err := expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet", 1, 1); err != nil {
+		if err := expectReady(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonIssuing, "CertificatesReady: dev-ca-bundle is not written yet; also APIServerReady (Unavailable), ControllersLeading (SchedulerNotLeading)", 1, 1); err != nil {
 			return err
 		}
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonLatestGenerationNotObserved,
@@ -475,7 +475,7 @@ func TestReadyInGatewayModeTakesRoutesReadyFirst(t *testing.T) {
 	} {
 		setCondition(t, cp, lodiav1alpha1.ConditionRoutesReady, metav1.ConditionFalse, reason, "routes of dev: "+reason)
 		testenv.Eventually(t, func() error {
-			return expectReady(t, cp, metav1.ConditionFalse, reason, "RoutesReady: routes of dev: "+reason, 1, 1)
+			return expectReady(t, cp, metav1.ConditionFalse, reason, "RoutesReady: routes of dev: "+reason+"; also CertificatesReady (WaitingForEndpoint)", 1, 1)
 		})
 	}
 
@@ -576,7 +576,7 @@ func TestReadyWithoutAHostTakesLoadBalancerReadyFirst(t *testing.T) {
 	} {
 		setCondition(t, cp, lodiav1alpha1.ConditionLoadBalancerReady, metav1.ConditionFalse, reason, "the load balancer of dev: "+reason)
 		testenv.Eventually(t, func() error {
-			return expectReady(t, cp, metav1.ConditionFalse, reason, "LoadBalancerReady: the load balancer of dev: "+reason, 1, 1)
+			return expectReady(t, cp, metav1.ConditionFalse, reason, "LoadBalancerReady: the load balancer of dev: "+reason+"; also CertificatesReady (WaitingForEndpoint)", 1, 1)
 		})
 	}
 
@@ -603,7 +603,7 @@ func TestReadyWithAHostTakesLoadBalancerReadyJustBeforeReachable(t *testing.T) {
 			for _, reason := range []string{lodiav1alpha1.ReasonWaitingForLoadBalancer, lodiav1alpha1.ReasonAddressMismatch} {
 				setCondition(t, cp, lodiav1alpha1.ConditionLoadBalancerReady, metav1.ConditionFalse, reason, "the load balancer of dev: "+reason)
 				testenv.Eventually(t, func() error {
-					return expectReady(t, cp, metav1.ConditionFalse, reason, "LoadBalancerReady: the load balancer of dev: "+reason, 1, 1)
+					return expectReady(t, cp, metav1.ConditionFalse, reason, "LoadBalancerReady: the load balancer of dev: "+reason+"; also Reachable (ExternalProbeFailed)", 1, 1)
 				})
 			}
 
@@ -614,7 +614,7 @@ func TestReadyWithAHostTakesLoadBalancerReadyJustBeforeReachable(t *testing.T) {
 			} {
 				setCondition(t, cp, refused.conditionType, metav1.ConditionFalse, refused.reason, "refused")
 				testenv.Eventually(t, func() error {
-					return expectReady(t, cp, metav1.ConditionFalse, refused.reason, refused.conditionType+": refused", 1, 1)
+					return expectReady(t, cp, metav1.ConditionFalse, refused.reason, refused.conditionType+": refused; also LoadBalancerReady (AddressMismatch), Reachable (ExternalProbeFailed)", 1, 1)
 				})
 				setCondition(t, cp, refused.conditionType, metav1.ConditionTrue, "Fine", "")
 			}

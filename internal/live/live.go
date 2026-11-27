@@ -5,7 +5,8 @@
 // status.restore and status.memberRestore with status.components, which it
 // ends MemberRestored on, Workloads' status.components and status.endpoint
 // with status.memberRestore, which it renders from, the
-// rehearsal's status.rehearsal, Tenant's status.addons, PKI's
+// rehearsal's status.rehearsal, Tenant's status.addons with status.components,
+// which it renders from, PKI's
 // status.credentials and Health's status.nodes and status.health,
 // and for Lifecycle's decisions the whole object, as the API server holds
 // them, for the waits and keeps docs/decisions/independent-controllers.md
@@ -76,14 +77,15 @@ func Rehearsal(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.Cont
 	return nil
 }
 
-// Addons replaces cp's status.addons and its conditions of the given types
-// with the API server's, read through reader, which must not be a cache.
+// Addons replaces cp's status.addons, status.components and its conditions of
+// the given types with the API server's, read through reader, which must not
+// be a cache.
 func Addons(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane, conditionTypes ...string) error {
 	current, err := conditions(ctx, reader, cp, conditionTypes)
 	if err != nil {
 		return err
 	}
-	cp.Status.Addons = current.Status.Addons
+	cp.Status.Addons, cp.Status.Components = current.Status.Addons, current.Status.Components
 	return nil
 }
 

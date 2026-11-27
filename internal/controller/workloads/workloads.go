@@ -1294,7 +1294,10 @@ func (r *Reconciler) controlled(ctx context.Context, cp *lodiav1alpha1.ControlPl
 // and reports the version each runs, and the memberRestore.detectedAt each
 // rolled for. A component starts from its previous report, which cp holds as
 // the API server does, and a Deployment that is gone keeps it: an apply that
-// leaves a field out removes it.
+// leaves a field out removes it. A report that would move its version or
+// revision comes from the Deployment the API server holds: a new leader's
+// cache can lag the last roll, and a report moved back renders the controller
+// manager, the scheduler and the addons back.
 func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
 	controlled, err := r.controlled(ctx, cp)
 	if err != nil {
@@ -1306,12 +1309,36 @@ func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPl
 	}
 	out := &lodiav1alpha1.ComponentsStatus{}
 	for _, component := range components {
-		*slot(out, component) = rolledOut(controlled[component], component, *slot(&previous, component), rollsFor(cp, component))
+		before := *slot(&previous, component)
+		report := rolledOut(controlled[component], component, before, rollsFor(cp, component))
+		if before != nil && report != nil && report.Rendered != before.Rendered {
+			d, err := r.confirmed(ctx, cp, component)
+			if err != nil {
+				return nil, err
+			}
+			report = rolledOut(d, component, before, rollsFor(cp, component))
+		}
+		*slot(out, component) = report
 	}
 	if *out == (lodiav1alpha1.ComponentsStatus{}) {
 		return nil, nil
 	}
 	return out, nil
+}
+
+// confirmed is the component's Deployment as the API server holds it, nil
+// while this ControlPlane controls none.
+func (r *Reconciler) confirmed(ctx context.Context, cp *lodiav1alpha1.ControlPlane, component string) (*appsv1.Deployment, error) {
+	d := &appsv1.Deployment{}
+	switch err := r.Reader.Get(ctx, client.ObjectKey{Namespace: cp.Namespace, Name: deploymentName(cp.Name, component)}, d); {
+	case apierrors.IsNotFound(err):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case !metav1.IsControlledBy(d, cp):
+		return nil, nil
+	}
+	return d, nil
 }
 
 func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.ComponentStatus {

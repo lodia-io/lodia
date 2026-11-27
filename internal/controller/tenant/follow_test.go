@@ -13,10 +13,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/clock"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/controller/pki"
+	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/testenv"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -189,4 +192,25 @@ func TestARestoredControlPlaneWithItsControllerManagerAtZeroStillGetsItsAddons(t
 
 	setComponents(t, cp, running("v1.35.9"), nil, running("v1.35.9"))
 	eventuallyAddonsAt(t, cp, admin, "v1.35.9", "v1.13.1")
+}
+
+// A pass whose cached ControlPlane lags the components' last report renders the addons at the version the API server holds.
+func TestAPassOnACacheBehindTheComponentsRendersAtTheirLastReport(t *testing.T) {
+	cp, admin := servedTenant(t, "tenant-lagging-components")
+	setTargetVersion(t, cp, "v1.36.2")
+	setComponents(t, cp, running("v1.35.8"), running("v1.35.8"), running("v1.35.8"))
+	eventuallyAddonsAt(t, cp, admin, "v1.35.8", "v1.13.1")
+	pause(t, cp)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	refresh(t, cp)
+	stale := cp.DeepCopy()
+	setComponents(t, cp, running("v1.36.2"), running("v1.36.2"), running("v1.36.2"))
+
+	r := &tenant.Reconciler{Client: snapshot{Client: k8s, cp: stale}, Reader: k8s, Secrets: k8s, Revision: revision, ApplyPeriod: time.Hour, Dial: *dial.Load()}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := addonsAt(t, cp, admin, "v1.36.2", "v1.14.2"); err != nil {
+		t.Error(err)
+	}
 }

@@ -1052,7 +1052,10 @@ func TestAStampThatDoesNotFitTheFieldIsNotReported(t *testing.T) {
 				return nil
 			},
 		})
-		reconcileThrough(t, cp, edited)
+		reconciler := &workloads.Reconciler{Client: edited, Reader: edited, SignerImage: signerImage, TunnelImage: tunnelImage, GatewayAPI: true, Revision: revision}
+		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+			t.Fatal(err)
+		}
 		expectRevisions(t, cp, row.want, revision, revision)
 	}
 }
