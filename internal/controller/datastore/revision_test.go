@@ -315,7 +315,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
-	const cp = "held-store"
+	const cp = "held-credentials"
 	create(t, credentials(credentialsNamespace))
 	createClass(t, fullClass(cp, credentialsNamespace))
 	heldTenant(t, ns, cp, cp, nil)
