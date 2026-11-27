@@ -389,6 +389,8 @@ func TestFailedAndItsClearing(t *testing.T) {
 	}{
 		{"Refused", metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3, Message: "the tenant refuses"}},
 		{"ObjectsControlledElsewhere", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, ObservedGeneration: 3, Message: "held elsewhere"}},
+		{"AuthenticationInvalid", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonAuthenticationInvalid, ObservedGeneration: 2, Message: "every replica is ready; the authentication configuration is not written"}},
+		{"Refused while the tenant serves", metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 2, Message: "the tenant refuses"}},
 		{"ProgressDeadlineExceeded available", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, ObservedGeneration: 3, Message: "past the deadline"}},
 		{"ProgressDeadlineExceeded unavailable", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonProgressDeadlineExceeded, ObservedGeneration: 3, Message: "past the deadline"}},
 	} {
@@ -408,14 +410,18 @@ func TestFailedAndItsClearing(t *testing.T) {
 			check(t, failed.facts(), want{target: "v1.36.6", reason: lodiav1alpha1.ReasonUpgrading, step: lodiav1alpha1.UpgradeStepBackup, since: &started, backup: name137, version: "v1.36.6"})
 		})
 	}
-	t.Run("a standing Refused on an idle tenant is not Failed", func(t *testing.T) {
-		w := world{spec: version, target: version, reports: at(version), cond: &metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3, Message: "the tenant refuses"}}
-		check(t, w.facts(), want{target: version, reason: lodiav1alpha1.ReasonIdle, noUpgrade: true, version: version})
-	})
-	t.Run("the same Refused on a rollout that is no upgrade is not Failed", func(t *testing.T) {
-		w := world{spec: version, target: version, reports: at(version), rolling: true, cond: &metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3}}
-		check(t, w.facts(), want{target: version, reason: lodiav1alpha1.ReasonRollingOut, noUpgrade: true, version: version})
-	})
+	for _, status := range []metav1.ConditionStatus{metav1.ConditionTrue, metav1.ConditionFalse} {
+		t.Run("a standing refusal on an idle tenant is Failed, "+string(status), func(t *testing.T) {
+			w := world{spec: version, target: version, reports: at(version), cond: &metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: status, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3, Message: "the tenant refuses"}}
+			check(t, w.facts(), want{target: version, reason: lodiav1alpha1.ReasonFailed, noUpgrade: true, message: "AddonsApplied: Refused: the tenant refuses", version: version})
+			w.cond = nil
+			check(t, w.facts(), want{target: version, reason: lodiav1alpha1.ReasonIdle, noUpgrade: true, version: version})
+		})
+		t.Run("the same refusal on a rollout that is no upgrade is Failed, "+string(status), func(t *testing.T) {
+			w := world{spec: version, target: version, reports: at(version), rolling: true, cond: &metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: status, Reason: lodiav1alpha1.ReasonRefused, ObservedGeneration: 3}}
+			check(t, w.facts(), want{target: version, reason: lodiav1alpha1.ReasonFailed, noUpgrade: true, version: version})
+		})
+	}
 }
 
 func TestProgressingOrder(t *testing.T) {

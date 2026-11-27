@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -237,6 +238,9 @@ func TestTheBindThroughTheBootstrapEndsWithinTwentySeconds(t *testing.T) {
 	}
 	if elapsed < 19*time.Second || elapsed > 22*time.Second {
 		t.Errorf("the bind took %s, want the 9 s of lodia:operator's answer and the bindTimeout of 10 s of the bootstrap's", elapsed)
+	}
+	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonRefused || !strings.HasPrefix(c.Message, "ClusterRoleBinding lodia:operator is refused by the tenant's API server") {
+		t.Errorf("AccessReady is %+v, want False Refused naming lodia:operator's refusal", c)
 	}
 }
 

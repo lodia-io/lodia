@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -457,8 +459,8 @@ func TestAHeldPassOutsideTheRunningTableReportsWhatRuns(t *testing.T) {
 	}
 }
 
-func waitingForTheGrant(running, granted string) string {
-	return fmt.Sprintf("waiting for Lifecycle to grant the running operator revision %s; status.target.operatorRevision is %s", running, granted)
+func waitingForTheGrant(granted string) string {
+	return fmt.Sprintf("waiting for Lifecycle to grant the running operator revision %s; status.target.operatorRevision is %s", next, granted)
 }
 
 func TestAHeldPassOverAConditionThatReportsNoAvailabilityWaitsForTheGrant(t *testing.T) {
@@ -473,28 +475,311 @@ func TestAHeldPassOverAConditionThatReportsNoAvailabilityWaitsForTheGrant(t *tes
 		markAvailable(t, deployment(t, cp, component))
 	}
 	passOf(t, held, cp)
-	if err := expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, waitingForTheGrant(next, previous)); err != nil {
+	if err := expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, waitingForTheGrant(previous)); err != nil {
 		t.Error(err)
 	}
 }
 
-func TestAHeldPassWithATargetOutsideTheTableOverARefusalWaitsForTheGrant(t *testing.T) {
+// A held pass with a target outside the table counts the Deployments under a refusal over a tenant that serves, at the generation the refusal kept.
+func TestAHeldPassWithATargetOutsideTheTableCountsUnderARefusal(t *testing.T) {
 	cp := running(t)
+	taken := get(t, cp).Generation
 	pause(t, cp)
 	refuseScheduler(t, cp.Namespace)
 	unheld := operatorAt(unpaused(), revision)
 	if _, err := unheld.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
 		t.Fatalf("a pass whose Deployment is refused returned %v", err)
 	}
-	generation := get(t, cp).Generation
-	if err := expectAt(cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"); err != nil {
+	const refused = allReady + "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refused); err != nil {
 		t.Fatal(err)
 	}
 
 	setTargetAt(t, cp, "v1.34.1", previous)
 	passOf(t, operatorAt(unpaused(), next), cp)
-	if err := expectAt(cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, waitingForTheGrant(next, previous)); err != nil {
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refused); err != nil {
 		t.Error(err)
+	}
+}
+
+const triedScheduler = "the grant's write of Deployment dev-kube-scheduler would be refused: the API server refuses the dry run; the reason is in Lodia's log"
+
+// A held pass over a refusal at the running revision tries the grant's writes by dry run on every pass and reports the refusal, which keeps Lifecycle from the grant, writing nothing; once the cause is gone the next held pass reports what serves and Lifecycle grants the revision.
+func TestAHeldPassTriesTheGrantUntilTheRefusalsCauseIsGone(t *testing.T) {
+	for _, gone := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cause gone %t", gone), func(t *testing.T) {
+			cp := running(t)
+			taken := get(t, cp).Generation
+			pause(t, cp)
+			binding := refuseScheduler(t, cp.Namespace)
+			if err := heldPass(t, operatorAt(unpaused(), revision), cp); !apistatus.Refused(err) {
+				t.Fatalf("a pass whose Deployment is refused returned %v", err)
+			}
+			held := operatorAt(unpaused(), next)
+			before := objectsOf(t, cp)
+			for range 2 {
+				if err := heldPass(t, held, cp); !apistatus.Refused(err) {
+					t.Fatalf("a held pass whose dry run is refused returned %v", err)
+				}
+				if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, allReady+triedScheduler); err != nil {
+					t.Fatalf("a held pass: %v", err)
+				}
+			}
+			expectNoWrites(t, cp, before, "a held pass that tries the grant")
+			if !gone {
+				if got := lifecyclePassThrough(t, unpaused(), cp, next).Status.Target.OperatorRevision; got != revision {
+					t.Errorf("Lifecycle granted %s over the refusal", got)
+				}
+				return
+			}
+			if err := k8s.Delete(t.Context(), binding); err != nil {
+				t.Fatal(err)
+			}
+			testenv.Eventually(t, func() error {
+				if err := heldPass(t, held, cp); err != nil {
+					return err
+				}
+				return expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, strings.TrimSuffix(allReady, "; "))
+			})
+			if got := lifecyclePassThrough(t, unpaused(), cp, next).Status.Target.OperatorRevision; got != next {
+				t.Errorf("Lifecycle left status.target.operatorRevision at %s once the held pass found no refusal, want %s", got, next)
+			}
+		})
+	}
+}
+
+func refusePolicyCreates(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	t.Helper()
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "refuse-policies-in-" + ns},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			FailurePolicy: new(admissionregistrationv1.Fail),
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{networkingv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"networkpolicies"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != '" + ns + "'", Message: "no policy in " + ns}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec:       admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		if err := k8s.Create(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = client.IgnoreNotFound(k8s.Delete(context.Background(), obj)) })
+	}
+	testenv.Eventually(t, func() error {
+		probe := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+		if err := k8s.Create(t.Context(), probe, client.DryRunAll); err == nil {
+			return errors.New("the policy does not refuse yet")
+		}
+		return nil
+	})
+	return binding
+}
+
+func admitted(t *testing.T, binding *admissionregistrationv1.ValidatingAdmissionPolicyBinding, ns string) {
+	t.Helper()
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		return k8s.Create(t.Context(), &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}, client.DryRunAll)
+	})
+}
+
+func heldPass(t *testing.T, r *workloads.Reconciler, cp *lodiav1alpha1.ControlPlane) error {
+	t.Helper()
+	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+	return err
+}
+
+// A held pass meets its refused creation beside the refusal its dry run of the grant finds and names both, and once the creation succeeds only the dry run's refusal stays.
+func TestAHeldPassMeetsItsRefusedCreationBesideTheRefusalItsDryRunFinds(t *testing.T) {
+	const met = "the API server refuses NetworkPolicy dev-kube-controller-manager; the reason is in Lodia's log"
+	cp := running(t)
+	taken := get(t, cp).Generation
+	pause(t, cp)
+	refuseScheduler(t, cp.Namespace)
+	if err := heldPass(t, operatorAt(unpaused(), revision), cp); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose Deployment is refused returned %v", err)
+	}
+	held := operatorAt(unpaused(), next)
+	if err := heldPass(t, held, cp); !apistatus.Refused(err) {
+		t.Fatalf("a held pass whose dry run is refused returned %v", err)
+	}
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, allReady+triedScheduler); err != nil {
+		t.Fatal(err)
+	}
+
+	creates := refusePolicyCreates(t, cp.Namespace)
+	if err := k8s.Delete(t.Context(), &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "dev-kube-controller-manager"}}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := heldPass(t, held, cp); !apistatus.Refused(err) {
+			t.Fatalf("a held pass whose creation is refused returned %v", err)
+		}
+		if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, allReady+met+"; "+triedScheduler); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	admitted(t, creates, cp.Namespace)
+	if err := heldPass(t, held, cp); !apistatus.Refused(err) {
+		t.Fatalf("a held pass whose dry run is refused returned %v", err)
+	}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: "dev-kube-controller-manager"}, &networkingv1.NetworkPolicy{}); err != nil {
+		t.Fatalf("the held pass did not create the NetworkPolicy: %v", err)
+	}
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, allReady+triedScheduler); err != nil {
+		t.Error(err)
+	}
+}
+
+// A held pass meets a refused creation that the pass before the hold met, as its own, and ends it once the creation succeeds: the NetworkPolicy created, APIServerReady says what serves.
+func TestAHeldCreateThatSucceedsEndsItsRefusal(t *testing.T) {
+	const met = "the API server refuses NetworkPolicy dev-kube-scheduler; the reason is in Lodia's log"
+	cp := running(t)
+	taken := get(t, cp).Generation
+	pause(t, cp)
+	creates := refusePolicyCreates(t, cp.Namespace)
+	if err := k8s.Delete(t.Context(), &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "dev-kube-scheduler"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := heldPass(t, operatorAt(unpaused(), revision), cp); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose creation is refused returned %v", err)
+	}
+	held := operatorAt(unpaused(), next)
+	if err := heldPass(t, held, cp); !apistatus.Refused(err) {
+		t.Fatalf("a held pass whose creation is refused returned %v", err)
+	}
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, allReady+met); err != nil {
+		t.Fatal(err)
+	}
+	admitted(t, creates, cp.Namespace)
+	for range 2 {
+		passOf(t, held, cp)
+	}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: "dev-kube-scheduler"}, &networkingv1.NetworkPolicy{}); err != nil {
+		t.Fatalf("the held pass did not create the NetworkPolicy: %v", err)
+	}
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, strings.TrimSuffix(allReady, "; ")); err != nil {
+		t.Error(err)
+	}
+}
+
+// A held pass whose refused creation of a missing Deployment now succeeds leaves the refusal for WaitingForTarget at the generation, which Lifecycle grants at once.
+func TestAHeldCreateOfAMissingDeploymentWaitsOnceItSucceeds(t *testing.T) {
+	cp := running(t)
+	pause(t, cp)
+	binding := refuseScheduler(t, cp.Namespace)
+	if err := k8s.Delete(t.Context(), &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "dev-kube-scheduler"}}); err != nil {
+		t.Fatal(err)
+	}
+	held := operatorAt(unpaused(), next)
+	if err := heldPass(t, held, cp); !apistatus.Refused(err) {
+		t.Fatalf("a held pass whose create is refused returned %v", err)
+	}
+	generation := get(t, cp).Generation
+	if err := expectAt(cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error { return heldPass(t, held, cp) })
+	if err := expectAt(cp, generation, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, waitingForTheGrant(revision)); err != nil {
+		t.Error(err)
+	}
+}
+
+// A pass applies past a ConfigMap the API server refuses every object that does not depend on it: a NetworkPolicy deleted behind it is created again within the pass, and the API server's Deployment, which mounts it, is not sent.
+func TestAPassAppliesPastARefusalWhatDoesNotDependOnIt(t *testing.T) {
+	cp := running(t)
+	taken := get(t, cp).Generation
+	pause(t, cp)
+	if err := k8s.Delete(t.Context(), &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: cp.Namespace, Name: "dev-kube-scheduler"}}); err != nil {
+		t.Fatal(err)
+	}
+	var sent []string
+	refusing := interceptor.NewClient(unpaused(), interceptor.Funcs{Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+		key := kindOf(t, obj) + " " + keyOf(t, obj).Name
+		sent = append(sent, key)
+		if key == "ConfigMap dev-egress-selector" {
+			return apierrors.NewForbidden(corev1.Resource("configmaps"), "dev-egress-selector", errors.New("denied by a policy"))
+		}
+		return c.Apply(ctx, obj, opts...)
+	}})
+	if err := heldPass(t, operatorAt(refusing, revision), cp); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose ConfigMap is refused returned %v", err)
+	}
+	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: "dev-kube-scheduler"}, &networkingv1.NetworkPolicy{}); err != nil {
+		t.Errorf("the pass did not create the NetworkPolicy again: %v", err)
+	}
+	for _, want := range []string{"ConfigMap dev-authentication-config", "NetworkPolicy dev-kube-scheduler", "Deployment dev-kube-controller-manager", "Deployment dev-kube-scheduler"} {
+		if !slices.Contains(sent, want) {
+			t.Errorf("the pass sent %v, not %s", sent, want)
+		}
+	}
+	if slices.Contains(sent, "Deployment dev-kube-apiserver") {
+		t.Errorf("the pass sent the API server's Deployment, which mounts the refused ConfigMap: %v", sent)
+	}
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, allReady+"the API server refuses ConfigMap dev-egress-selector; the reason is in Lodia's log"); err != nil {
+		t.Error(err)
+	}
+}
+
+// A held pass over a refused update of a route that exists tries the route by dry run on every pass and reports its refusal at the generation it described, the granted revision's pass meets it again, and a held pass ends it once the cause is gone.
+func TestAHeldPassTriesARefusedRouteUpdate(t *testing.T) {
+	cp := gatewayRunning(t)
+	taken := routesReady(t, cp).ObservedGeneration
+	pause(t, cp)
+	refusing := func() client.WithWatch {
+		return interceptor.NewClient(unpaused(func(_ client.ObjectKey, obj client.Object) {
+			if route, ok := obj.(*gatewayv1.TLSRoute); ok && route.Name == "dev-tunnel" {
+				delete(route.Labels, lodiav1alpha1.ControlPlaneLabel)
+			}
+		}), interceptor.Funcs{Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			if kindOf(t, obj) == "TLSRoute" {
+				return apierrors.NewForbidden(gatewayv1.Resource("tlsroutes"), "dev-tunnel", errors.New("denied by a policy"))
+			}
+			return c.Apply(ctx, obj, opts...)
+		}})
+	}
+	if err := heldPass(t, operatorAt(refusing(), revision), cp); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose route is refused returned %v", err)
+	}
+	gw := cp.Spec.Endpoint.Gateway.ParentRef
+	accepted := fmt.Sprintf("every route is Accepted by Gateway %s/%s; ", gw.Namespace, gw.Name)
+	const refused = "the API server refuses TLSRoute dev-tunnel; the reason is in Lodia's log"
+	expect := func(reason, message string) {
+		t.Helper()
+		if c := routesReady(t, cp); c.Status != metav1.ConditionTrue || c.Reason != reason || c.Message != message || c.ObservedGeneration != taken {
+			t.Fatalf("RoutesReady is %+v, want True %s %q at generation %d", c, reason, message, taken)
+		}
+	}
+	expect(lodiav1alpha1.ReasonRefused, accepted+refused)
+	for range 2 {
+		if err := heldPass(t, operatorAt(refusing(), next), cp); !apistatus.Refused(err) {
+			t.Fatalf("a held pass whose dry run is refused returned %v", err)
+		}
+		expect(lodiav1alpha1.ReasonRefused, accepted+"the grant's write of TLSRoute dev-tunnel would be refused: the API server refuses the dry run; the reason is in Lodia's log")
+	}
+	if err := heldPass(t, operatorAt(refusing(), revision), cp); !apistatus.Refused(err) {
+		t.Fatalf("the granted revision's pass returned %v, want the refusal again", err)
+	}
+	expect(lodiav1alpha1.ReasonRefused, accepted+refused)
+	if err := heldPass(t, operatorAt(unpaused(), next), cp); err != nil {
+		t.Fatal(err)
+	}
+	if c := routesReady(t, cp); c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonAccepted {
+		t.Errorf("RoutesReady is %+v over a route as the render has it, want True Accepted", c)
 	}
 }
 

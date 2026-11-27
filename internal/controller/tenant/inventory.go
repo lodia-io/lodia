@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -220,18 +221,21 @@ func prune(ctx context.Context, a tenantAPI, e entry) error {
 }
 
 // applyInventory applies the objects but another owner's, which it returns,
-// then prunes what the previous inventory lists and they do not. The
-// inventory names an object before Lodia first writes it, so a pass that
-// stops anywhere leaves nothing a later pass cannot prune.
-func applyInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]foreignObject, error) {
+// past each one the tenant refuses, and only once it refused none prunes what
+// the previous inventory lists and they do not and writes the inventory of
+// what it applied. The inventory names an object before Lodia first writes it,
+// so a pass that stops anywhere leaves nothing a later pass cannot prune. It
+// returns the refusals it went past, and the failure it stopped at: before
+// the first apply any failure, and after it one that is no answer.
+func applyInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]foreignObject, []*failure, error) {
 	previous, err := readInventory(ctx, a)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	previous = union(previous)
 	others, err := foreign(ctx, a, objects, previous)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var desired []entry
 	var writes []*unstructured.Unstructured
@@ -244,24 +248,35 @@ func applyInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Un
 	stored := previous
 	if both := union(desired, previous); !slices.Equal(both, previous) {
 		if err := writeInventory(ctx, a, both); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		stored = both
 	}
-	for _, obj := range writes {
-		if err := apply(ctx, a, obj); err != nil {
-			return nil, err
+	var refused []*failure
+	past := func(err error) error {
+		if f, ok := errors.AsType[*failure](err); ok && f.verdict != "" {
+			refused = append(refused, f)
+			return nil
 		}
+		return err
+	}
+	for _, obj := range writes {
+		if err := past(apply(ctx, a, obj)); err != nil {
+			return others, refused, err
+		}
+	}
+	if len(refused) > 0 {
+		return others, refused, nil
 	}
 	for _, e := range stale(previous, desired) {
-		if err := prune(ctx, a, e); err != nil {
-			return nil, err
+		if err := past(prune(ctx, a, e)); err != nil {
+			return others, refused, err
 		}
 	}
-	if !slices.Equal(desired, stored) {
-		return others, writeInventory(ctx, a, desired)
+	if len(refused) == 0 && !slices.Equal(desired, stored) {
+		return others, refused, past(writeInventory(ctx, a, desired))
 	}
-	return others, nil
+	return others, refused, nil
 }
 
 func apply(ctx context.Context, a tenantAPI, obj *unstructured.Unstructured) error {

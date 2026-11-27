@@ -1323,7 +1323,7 @@ func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
 		binding := refuseEtcds(t, r.ns)
 		createLease(t, r.ns, restoredCP+"-etcd-full-snap", strconv.FormatInt(marker, 10))
 		poke(t, r.ns)
-		waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Etcd b-etcd")
+		waitCondition(t, r.ns, restoredCP, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "has quorum, 1 of 1 members ready; the API server refuses Etcd b-etcd")
 		testenv.Eventually(t, func() error {
 			if cp := r.controlPlane(t); cp.Status.Restore == nil {
 				return errors.New("a complete restore whose scale-up is refused has no status")

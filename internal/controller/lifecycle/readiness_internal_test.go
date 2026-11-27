@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
@@ -28,5 +31,23 @@ func TestReadinessTakesTheConditionOfTheWayOutWhereItStandsInTheChainOfCauses(t 
 				t.Errorf("Ready is made of %s, want %s", got, c.want)
 			}
 		})
+	}
+}
+
+// Ready True takes the first refusal's reason among its inputs and the oldest generation, and a False input still comes first.
+func TestReadyTrueTakesTheFirstRefusalAmongItsInputs(t *testing.T) {
+	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: 3}}
+	for _, conditionType := range readiness(cp) {
+		cp.Status.Conditions = append(cp.Status.Conditions, metav1.Condition{Type: conditionType, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, ObservedGeneration: 3})
+	}
+	meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "ClusterRoleBinding lodia:operator is refused", ObservedGeneration: 3})
+	meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonAuthenticationInvalid, Message: "every replica is ready; not written", ObservedGeneration: 2})
+	got := ready(cp)
+	if got.Status != metav1.ConditionTrue || got.Reason != lodiav1alpha1.ReasonAuthenticationInvalid || got.Message != "APIServerReady: every replica is ready; not written" || got.ObservedGeneration != 2 {
+		t.Errorf("Ready is %+v, want True AuthenticationInvalid naming APIServerReady at generation 2", got)
+	}
+	meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonExternalProbeFailed, Message: "api: refused", ObservedGeneration: 3})
+	if got := ready(cp); got.Status != metav1.ConditionFalse || got.Reason != lodiav1alpha1.ReasonExternalProbeFailed {
+		t.Errorf("Ready is %+v, want False ExternalProbeFailed", got)
 	}
 }

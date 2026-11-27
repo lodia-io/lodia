@@ -241,6 +241,43 @@ func TestWaitKeepsOnlyAnEarlierGeneration(t *testing.T) {
 	}
 }
 
+// A refusal keeps the status of what serves, takes over a True's reason alone, and ends either's message.
+func TestARefusalKeepsTheStatusOfWhatServes(t *testing.T) {
+	refused := metav1.Condition{Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the API server refuses ConfigMap x"}
+	for _, c := range []struct {
+		serving metav1.Condition
+		want    metav1.Condition
+	}{
+		{
+			metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "every replica is ready", ObservedGeneration: 3},
+			metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "every replica is ready; the API server refuses ConfigMap x", ObservedGeneration: 3},
+		},
+		{
+			metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonUnavailable, Message: "kube-apiserver has 0 of 1 replicas ready"},
+			metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonUnavailable, Message: "kube-apiserver has 0 of 1 replicas ready; the API server refuses ConfigMap x"},
+		},
+	} {
+		if got := statusapply.Refusing(c.serving, refused); got != c.want {
+			t.Errorf("Refusing(%+v) = %+v, want %+v", c.serving, got, c.want)
+		}
+	}
+}
+
+// A dry run refused beside a refusal the held pass met itself keeps that refusal's reason, and is named after it.
+func TestATrialKeepsTheReasonOfARefusalThePassMet(t *testing.T) {
+	const wouldBe = "the grant's write of NetworkPolicy dev-etcd would be refused: the API server refuses the dry run"
+	for _, met := range []string{lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonSecretNotFound, lodiav1alpha1.ReasonAuthenticationInvalid} {
+		t.Run(met, func(t *testing.T) {
+			c := metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: met, Message: "what serves; the refusal the pass met", ObservedGeneration: 3}
+			want := c
+			want.Message += "; " + wouldBe
+			if got := statusapply.Tried(c, wouldBe, ""); got != want {
+				t.Errorf("Tried(%+v) = %+v, want %+v", c, got, want)
+			}
+		})
+	}
+}
+
 func TestNothingChangedReadsAndWritesNothing(t *testing.T) {
 	held := condition(metav1.ConditionTrue, "as it is", earlier)
 	cp := &lodiav1alpha1.ControlPlane{Status: lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}}}

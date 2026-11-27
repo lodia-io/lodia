@@ -199,7 +199,7 @@ func TestAHeldOrRefusedAPIServerOutranksAReportOutsideTheTable(t *testing.T) {
 		if !apierrors.IsForbidden(err) {
 			t.Fatalf("the pass returned %v, want the refusal for the backoff", err)
 		}
-		if err := expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused); err != nil {
 			t.Error(err)
 		}
 	})

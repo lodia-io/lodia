@@ -46,29 +46,33 @@ var bindings = []struct {
 	{"lodia:kubelet-api-admins", rbacv1.GroupKind, "system:kubelet-api-admin"},
 }
 
+// refusal is a binding the tenant refused, with its answer.
+type refusal struct {
+	name string
+	err  error
+}
+
 // bind applies the bindings as lodia:operator and, when that is forbidden
 // (the first time, or after someone deleted its binding), with a
-// system:masters certificate that is never stored. It returns the binding
-// the tenant refused, empty when a failure is not a refusal; once
-// lodia:operator is forbidden, every failure is one. Each of the two applies
-// ends within bindTimeout, so that a tenant that answers nothing leaves a pass
-// its status write inside its minute.
-func (r *Reconciler) bind(ctx context.Context, t *tenant) (string, error) {
+// system:masters certificate that is never stored. It returns the bindings
+// the tenant refused, past each of which it applies the rest, with every
+// failure joined; once lodia:operator is forbidden, a certificate that cannot
+// be made or whose apply gets no answer leaves its refusals. Each of the two
+// applies ends within bindTimeout, so that a tenant that answers nothing
+// leaves a pass its status write inside its minute.
+func (r *Reconciler) bind(ctx context.Context, t *tenant) ([]refusal, error) {
 	kubeconfig := t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)].Data[lodiav1alpha1.KubeconfigKey]
 	operator, err := r.clientOf(client.ObjectKeyFromObject(t.cp), kubeconfig)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	refused, err := applyBindings(ctx, operator)
-	if !apierrors.IsForbidden(err) {
-		if !apistatus.Refused(err) {
-			refused = ""
-		}
+	refused, err := applyBindings(ctx, operator, true)
+	if len(refused) == 0 || !apierrors.IsForbidden(refused[len(refused)-1].err) {
 		return refused, err
 	}
 	ca := t.cas[clientCA]
 	if ca == nil {
-		return refused, errors.New("lodia:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued")
+		return refused, errors.Join(err, errors.New("lodia:operator is forbidden and the client CA is missing or expired, so no bootstrap certificate can be issued"))
 	}
 	bootstrap, err := ca.Issue(certs.Profile{CommonName: "lodia:bootstrap", Organizations: []string{"system:masters"}, Usages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}, t.now, bootstrapLifetime)
 	if err != nil {
@@ -90,13 +94,29 @@ func (r *Reconciler) bind(ctx context.Context, t *tenant) (string, error) {
 		return refused, err
 	}
 	defer once.Close()
-	if name, err := applyBindings(ctx, once); err != nil {
-		if apistatus.Refused(err) {
-			refused = name
-		}
+	again, err := applyBindings(ctx, once, false)
+	if err != nil && len(again) == 0 {
 		return refused, err
 	}
-	return "", nil
+	return again, err
+}
+
+// held says whether lodia:operator reads the binding name in the tenant,
+// which a refused update leaves and a refused creation does not, and which
+// lodia:operator reads only while its own binding grants it: no admission
+// policy or webhook judges a read. The second result says whether the tenant
+// answered: a missing binding and a refused read are answers.
+func (r *Reconciler) held(ctx context.Context, t *tenant, name string) (bool, bool, error) {
+	operator, err := r.clientOf(client.ObjectKeyFromObject(t.cp), t.existing[t.secret(lodiav1alpha1.LodiaKubeconfigSecret)].Data[lodiav1alpha1.KubeconfigKey])
+	if err != nil {
+		return false, false, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, bindTimeout)
+	defer cancel()
+	if _, err := operator.Do(ctx, operator.Get().Prefix("apis", rbacv1.GroupName, "v1").Resource("clusterrolebindings").Name(name)); err != nil {
+		return false, apierrors.IsNotFound(err) || apistatus.Refused(err), fmt.Errorf("read ClusterRoleBinding %s: %w", name, err)
+	}
+	return true, true, nil
 }
 
 func (r *Reconciler) clientOf(key types.NamespacedName, kubeconfig []byte) (*tenantclient.Client, error) {
@@ -129,10 +149,15 @@ func (r *Reconciler) dial(ctx context.Context, network, address string) (net.Con
 	return (&net.Dialer{}).DialContext(ctx, network, address)
 }
 
-// applyBindings also returns the binding it stopped at.
-func applyBindings(ctx context.Context, c *tenantclient.Client) (string, error) {
+// applyBindings applies every binding, past each one the tenant refuses, and
+// returns those it refused with every failure joined; it stops at a failure
+// that is no refusal and, while forbiddenStops, at a Forbidden, which
+// lodia:operator gets for every binding once its own is gone.
+func applyBindings(ctx context.Context, c *tenantclient.Client, forbiddenStops bool) ([]refusal, error) {
 	ctx, cancel := context.WithTimeout(ctx, bindTimeout)
 	defer cancel()
+	var refused []refusal
+	var failures error
 	for _, b := range bindings {
 		binding := rbacv1ac.ClusterRoleBinding(b.name).
 			WithLabels(map[string]string{lodiav1alpha1.ManagedByLabel: lodiav1alpha1.ManagedBy}).
@@ -140,13 +165,21 @@ func applyBindings(ctx context.Context, c *tenantclient.Client) (string, error) 
 			WithRoleRef(rbacv1ac.RoleRef().WithAPIGroup(rbacv1.GroupName).WithKind("ClusterRole").WithName(b.role))
 		body, err := json.Marshal(binding)
 		if err != nil {
-			return b.name, err
+			return refused, errors.Join(failures, err)
 		}
 		request := c.Patch(types.ApplyPatchType).Prefix("apis", rbacv1.GroupName, "v1").Resource("clusterrolebindings").Name(b.name).
 			VersionedParams(&metav1.PatchOptions{FieldManager: fieldManager, Force: new(true)}, metav1.ParameterCodec).Body(body)
 		if _, err := c.Do(ctx, request); err != nil {
-			return b.name, fmt.Errorf("apply ClusterRoleBinding %s: %w", b.name, err)
+			err = fmt.Errorf("apply ClusterRoleBinding %s: %w", b.name, err)
+			failures = errors.Join(failures, err)
+			if !apistatus.Refused(err) {
+				return refused, failures
+			}
+			refused = append(refused, refusal{b.name, err})
+			if forbiddenStops && apierrors.IsForbidden(err) {
+				return refused, failures
+			}
 		}
 	}
-	return "", nil
+	return refused, failures
 }

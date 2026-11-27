@@ -20,6 +20,7 @@ import (
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +36,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
+	"go.lodia.io/lodia/internal/controller/pki"
 )
 
 func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
@@ -46,50 +48,7 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAPIServer)
 	secrets := secretsOf(t, cp)
-
-	dir := t.TempDir()
-	file := func(secret, key string) string {
-		t.Helper()
-		path := filepath.Join(dir, secret+"-"+key)
-		if err := os.WriteFile(path, secrets[secret].Data[key], 0o600); err != nil {
-			t.Fatal(err)
-		}
-		return path
-	}
-	env := &envtest.Environment{UseExistingCluster: new(false)}
-	api := env.ControlPlane.GetAPIServer()
-	api.Authn = &tenantAuthn{
-		api:       api,
-		clientCA:  parseTLS(t, secrets["dev-cakey-client"]),
-		clusterCA: secrets["dev-ca-bundle"].Data[lodiav1alpha1.CACertKey],
-		bundle:    file("dev-client-ca", lodiav1alpha1.CACertKey),
-	}
-	saKey := file("dev-sa-keys", lodiav1alpha1.SigningKeyKey)
-	api.Configure().
-		Set("tls-cert-file", file("dev-apiserver-serving", lodiav1alpha1.TLSCertKey)).
-		Set("tls-private-key-file", file("dev-apiserver-serving", lodiav1alpha1.TLSPrivateKeyKey)).
-		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", lodiav1alpha1.CACertKey)).
-		Set("requestheader-allowed-names", "front-proxy-client").
-		Set("requestheader-username-headers", "X-Remote-User").
-		Set("requestheader-group-headers", "X-Remote-Group").
-		Set("requestheader-extra-headers-prefix", "X-Remote-Extra-").
-		Set("proxy-client-cert-file", file("dev-front-proxy-client", lodiav1alpha1.TLSCertKey)).
-		Set("proxy-client-key-file", file("dev-front-proxy-client", lodiav1alpha1.TLSPrivateKeyKey)).
-		Set("service-account-signing-key-file", saKey).
-		Set("service-account-key-file", saKey)
-	tenantCfg, err := env.Start()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := env.Stop(); err != nil {
-			t.Error(err)
-		}
-	})
-	admin, err := kubernetes.NewForConfig(tenantCfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	tenantCfg, admin := tenantFrom(t, secrets)
 
 	kcmDir := t.TempDir()
 	for key, value := range secrets["dev-controller-manager-kubeconfig"].Data {
@@ -272,9 +231,169 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
 		t.Fatal("a pass whose binding the tenant refused succeeded")
 	}
-	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
-	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); !strings.HasPrefix(c.Message, "ClusterRoleBinding lodia:kubelet-api-admins is refused by the tenant's API server") {
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused)
+	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); c.Message != "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound; ClusterRoleBinding lodia:kubelet-api-admins is refused by the tenant's API server; the reason is in Lodia's log" {
 		t.Errorf("AccessReady says %q", c.Message)
+	}
+
+	if err := k8s.Get(ctx, client.ObjectKeyFromObject(cp), cp); err != nil {
+		t.Fatal(err)
+	}
+	served := cp.Generation
+	cp.Spec.Placement = nil
+	if err := k8s.Update(ctx, cp); err != nil {
+		t.Fatal(err)
+	}
+	setAPIServerReady(t, cp)
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass whose binding the tenant refused succeeded")
+	}
+	expectConditionAt(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, served)
+
+	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "lodia:kubelet-api-admins", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass whose binding the tenant refused succeeded")
+	}
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
+	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); c.Message != "ClusterRoleBinding lodia:kubelet-api-admins is refused by the tenant's API server; the reason is in Lodia's log" {
+		t.Errorf("AccessReady over a missing binding says %q", c.Message)
+	}
+}
+
+// tenantFrom starts a tenant kube-apiserver from the certificates PKI wrote, and returns its admin's config and client.
+func tenantFrom(t *testing.T, secrets map[string]*corev1.Secret) (*rest.Config, *kubernetes.Clientset) {
+	t.Helper()
+	dir := t.TempDir()
+	file := func(secret, key string) string {
+		t.Helper()
+		path := filepath.Join(dir, secret+"-"+key)
+		if err := os.WriteFile(path, secrets[secret].Data[key], 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	env := &envtest.Environment{UseExistingCluster: new(false)}
+	api := env.ControlPlane.GetAPIServer()
+	api.Authn = &tenantAuthn{
+		api:       api,
+		clientCA:  parseTLS(t, secrets["dev-cakey-client"]),
+		clusterCA: secrets["dev-ca-bundle"].Data[lodiav1alpha1.CACertKey],
+		bundle:    file("dev-client-ca", lodiav1alpha1.CACertKey),
+	}
+	saKey := file("dev-sa-keys", lodiav1alpha1.SigningKeyKey)
+	api.Configure().
+		Set("tls-cert-file", file("dev-apiserver-serving", lodiav1alpha1.TLSCertKey)).
+		Set("tls-private-key-file", file("dev-apiserver-serving", lodiav1alpha1.TLSPrivateKeyKey)).
+		Set("requestheader-client-ca-file", file("dev-front-proxy-ca", lodiav1alpha1.CACertKey)).
+		Set("requestheader-allowed-names", "front-proxy-client").
+		Set("requestheader-username-headers", "X-Remote-User").
+		Set("requestheader-group-headers", "X-Remote-Group").
+		Set("requestheader-extra-headers-prefix", "X-Remote-Extra-").
+		Set("proxy-client-cert-file", file("dev-front-proxy-client", lodiav1alpha1.TLSCertKey)).
+		Set("proxy-client-key-file", file("dev-front-proxy-client", lodiav1alpha1.TLSPrivateKeyKey)).
+		Set("service-account-signing-key-file", saKey).
+		Set("service-account-key-file", saKey)
+	cfg, err := env.Start()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := env.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	admin, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg, admin
+}
+
+// boundTenant is a ControlPlane whose AccessReady is True over a tenant kube-apiserver, with that tenant's admin and the reconciler that dials it.
+func boundTenant(t *testing.T, namespace string) (*lodiav1alpha1.ControlPlane, *kubernetes.Clientset, *pki.Reconciler) {
+	t.Helper()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, namespace)
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	cfg, admin := tenantFrom(t, secretsOf(t, cp))
+	setAPIServerReady(t, cp)
+	r.Dial = dialer(t, cfg.Host)
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
+	return cp, admin, r
+}
+
+// refuseUpdates has the tenant refuse every update of the binding named, and of no other, until the test ends.
+func refuseUpdates(t *testing.T, admin *kubernetes.Clientset, name string) {
+	t.Helper()
+	ctx := t.Context()
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-updates-of-" + strings.ReplaceAll(name, ":", "-")},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{rbacv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"clusterrolebindings"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.name != '" + name + "'"}},
+		},
+	}
+	if _, err := admin.AdmissionregistrationV1().ValidatingAdmissionPolicies().Create(ctx, policy, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().Create(ctx, &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec:       admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		binding, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return false
+		}
+		_, err = admin.RbacV1().ClusterRoleBindings().Update(ctx, binding, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}})
+		return err != nil
+	})
+}
+
+// A refused binding stops no other: a missing one after it is created again, and AccessReady stays True naming every refusal.
+func TestARefusedBindingStopsNoOther(t *testing.T) {
+	ctx := t.Context()
+	cp, admin, r := boundTenant(t, "pki-refused-past")
+	refuseUpdates(t, admin, "lodia:operator")
+	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "lodia:kubelet-api-admins", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass whose binding the tenant refused succeeded")
+	}
+	if _, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "lodia:kubelet-api-admins", metav1.GetOptions{}); err != nil {
+		t.Errorf("the binding after a refused one was not created again: %v", err)
+	}
+	const refused = "ClusterRoleBinding lodia:operator is refused by the tenant's API server; the reason is in Lodia's log"
+	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonRefused ||
+		c.Message != "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound; "+refused {
+		t.Errorf("AccessReady is %s %s %q", c.Status, c.Reason, c.Message)
+	}
+
+	refuseUpdates(t, admin, "lodia:kubelet-api-admins")
+	if err := admin.RbacV1().ClusterRoleBindings().Delete(ctx, "lodia:cluster-admins", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a pass whose bindings the tenant refused succeeded")
+	}
+	if _, err := admin.RbacV1().ClusterRoleBindings().Get(ctx, "lodia:cluster-admins", metav1.GetOptions{}); err != nil {
+		t.Errorf("the binding between two refused ones was not created again: %v", err)
+	}
+	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); c.Status != metav1.ConditionTrue ||
+		c.Message != "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound; ClusterRoleBinding lodia:operator is refused by the tenant's API server; ClusterRoleBinding lodia:kubelet-api-admins is refused by the tenant's API server; the reason is in Lodia's log" {
+		t.Errorf("AccessReady over two refusals is %s %s %q", c.Status, c.Reason, c.Message)
 	}
 }
 

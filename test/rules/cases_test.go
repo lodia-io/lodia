@@ -141,6 +141,17 @@ func controlPlaneNotReady() []testCase {
 				{630, alert, []alertLabels{tenantAlert("stuck"), tenantAlert("restoring")}},
 			},
 		},
+		{
+			name: alert + " stays silent while a refusal stands on a tenant that serves",
+			series: join(
+				cond("authentication", "Ready", "True", "1x40"), reason("authentication", "Ready", "AuthenticationInvalid", "1x40"),
+				cond("refused", "Ready", "True", "1x40"), reason("refused", "Ready", "Refused", "1x40"),
+				cond("held-class", "Ready", "True", "1x40"), reason("held-class", "Ready", "SecretNotFound", "1x40"),
+				cond("before-hold", "Ready", "True", "1x40"), reason("before-hold", "Ready", "RefusedBeforeHold", "1x40"),
+				cond("first", "Ready", "True", "0x40"), reason("first", "Ready", "Refused", "1x40"),
+			),
+			checks: []check{{600, alert, []alertLabels{tenantAlert("first")}}},
+		},
 		failover(alert, tenantAlert("a"), 900, cond("a", "Ready", "True", "0")),
 		{
 			name: alert + " starts its for again after a failover drops it pending",
@@ -510,6 +521,16 @@ func upgradeFailed() []testCase {
 				join(reason("failed", "Progressing", "Failed", "1x10"), reason("failed", "Ready", "Deleting", "1x10")).in("tenants-b"),
 			),
 			checks: []check{{0, alert, []alertLabels{tenantAlert("failed"), tenantAlert("maintenance")}}},
+		},
+		{
+			name: alert + " at once, on a refusal while the tenant serves, one found before a hold, and on a class held at rest",
+			series: join(
+				reason("refused", "Progressing", "Failed", "1x10"), cond("refused", "Ready", "True", "1x10"), reason("refused", "Ready", "Refused", "1x10"),
+				reason("before-hold", "Progressing", "Failed", "1x10"), cond("before-hold", "Ready", "True", "1x10"), reason("before-hold", "Ready", "RefusedBeforeHold", "1x10"),
+				reason("held-class", "Progressing", "Failed", "1x10"), cond("held-class", "Ready", "True", "1x10"), reason("held-class", "Ready", "SecretNotFound", "1x10"),
+				reason("idle", "Progressing", "Idle", "1x10"), cond("idle", "Ready", "True", "1x10"), reason("idle", "Ready", "Ready", "1x10"),
+			),
+			checks: []check{{0, alert, []alertLabels{tenantAlert("refused"), tenantAlert("before-hold"), tenantAlert("held-class")}}},
 		},
 		failover(alert, tenantAlert("a"), 300, reason("a", "Progressing", "Failed", "1")),
 	}

@@ -32,18 +32,26 @@ const (
 // step it does not take, the version or the minor named in the message;
 // <Capability>Unsupported is an environment that cannot serve the spec.
 // <Kind>NotFound is a named object that does not exist. Refused is the
-// API server a controller writes to refusing one of its objects, False, the
-// object named in the message.
-// ObjectsControlledElsewhere is an object under a writer's names that another
-// owner keeps, False, the object and its owner named in the message.
-// DatastoreReady is True with either, or with SecretNotFound, while the etcd
-// serves but its class's credentials copy cannot be made.
+// API server a controller writes to refusing one of its objects, the object
+// named in the message. ObjectsControlledElsewhere is an object under a
+// writer's names that another owner keeps, the object and its owner named in
+// the message. Under either, AuthenticationInvalid or SecretNotFound a
+// readiness condition keeps the status of what exists and serves, True with
+// the refusal's reason or False with its own, the refusal ending the message
+// and the condition staying at the generation it describes, and is False
+// with the refusal's while what it reports is missing. A writer held for the
+// running operator revision tries the grant's writes by dry run while its
+// condition holds a refusal: a dry run refused is Refused, and
+// RefusedBeforeHold, True, is a refusal that no dry run can try, since an
+// admission webhook does not support dry run, named in the message with the
+// webhook.
 const (
 	ReasonReconciling                = "Reconciling"
 	ReasonReady                      = "Ready"
 	ReasonUnsupported                = "Unsupported"
 	ReasonDeleting                   = "Deleting"
 	ReasonRefused                    = "Refused"
+	ReasonRefusedBeforeHold          = "RefusedBeforeHold"
 	ReasonObjectsControlledElsewhere = "ObjectsControlledElsewhere"
 	ReasonWaitingForEndpoint         = "WaitingForEndpoint"
 	ReasonWaitingForTarget           = "WaitingForTarget"
@@ -237,6 +245,7 @@ var WarningReasons = map[string]WarningGroup{
 	ReasonGatewayUnsupported:         WarningRefusal,
 	ReasonTimeZoneUnsupported:        WarningRefusal,
 	ReasonRefused:                    WarningRefusal,
+	ReasonRefusedBeforeHold:          WarningRefusal,
 	ReasonObjectsControlledElsewhere: WarningRefusal,
 	ReasonSecretsControlledElsewhere: WarningRefusal,
 	ReasonSecretsExist:               WarningRefusal,

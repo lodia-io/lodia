@@ -181,8 +181,8 @@ func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t 
 		status    metav1.ConditionStatus
 		reason    string
 	}{
-		{"every component ready", []func(*appsv1.Deployment){ready}, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid},
-		{"a rollout past its deadline that still serves", []func(*appsv1.Deployment){ready, stalled}, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid},
+		{"every component ready", []func(*appsv1.Deployment){ready}, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid},
+		{"a rollout past its deadline that still serves", []func(*appsv1.Deployment){ready, stalled}, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid},
 		{"a rollout past its deadline with no ready replica", []func(*appsv1.Deployment){stalled}, metav1.ConditionFalse, lodiav1alpha1.ReasonProgressDeadlineExceeded},
 		{"no ready replica", nil, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable},
 	} {
@@ -207,21 +207,13 @@ func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t 
 					if got.Status != c.status || got.Reason != c.reason {
 						t.Errorf("APIServerReady is %s %s %q, want %s %s", got.Status, got.Reason, got.Message, c.status, c.reason)
 					}
-					if got.Reason != lodiav1alpha1.ReasonAuthenticationInvalid && got.Message != count.Message+"; "+refusal+served {
+					if got.Message != count.Message+"; "+refusal+served {
 						t.Errorf("APIServerReady %s says %q, want its count's message and the refusal", got.Reason, got.Message)
-					}
-					if carried := carried(got); carried != refusal+served {
-						t.Errorf("APIServerReady %s %q carries %q, want the refusal", got.Reason, got.Message, carried)
-					}
-					for _, now := range []string{servesLast, servesNone} {
-						if again := authenticated(count, serving(carried(got), now)); carried(again) != refusal+now {
-							t.Errorf("APIServerReady %s %q carries %q, want the refusal ending with %q", again.Reason, again.Message, carried(again), now)
-						}
 					}
 				}
 			}
 			valid := authenticated(count, "")
-			if valid.Reason == lodiav1alpha1.ReasonAuthenticationInvalid || valid.Message != count.Message || carried(valid) != "" {
+			if valid.Reason == lodiav1alpha1.ReasonAuthenticationInvalid || valid.Message != count.Message {
 				t.Errorf("a valid configuration gives %s %q", valid.Reason, valid.Message)
 			}
 		})

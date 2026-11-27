@@ -94,6 +94,9 @@ func Start(opts Options) *Env {
 		CRDs:                  opts.CRDs,
 		UseExistingCluster:    new(false),
 	}
+	// envtest's default range of 256 addresses is too few for a suite that
+	// creates a ControlPlane, and its Service, in most of its tests.
+	env.ControlPlane.GetAPIServer().Configure().Set("service-cluster-ip-range", "10.0.0.0/16")
 	if opts.EnforceOwnerReferences {
 		env.ControlPlane.GetAPIServer().Configure().Append("enable-admission-plugins", "OwnerReferencesPermissionEnforcement")
 	}

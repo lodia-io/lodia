@@ -297,27 +297,42 @@ func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
 	return readyOf(cp, readiness(cp))
 }
 
+// readyOf is the first of inputs that is not True, or else the first True
+// with a refusal's reason: the tenant serves while it stands.
 func readyOf(cp *lodiav1alpha1.ControlPlane, inputs []string) *metav1.Condition {
 	next := newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 		strings.Join(inputs[:len(inputs)-1], ", ")+" and "+inputs[len(inputs)-1]+" are True")
+	var refused *metav1.Condition
 	for _, conditionType := range inputs {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
 		if c == nil {
 			next = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved,
 				fmt.Sprintf("%s is not reported for generation %d", conditionType, cp.Generation))
+			refused = nil
 			break
 		}
 		if c.Status != metav1.ConditionTrue {
-			message := conditionType
-			if c.Message != "" {
-				message += ": " + c.Message
-			}
-			next = newCondition(cp, lodiav1alpha1.ConditionReady, c.Status, c.Reason, message)
+			next = newCondition(cp, lodiav1alpha1.ConditionReady, c.Status, c.Reason, named(c))
+			refused = nil
 			break
 		}
+		if refused == nil && slices.Contains(refusals, c.Reason) {
+			refused = c
+		}
+	}
+	if refused != nil {
+		next.Reason, next.Message = refused.Reason, named(refused)
 	}
 	next.ObservedGeneration = oldest(cp)
 	return next
+}
+
+// named is c's message after its type.
+func named(c *metav1.Condition) string {
+	if c.Message == "" {
+		return c.Type
+	}
+	return c.Type + ": " + c.Message
 }
 
 // oldest is what Ready describes, so that Ready True at the object's

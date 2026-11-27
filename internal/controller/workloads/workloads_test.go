@@ -65,6 +65,7 @@ var (
 	k8s          client.WithWatch
 	apiReader    client.Reader
 	managerReads *reads
+	etcd         string
 )
 
 type reads struct {
@@ -115,7 +116,7 @@ func TestMain(m *testing.M) {
 		CRDDirs:                []string{filepath.Join(strings.TrimSpace(string(gatewayAPI)), "config", "crd", "standard")},
 		EnforceOwnerReferences: true,
 	})
-	k8s = env.Client
+	k8s, etcd = env.Client, env.Etcd()
 	mgr := env.Manager(env.AsController("workloads"), true)
 	apiReader = mgr.GetAPIReader()
 	managerReads = &reads{Client: mgr.GetClient(), paused: map[client.ObjectKey]int64{}, targets: map[client.ObjectKey]*lodiav1alpha1.Target{}}
@@ -1004,15 +1005,19 @@ func TestOutsideGatewayModeAHeldOrRefusedServiceKeepsThePublishedEndpoint(t *tes
 					t.Fatal("the pass applied no status")
 				}
 				a := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
-				if a == nil || a.Reason != c.reason {
-					t.Fatalf("APIServerReady is %+v, want %s", a, c.reason)
+				if a == nil || a.Status != metav1.ConditionTrue || a.Reason != c.reason || !strings.HasPrefix(a.Message, allReady) {
+					t.Fatalf("APIServerReady is %+v, want True %s over the count", a, c.reason)
 				}
+				refusal := strings.TrimPrefix(a.Message, allReady)
 				b := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
 				switch {
 				case cp.Spec.Endpoint.LoadBalancer == nil && b != nil:
 					t.Errorf("a nodePort pass applied LoadBalancerReady %+v", b)
-				case cp.Spec.Endpoint.LoadBalancer != nil && (b == nil || b.Status != metav1.ConditionFalse || b.Reason != c.reason || b.Message != a.Message):
-					t.Errorf("LoadBalancerReady is %+v, want False %s %q", b, c.reason, a.Message)
+				case cp.Spec.Endpoint.LoadBalancer == nil:
+				case c.reason == lodiav1alpha1.ReasonObjectsControlledElsewhere && (b == nil || b.Status != metav1.ConditionFalse || b.Reason != c.reason || b.Message != refusal):
+					t.Errorf("LoadBalancerReady is %+v, want False %s %q: another owner's load balancer is not this ControlPlane's", b, c.reason, refusal)
+				case c.reason == lodiav1alpha1.ReasonRefused && (b == nil || b.Status != metav1.ConditionTrue || b.Reason != c.reason || !strings.HasSuffix(b.Message, "; "+refusal)):
+					t.Errorf("LoadBalancerReady is %+v, want True %s over the stored Service's load balancer, ending with %q", b, c.reason, refusal)
 				}
 				if !equality.Semantic.DeepEqual(applied.Status.Endpoint, published) {
 					t.Errorf("the pass applied the endpoint %+v, want the published %+v", applied.Status.Endpoint, published)
@@ -1355,40 +1360,37 @@ func TestWithoutADeploymentOfItsOwnAWaitKeepsItsGeneration(t *testing.T) {
 	}
 }
 
-func TestARefusalIsNotCountedAsAvailability(t *testing.T) {
+// A refusal over a tenant that serves keeps APIServerReady True with the refusal at the generation taken up, through a wait and a later edit, and a lost replica during the wait, which sends nothing, turns it Unavailable alone.
+func TestARefusalOverATenantThatServesKeepsItsAvailability(t *testing.T) {
 	audit := func(maxAge string) func(*lodiav1alpha1.ControlPlaneSpec) {
 		return func(spec *lodiav1alpha1.ControlPlaneSpec) {
 			spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": maxAge}}
 		}
 	}
-	refusal := "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"
-	for name, row := range map[string]struct {
-		change                  func(*testing.T, *lodiav1alpha1.ControlPlane)
-		reason, message, waited string
-	}{
-		"status.datastore.endpoints dropped": {
-			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				applyStatus(t, cp, "test/datastore", map[string]any{})
-			},
-			lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints", "the wait at its generation",
+	const refusal = "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"
+	for name, change := range map[string]func(*testing.T, *lodiav1alpha1.ControlPlane){
+		"status.datastore.endpoints dropped": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			applyStatus(t, cp, "test/datastore", map[string]any{})
 		},
-		"another spec change": {
-			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { changeSpec(t, cp, audit("8")) },
-			lodiav1alpha1.ReasonRefused, refusal, "the refusal kept",
-		},
+		"another spec change": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { changeSpec(t, cp, audit("8")) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cp := running(t)
 			refuseScheduler(t, cp.Namespace)
 			update(t, cp, audit("7"))
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, refusal)
+				return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready; "+refusal)
 			})
 
-			row.change(t, cp)
+			change(t, cp)
 			reconcileNow(t, cp)
-			if err := expectAt(cp, 2, metav1.ConditionFalse, row.reason, row.message); err != nil {
-				t.Errorf("want %s: %v", row.waited, err)
+			if err := expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready; "+refusal); err != nil {
+				t.Error(err)
+			}
+			setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
+			reconcileNow(t, cp)
+			if err := expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready"); err != nil {
+				t.Error(err)
 			}
 		})
 	}

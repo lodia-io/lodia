@@ -286,6 +286,7 @@ func TestAHeldPassCreatesOnlyWhatTheInventoryListsAndTheTenantLacks(t *testing.T
 	expectSame(t, cp, available)
 }
 
+// A held create the tenant refuses is recorded, stops no create after it, and the next pass finishes it.
 func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing.T) {
 	ctx := t.Context()
 	cp, admin := heldTenant(t, "tenant-held-refused")
@@ -293,6 +294,7 @@ func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing
 	available := *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
 	deleteObject(t, admin, "ConfigMap kube-system/coredns")
 	deleteObject(t, admin, "Deployment kube-system/coredns")
+	deleteObject(t, admin, "ClusterRole system:coredns")
 	binding := get(t, admin, &rbacv1.ClusterRoleBinding{}, "", "lodia:operator")
 	denied := authorizationv1.ResourceAttributes{Group: appsv1.GroupName, Resource: "deployments", Verb: "patch", Namespace: "kube-system"}
 	rebindOperator(t, admin, []rbacv1.PolicyRule{
@@ -312,6 +314,9 @@ func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing
 	created := get(t, admin, &corev1.ConfigMap{}, "kube-system", "coredns")
 	if !appliedByLodia(created) {
 		t.Error("the ConfigMap created before the refused Deployment is not Lodia's apply")
+	}
+	if !exists(t, admin, "ClusterRole system:coredns") {
+		t.Error("the ClusterRole listed after the refused Deployment is not created")
 	}
 
 	if err := admin.Delete(ctx, binding.DeepCopy()); err != nil {

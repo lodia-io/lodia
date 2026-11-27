@@ -34,10 +34,11 @@ Built for phase 1.
 - Drift repair is not instant: a deleted CoreDNS Deployment returns within the apply period, not within seconds.
   The period is configurable per operator; a platform that needs faster repair runs its own agent.
 - The inventory is the contract for prune: an object applied by Lodia without an inventory entry would leak, so the entry is written in the same pass as the object.
+- An object the tenant refuses stops no other: the pass applies the rest past it, so a refusal hides no object missing behind it, and prunes and narrows the inventory only in a pass with no refusal, so the inventory still names everything a later pass prunes.
 - Another owner's object under a name Lodia renders keeps that object out until the owner deletes it, after which Lodia applies its own within the apply period, or disables the addon.
 
 ## Code
 
 - `internal/controller/tenant` — `inventory.go` holds the inventory, `foreign`, which finds another owner's objects before the first apply, and `prune`, which deletes only what `lodia/tenant` applied ([Inside the tenant](../README.md#inside-the-tenant)).
   `tenant.go` holds the pass and the conditions, `render.go` and `manifests/` the objects.
-- `internal/controller/tenant/tenant_test.go` — the objects on a tenant kube-apiserver, prune and restore of CoreDNS, a deleted DaemonSet coming back, an object the tenant refuses that leaks nothing, a tenant that does not answer, a prune that deletes only what Lodia applied, another owner's CoreDNS neither taken over nor pruned, an inventory read the tenant refuses.
+- `internal/controller/tenant/tenant_test.go` — the objects on a tenant kube-apiserver, prune and restore of CoreDNS, a deleted DaemonSet coming back, an object the tenant refuses that leaks nothing and stops no other, a pass with a refusal that leaves its prune to the next, a tenant that does not answer, a prune that deletes only what Lodia applied, another owner's CoreDNS neither taken over nor pruned, an inventory read the tenant refuses.

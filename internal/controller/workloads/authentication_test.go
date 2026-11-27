@@ -38,6 +38,7 @@ const (
 	nopeRefusal = notWritten + "kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed: ERROR: <input>:1:5: undefined field 'nope'\n | user.nope == 'x'\n | ....^"
 	servesLast  = "; the API server serves its last valid configuration"
 	servesNone  = "; the API server serves no JWT authenticator"
+	allReady    = "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready; "
 )
 
 func oidc(rules ...string) []lodiav1alpha1.JWTAuthenticator {
@@ -84,14 +85,14 @@ func egressData(t *testing.T, cp *lodiav1alpha1.ControlPlane) []byte {
 	return []byte(c.Data["egress-selector.yaml"])
 }
 
-func expectAuthenticationInvalid(cp *lodiav1alpha1.ControlPlane, message string) error {
+func expectAuthenticationInvalid(cp *lodiav1alpha1.ControlPlane, generation int64, message string) error {
 	fresh := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		return err
 	}
 	c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
-	if c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonAuthenticationInvalid || !strings.Contains(c.Message, message) || c.ObservedGeneration != fresh.Generation {
-		return fmt.Errorf("APIServerReady is %+v, want False AuthenticationInvalid with %q at generation %d", c, message, fresh.Generation)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonAuthenticationInvalid || !strings.HasPrefix(c.Message, allReady) || !strings.Contains(c.Message, message) || c.ObservedGeneration != generation {
+		return fmt.Errorf("APIServerReady is %+v, want True AuthenticationInvalid with %q at generation %d", c, message, generation)
 	}
 	return nil
 }
@@ -122,13 +123,14 @@ func TestAJWTEditReloadsAndAnInvalidOneIsNeverWritten(t *testing.T) {
 		t.Errorf("the JWT authenticators added rolled the Deployments: generations %v, then %v", generations, after)
 	}
 	valid := authenticationConfig(t, cp)
+	taken := get(t, cp).Generation
 
 	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
 		withJWT(oidc("user.nope == 'x'"))(s)
 		s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"}
 	})
 	testenv.Eventually(t, func() error {
-		if err := expectAuthenticationInvalid(cp, "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed"); err != nil {
+		if err := expectAuthenticationInvalid(cp, taken, "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed"); err != nil {
 			return err
 		}
 		if !strings.Contains(strings.Join(deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, " "), "--event-ttl=2h") {
@@ -318,10 +320,10 @@ func conditionsWhile(t *testing.T, cp *lodiav1alpha1.ControlPlane, do func(), do
 	return seen
 }
 
-func expectSaidOnEveryPass(t *testing.T, cp *lodiav1alpha1.ControlPlane, seen []metav1.Condition, refusal string) {
+func expectSaidOnEveryPass(t *testing.T, cp *lodiav1alpha1.ControlPlane, generation int64, seen []metav1.Condition, refusal string) {
 	t.Helper()
 	reconcileNow(t, cp)
-	if err := expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refusal); err != nil {
+	if err := expectAt(cp, generation, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+refusal); err != nil {
 		t.Errorf("the pass after: %v", err)
 	}
 	for _, c := range seen {
@@ -349,6 +351,7 @@ func TestAServiceAccountIssuerMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *
 		}
 	})
 	serveCRD(t, relaxed, cp.Namespace, overlap, "")
+	taken := get(t, cp).Generation
 	seen := conditionsWhile(t, cp, func() {
 		update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
 			s.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: shared}
@@ -360,9 +363,9 @@ func TestAServiceAccountIssuerMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *
 		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 			return errors.New("the authentication configuration is\n" + authn)
 		}
-		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, notWritten+overlapErrors(shared)+servesNone)
+		return expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+notWritten+overlapErrors(shared)+servesNone)
 	})
-	expectSaidOnEveryPass(t, cp, seen, notWritten+overlapErrors(shared)+servesNone)
+	expectSaidOnEveryPass(t, cp, taken, seen, notWritten+overlapErrors(shared)+servesNone)
 	expectAReplicaLoads(t, cp)
 	if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
 		t.Errorf("the restart hashes are %v, then %v", hashed, after)
@@ -393,9 +396,9 @@ func TestALoadBalancerAddressMovedOntoAJWTIssuerRemovesTheJWTAuthenticators(t *t
 		if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 			return errors.New("the authentication configuration is\n" + authn)
 		}
-		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, notWritten+overlapErrors("https://"+moved)+servesNone)
+		return expectAt(cp, get(t, cp).Generation, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+notWritten+overlapErrors("https://"+moved)+servesNone)
 	})
-	expectSaidOnEveryPass(t, cp, seen, notWritten+overlapErrors("https://"+moved)+servesNone)
+	expectSaidOnEveryPass(t, cp, get(t, cp).Generation, seen, notWritten+overlapErrors("https://"+moved)+servesNone)
 	expectAReplicaLoads(t, cp)
 	if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
 		t.Errorf("the restart hashes are %v, then %v", hashed, after)
@@ -432,9 +435,9 @@ func TestAPredecessorsOrphanedFileIsReplacedForATenantWhoseAPIServerRefusesIt(t 
 		if c := authenticationConfig(t, cp); !strings.Contains(c.Data["authentication-config.yaml"], "jwt: []") || !metav1.IsControlledBy(c, get(t, cp)) {
 			return fmt.Errorf("the authentication configuration, controlled by %v, is\n%s", metav1.GetControllerOf(c), c.Data["authentication-config.yaml"])
 		}
-		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, notWritten+overlapErrors("https://"+address)+servesNone)
+		return expectAt(cp, get(t, cp).Generation, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+notWritten+overlapErrors("https://"+address)+servesNone)
 	})
-	expectSaidOnEveryPass(t, cp, seen, notWritten+overlapErrors("https://"+address)+servesNone)
+	expectSaidOnEveryPass(t, cp, get(t, cp).Generation, seen, notWritten+overlapErrors("https://"+address)+servesNone)
 	expectAReplicaLoads(t, cp)
 	hashed := hashes(t, cp)
 
@@ -462,8 +465,9 @@ func TestAStoredFileEditedByHandIntoOneTheMinorRefusesIsReplaced(t *testing.T) {
 			cp := running(t, withJWT(oidc()))
 			authenticationData(t, cp, c.from)
 			hashed := hashes(t, cp)
+			taken := get(t, cp).Generation
 			update(t, cp, withJWT(oidc("user.nope == 'x'")))
-			testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, nopeRefusal+servesLast) })
+			testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, taken, nopeRefusal+servesLast) })
 
 			edited := authenticationConfig(t, cp)
 			edited.Data["authentication-config.yaml"] = strings.Replace(edited.Data["authentication-config.yaml"], c.from, c.to, 1)
@@ -475,9 +479,9 @@ func TestAStoredFileEditedByHandIntoOneTheMinorRefusesIsReplaced(t *testing.T) {
 				if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 					return errors.New("the authentication configuration is\n" + authn)
 				}
-				return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesNone)
+				return expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesNone)
 			})
-			expectSaidOnEveryPass(t, cp, seen, nopeRefusal+servesNone)
+			expectSaidOnEveryPass(t, cp, taken, seen, nopeRefusal+servesNone)
 			expectAReplicaLoads(t, cp)
 			if after := hashes(t, cp); fmt.Sprint(after) != fmt.Sprint(hashed) {
 				t.Errorf("the restart hashes are %v, then %v", hashed, after)
@@ -492,10 +496,11 @@ func TestATenantThatNeverHadAJWTAuthenticatorIsToldItServesNone(t *testing.T) {
 	if authn := stored.Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 		t.Fatalf("without JWT authenticators Workloads writes\n%s", authn)
 	}
+	taken := get(t, cp).Generation
 	seen := conditionsWhile(t, cp, func() { update(t, cp, withJWT(oidc("user.nope == 'x'"))) }, func() error {
-		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesNone)
+		return expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesNone)
 	})
-	expectSaidOnEveryPass(t, cp, seen, nopeRefusal+servesNone)
+	expectSaidOnEveryPass(t, cp, taken, seen, nopeRefusal+servesNone)
 	if after := authenticationConfig(t, cp); after.ResourceVersion != stored.ResourceVersion {
 		t.Errorf("the ConfigMap was written:\n%s", after.Data["authentication-config.yaml"])
 	}
@@ -505,13 +510,14 @@ func TestThisControlPlanesOwnValidFileIsKeptWithoutARoll(t *testing.T) {
 	cp := running(t, withJWT(oidc()))
 	valid := authenticationConfig(t, cp)
 	hashed, generations := hashes(t, cp), generationsOf(t, cp)
+	taken := get(t, cp).Generation
 
 	update(t, cp, withJWT(oidc("user.nope == 'x'")))
 	testenv.Eventually(t, func() error {
-		return expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+		return expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast)
 	})
 	reconcileNow(t, cp)
-	if err := expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast); err != nil {
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast); err != nil {
 		t.Errorf("the pass after: %v", err)
 	}
 	if kept := authenticationConfig(t, cp); kept.ResourceVersion != valid.ResourceVersion {
@@ -528,8 +534,9 @@ func TestThisControlPlanesOwnValidFileIsKeptWithoutARoll(t *testing.T) {
 
 func TestAKeptFileInJSONWithEscapesGoYAMLLacksIsSaidToBeServed(t *testing.T) {
 	cp := running(t, withJWT(oidc()))
+	taken := get(t, cp).Generation
 	update(t, cp, withJWT(oidc("user.nope == 'x'")))
-	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, nopeRefusal+servesLast) })
+	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, taken, nopeRefusal+servesLast) })
 
 	edited := authenticationConfig(t, cp)
 	compact, err := yaml.YAMLToJSON([]byte(edited.Data["authentication-config.yaml"]))
@@ -545,7 +552,7 @@ func TestAKeptFileInJSONWithEscapesGoYAMLLacksIsSaidToBeServed(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcileNow(t, cp)
-	if err := expectAt(cp, get(t, cp).Generation, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast); err != nil {
+	if err := expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast); err != nil {
 		t.Error(err)
 	}
 	if kept := authenticationConfig(t, cp).Data["authentication-config.yaml"]; kept != file {
@@ -554,13 +561,37 @@ func TestAKeptFileInJSONWithEscapesGoYAMLLacksIsSaidToBeServed(t *testing.T) {
 	expectAReplicaLoads(t, cp)
 }
 
-func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {
-	for name, trigger := range map[string]func(*testing.T, *lodiav1alpha1.ControlPlane){
-		"a held pass": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { setTargetAt(t, cp, version, next) },
-		"a held pass whose target the table does not hold": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+// A wait over a refused configuration that a False count names after its own reason counts what runs and names no refusal, since nothing reads a message; a held pass over it, and a held wait that renders past the input it waits for, validate the field while the condition is not True and name the refusal; and a held wait that cannot build the render keeps the False count as it is, unless its target is one the table does not hold, which no pass under the running revision passes, where it counts what runs.
+func TestAHeldPassOrAWaitOverARefusalUnderAFalseCountReportsWhatRuns(t *testing.T) {
+	const (
+		named   = "named"
+		counted = "counted"
+		kept    = "kept"
+	)
+	onTheDatastore := func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+		applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
+			"type": lodiav1alpha1.ConditionDatastoreReady, "status": "False", "reason": "Unavailable", "message": "etcd has no quorum",
+			"observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
+		}}})
+	}
+	onAHash := func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+		setSecret(t, cp, lodiav1alpha1.KonnectivityKubeconfigSecret, "")
+	}
+	held := func(wait func(*testing.T, *lodiav1alpha1.ControlPlane)) func(*testing.T, *lodiav1alpha1.ControlPlane) {
+		return func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+			setTargetAt(t, cp, version, next)
+			wait(t, cp)
+		}
+	}
+	for name, c := range map[string]struct {
+		trigger func(*testing.T, *lodiav1alpha1.ControlPlane)
+		report  string
+	}{
+		"a held pass": {func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { setTargetAt(t, cp, version, next) }, named},
+		"a held wait whose target the table does not hold": {func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			setTargetAt(t, cp, "v1.34.1", next)
-		},
-		"a held pass that counts a report outside the table": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
+		}, counted},
+		"a held pass that counts a report outside the table": {func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			setTargetAt(t, cp, version, next)
 			testenv.Eventually(t, func() error {
 				d := deployment(t, cp, "kube-apiserver")
@@ -574,40 +605,41 @@ func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {
 				}
 				return nil
 			})
-		},
-		"a wait on a Secret's data hash": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			setSecret(t, cp, lodiav1alpha1.KonnectivityKubeconfigSecret, "")
-		},
-		"a wait on the datastore": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
-				"type": lodiav1alpha1.ConditionDatastoreReady, "status": "False", "reason": "Unavailable", "message": "etcd has no quorum",
-				"observedGeneration": get(t, cp).Generation, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
-			}}})
-		},
+		}, named},
+		"a wait on a Secret's data hash":      {onAHash, counted},
+		"a held wait on a Secret's data hash": {held(onAHash), kept},
+		"a wait on the datastore":             {onTheDatastore, counted},
+		"a held wait on the datastore":        {held(onTheDatastore), named},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cp := running(t)
 			valid := authenticationConfig(t, cp).Data["authentication-config.yaml"]
 			setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
 			testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable) })
-			update(t, cp, withJWT(oidc("user.nope == 'x'")))
 			g := get(t, cp).Generation
+			update(t, cp, withJWT(oidc("user.nope == 'x'")))
+			const down = "kube-apiserver has 0 of 1 replicas ready; " + nopeRefusal + servesNone
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready; "+nopeRefusal+servesNone)
+				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, down)
 			})
 
-			trigger(t, cp)
+			c.trigger(t, cp)
 			markAvailable(t, deployment(t, cp, "kube-apiserver"))
-			invalid := func() error {
-				if c := condition(t, cp); c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonAuthenticationInvalid || c.ObservedGeneration != g ||
-					!strings.Contains(c.Message, "jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\"") {
-					return fmt.Errorf("APIServerReady is %+v, want False AuthenticationInvalid at generation %d", c, g)
+			reports := func() error {
+				switch c.report {
+				case named:
+					return expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesNone)
+				case kept:
+					return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, down)
+				}
+				if c := condition(t, cp); c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady || c.ObservedGeneration != g || strings.Contains(c.Message, notWritten) {
+					return fmt.Errorf("APIServerReady is %+v, want True Ready at generation %d", c, g)
 				}
 				return nil
 			}
-			testenv.Eventually(t, invalid)
+			testenv.Eventually(t, reports)
 			reconcileNow(t, cp)
-			if err := invalid(); err != nil {
+			if err := reports(); err != nil {
 				t.Errorf("the pass after: %v", err)
 			}
 			if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; authn != valid {
@@ -618,6 +650,11 @@ func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {
 }
 
 func lifecyclePass(t *testing.T, cp *lodiav1alpha1.ControlPlane, running string) *lodiav1alpha1.ControlPlane {
+	t.Helper()
+	return lifecyclePassThrough(t, k8s, cp, running)
+}
+
+func lifecyclePassThrough(t *testing.T, c client.WithWatch, cp *lodiav1alpha1.ControlPlane, running string) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	generation := get(t, cp).Generation
 	condition := func(conditionType, status, reason string) map[string]any {
@@ -632,7 +669,7 @@ func lifecyclePass(t *testing.T, cp *lodiav1alpha1.ControlPlane, running string)
 		others = append(others, condition(conditionType, "True", "Fine"))
 	}
 	applyStatus(t, cp, "test/others", map[string]any{"conditions": others})
-	r := &lifecycle.Reconciler{Client: k8s, Reader: k8s, Clock: clock.RealClock{}, Revision: running, MaxConcurrentRollouts: 1000, Settling: time.Minute}
+	r := &lifecycle.Reconciler{Client: c, Reader: c, Clock: clock.RealClock{}, Revision: running, MaxConcurrentRollouts: 1000, Settling: time.Minute}
 	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
 		t.Fatal(err)
 	}
@@ -649,52 +686,54 @@ func expectLifecycle(t *testing.T, cp *lodiav1alpha1.ControlPlane, generation in
 	}
 }
 
-func TestARefusalBehindAFalseCountIsNotCountedReadyAtALaterGeneration(t *testing.T) {
+// A refusal of the configuration that a wait at a later generation cannot see is named again by the first pass that validates the field, past the wait, and a held pass at a later generation names it under the False count, before the grant and past it.
+func TestARefusalBehindAWaitIsNamedAgainByThePassThatValidates(t *testing.T) {
 	const unavailable = "kube-apiserver has 0 of 1 replicas ready"
 	refusedWhileUnavailable := func(t *testing.T, cp *lodiav1alpha1.ControlPlane) int64 {
 		setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
 		testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable) })
-		update(t, cp, withJWT(oidc("user.nope == 'x'")))
 		g := get(t, cp).Generation
+		update(t, cp, withJWT(oidc("user.nope == 'x'")))
 		testenv.Eventually(t, func() error {
 			return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, unavailable+"; "+nopeRefusal+servesLast)
 		})
 		return g
 	}
+	edit := func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} }
 	for name, c := range map[string]struct {
-		refuse  func(*testing.T, *lodiav1alpha1.ControlPlane) int64
-		later   func(*testing.T, *lodiav1alpha1.ControlPlane)
-		running string
+		refuse func(*testing.T, *lodiav1alpha1.ControlPlane) int64
+		later  func(*testing.T, *lodiav1alpha1.ControlPlane)
+		past   func(*testing.T, *lodiav1alpha1.ControlPlane)
+		named  bool
 	}{
 		"AuthenticationInvalid, then Unavailable in a wait at the next generation": {
 			refuse: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) int64 {
-				update(t, cp, withJWT(oidc("user.nope == 'x'")))
 				g := get(t, cp).Generation
+				update(t, cp, withJWT(oidc("user.nope == 'x'")))
 				testenv.Eventually(t, func() error {
-					return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+					return expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast)
 				})
 				return g
 			},
 			later: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+				changeSpec(t, cp, edit)
 				setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
 			},
-			running: next,
+			past: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { update(t, cp, edit) },
 		},
 		"refused while Unavailable, then a wait at the next generation": {
 			refuse: refusedWhileUnavailable,
-			later: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
-			},
-			running: next,
+			later:  func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { changeSpec(t, cp, edit) },
+			past:   func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { update(t, cp, edit) },
 		},
 		"refused while Unavailable, then a held pass at the next generation": {
 			refuse: refusedWhileUnavailable,
 			later: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 				setTargetAt(t, cp, version, next)
-				update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+				update(t, cp, edit)
 			},
-			running: revision,
+			past:  func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { setTargetAt(t, cp, version, revision) },
+			named: true,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -702,23 +741,25 @@ func TestARefusalBehindAFalseCountIsNotCountedReadyAtALaterGeneration(t *testing
 			valid := authenticationConfig(t, cp)
 			g := c.refuse(t, cp)
 			c.later(t, cp)
+			down, up := unavailable, strings.TrimSuffix(allReady, "; ")
+			reason := lodiav1alpha1.ReasonReady
+			if c.named {
+				down, up, reason = unavailable+"; "+nopeRefusal+servesLast, allReady+nopeRefusal+servesLast, lodiav1alpha1.ReasonAuthenticationInvalid
+			}
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, unavailable+"; "+nopeRefusal+servesLast)
+				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, down)
 			})
-			granted := get(t, cp).Status.Target.OperatorRevision
-
 			markAvailable(t, deployment(t, cp, "kube-apiserver"))
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+				return expectAt(cp, g, metav1.ConditionTrue, reason, up)
 			})
-			reconcileNow(t, cp)
-			if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast); err != nil {
-				t.Errorf("the pass after, at generation %d: %v", get(t, cp).Generation, err)
-			}
+			c.past(t, cp)
+			testenv.Eventually(t, func() error {
+				return expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast)
+			})
 			if kept := authenticationConfig(t, cp); kept.ResourceVersion != valid.ResourceVersion {
 				t.Errorf("the ConfigMap was written:\n%s", kept.Data["authentication-config.yaml"])
 			}
-			expectLifecycle(t, lifecyclePass(t, cp, c.running), g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, "APIServerReady: "+nopeRefusal+servesLast, granted)
 		})
 	}
 }
@@ -773,14 +814,15 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 				if authn := authenticationConfig(t, cp).Data["authentication-config.yaml"]; !strings.Contains(authn, "jwt: []") {
 					return errors.New("the authentication configuration is\n" + authn)
 				}
-				return expectAuthenticationInvalid(cp, "URL must not overlap with disallowed issuers: [https://"+moved+"]")
+				return expectAuthenticationInvalid(cp, ready.ObservedGeneration, "URL must not overlap with disallowed issuers: [https://"+moved+"]")
 			})
 			expectAReplicaLoads(t, cp)
 		})
 	}
 }
 
-func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing.T) {
+// A held pass over a refused configuration validates the field again on every pass and says what the file it keeps serves, nothing when it cannot tell, under AuthenticationInvalid, which blocks.
+func TestAHeldPassValidatesTheFieldWithWhatTheFileItKeepsServes(t *testing.T) {
 	const moved = "203.0.113.20"
 	for name, lost := range map[string]bool{
 		"a pass that replaced the file, its status write lost": true,
@@ -792,10 +834,10 @@ func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing
 			cp := running(t, withJWT(jwt))
 			refused := oidc("user.nope == 'x'")
 			refused[0].Issuer.URL = "https://" + moved
-			update(t, cp, withJWT(refused))
 			g := get(t, cp).Generation
+			update(t, cp, withJWT(refused))
 			testenv.Eventually(t, func() error {
-				return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+				return expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast)
 			})
 			stored := authenticationConfig(t, cp)
 
@@ -808,7 +850,7 @@ func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing
 				}
 				return nil
 			})
-			served := servesLast
+			served := ""
 			if lost {
 				stopped := interceptor.NewClient(k8s, interceptor.Funcs{
 					SubResourceApply: func(context.Context, client.Client, string, runtime.ApplyConfiguration, ...client.SubResourceApplyOption) error {
@@ -829,7 +871,9 @@ func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing
 			}
 
 			reconcileNow(t, cp)
-			if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+served); err != nil {
+			const refuses = "kube-apiserver 1.37 refuses it: "
+			refusal := notWritten + refuses + `jwt[0].issuer.url: Invalid value: "https://` + moved + `": URL must not overlap with disallowed issuers: [https://` + moved + "]; " + strings.TrimPrefix(nopeRefusal, notWritten+refuses)
+			if err := expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+refusal+served); err != nil {
 				t.Error(err)
 			}
 			if lost {
@@ -845,51 +889,52 @@ func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing
 
 func TestAWaitAtALaterGenerationCountsUnderTheRefusalOfTheGenerationItNames(t *testing.T) {
 	cp := running(t)
-	update(t, cp, withJWT(oidc("user.nope == 'x'")))
 	g := get(t, cp).Generation
-	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, "Invalid value: \"user.nope == 'x'\"") })
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
+	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, g, "Invalid value: \"user.nope == 'x'\"") })
 	refused := *condition(t, cp)
 
 	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
 	reconcileNow(t, cp)
-	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refused.Message); err != nil {
-		t.Errorf("a wait at generation %d: %v", g+1, err)
+	if err := expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, refused.Message); err != nil {
+		t.Errorf("a wait at generation %d: %v", g+2, err)
 	}
 	setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
 	reconcileNow(t, cp)
-	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready; "+refused.Message); err != nil {
-		t.Errorf("a wait at generation %d once the API server has no ready replica: %v", g+1, err)
+	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonUnavailable, "kube-apiserver has 0 of 1 replicas ready"); err != nil {
+		t.Errorf("a wait at generation %d once the API server has no ready replica: %v", g+2, err)
 	}
 }
 
 func TestAWaitAtALaterGenerationThatFixesTheFieldKeepsTheRefusal(t *testing.T) {
 	cp := running(t, withJWT(oidc()))
-	update(t, cp, withJWT(oidc("user.nope == 'x'")))
 	g := get(t, cp).Generation
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
 	testenv.Eventually(t, func() error {
-		return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+		return expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast)
 	})
 
 	changeSpec(t, cp, withJWT(oidc("user.username != 'x'")))
 	reconcileNow(t, cp)
-	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast); err != nil {
-		t.Errorf("a wait at generation %d, whose spec fixes the field: %v", g+1, err)
+	if err := expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast); err != nil {
+		t.Errorf("a wait at generation %d, whose spec fixes the field: %v", g+2, err)
 	}
 }
 
-func TestAHeldPassAtALaterGenerationThatFixesTheFieldKeepsTheRefusal(t *testing.T) {
+// A held pass at a later generation whose spec fixes the field validates it and ends the refusal, at the generation it describes.
+func TestAHeldPassAtALaterGenerationThatFixesTheFieldEndsTheRefusal(t *testing.T) {
 	cp := running(t, withJWT(oidc()))
-	update(t, cp, withJWT(oidc("user.nope == 'x'")))
 	g := get(t, cp).Generation
+	update(t, cp, withJWT(oidc("user.nope == 'x'")))
 	testenv.Eventually(t, func() error {
-		return expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast)
+		return expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, allReady+nopeRefusal+servesLast)
 	})
 
 	setTargetAt(t, cp, version, next)
 	update(t, cp, withJWT(oidc("user.username != 'x'")))
 	reconcileNow(t, cp)
-	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, nopeRefusal+servesLast); err != nil {
-		t.Errorf("a held pass at generation %d, whose spec fixes the field: %v", g+1, err)
+	if err := expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, strings.TrimSuffix(allReady, "; ")); err != nil {
+		t.Errorf("a held pass at generation %d, whose spec fixes the field: %v", g+2, err)
 	}
 }
 

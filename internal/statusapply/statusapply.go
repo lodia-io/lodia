@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/live"
 )
 
@@ -49,6 +50,46 @@ func Wait(cp *lodiav1alpha1.ControlPlane, kept *metav1.Condition, waiting metav1
 		return *kept
 	}
 	return waiting
+}
+
+// Described is the generation the condition of that type describes, as cp
+// holds it, read live at the pass's start, and cp's while there is none: a
+// held pass and a refusal report at it, so that an owner's edit does not read
+// as taken up.
+func Described(cp *lodiav1alpha1.ControlPlane, conditionType string) int64 {
+	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
+		return c.ObservedGeneration
+	}
+	return cp.Generation
+}
+
+// Refusing is c, what exists and serves, while the refusal refused names
+// stands: True under the refusal's reason, False under its own, its message
+// ending with the refusal's either way.
+func Refusing(c, refused metav1.Condition) metav1.Condition {
+	if c.Status == metav1.ConditionTrue {
+		c.Reason = refused.Reason
+	}
+	c.Message += "; " + refused.Message
+	return c
+}
+
+// Tried is c, what a held pass reports, ending with what its dry run of the
+// grant's writes found, each left out while empty: refused, the writes the
+// API server refuses, True under Refused, then untried, those no dry run can
+// try, True under RefusedBeforeHold, each while c names no refusal the pass
+// met itself, whose reason it keeps; False keeps its reason.
+func Tried(c metav1.Condition, refused, untried string) metav1.Condition {
+	for _, found := range []metav1.Condition{{Reason: lodiav1alpha1.ReasonRefused, Message: refused}, {Reason: lodiav1alpha1.ReasonRefusedBeforeHold, Message: untried}} {
+		if found.Message == "" {
+			continue
+		}
+		if slices.Contains(contract.Refusals(), c.Reason) {
+			found.Reason = c.Reason
+		}
+		c = Refusing(c, found)
+	}
+	return c
 }
 
 // Differs says whether c is not what previous says already.

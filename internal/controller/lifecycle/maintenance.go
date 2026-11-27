@@ -187,8 +187,9 @@ func (f facts) maintain(c *change, ready *metav1.Condition) maintenance {
 // while the running operator cannot render what runs; at once, with no slot,
 // each kind where waiting would stall the owner or keep the tenant from
 // Ready; then, unless the owner has something to fix, all that remain in the
-// window, while the tenant is Ready with no cause that fails a change
-// standing, in one free slot.
+// window, while the tenant is Ready with no rollout past its deadline
+// standing, in one free slot. A refusal no dry run of a held writer can try
+// is no such thing to fix: only the grant tries it.
 func (f facts) grant(m *maintenance, c *change, p pendingChanges, w *window, requested bool) {
 	cp := f.cp
 	if what := unrenderable(cp, c.target); what != "" {
@@ -209,7 +210,7 @@ func (f facts) grant(m *maintenance, c *change, p pendingChanges, w *window, req
 	if !p.any() {
 		return
 	}
-	if c.unsupported != "" || c.failed(f, m.revision) != "" || m.zone != "" {
+	if c.unsupported != "" || c.failed(f, m.revision, f.retried(m.revision)) != "" || m.zone != "" {
 		return
 	}
 	if w != nil {
@@ -232,7 +233,7 @@ func (f facts) grant(m *maintenance, c *change, p pendingChanges, w *window, req
 		m.waiting = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, reason, message)
 		return
 	}
-	if stops := stopping(cp); stops != nil {
+	if stops := stopping(cp, []string{lodiav1alpha1.ReasonProgressDeadlineExceeded}, nil); stops != nil {
 		message := stops.Type
 		if stops.Message != "" {
 			message += ": " + stops.Message
@@ -291,7 +292,7 @@ func (f facts) atOnce(c change) bool {
 	case progressing == nil || progressing.ObservedGeneration < cp.Generation:
 	case c.upgrade != nil:
 	case (addons == nil || addons.Status != metav1.ConditionTrue) &&
-		(cp.Status.Addons == nil || cp.Status.Addons.Version == "" || addons != nil && slices.Contains(stoppedAddons, addons.Reason)):
+		(cp.Status.Addons == nil || cp.Status.Addons.Version == "" || addons != nil && addons.Reason == lodiav1alpha1.ReasonApplying):
 	case api != nil && api.Status == metav1.ConditionFalse && api.Reason == lodiav1alpha1.ReasonWaitingForTarget && api.ObservedGeneration == cp.Generation:
 	case cp.Spec.RestoreFrom != nil && (cp.Status.Components == nil || cp.Status.Components.ControllerManager == nil || cp.Status.Components.ControllerManager.Total == 0):
 	default:
@@ -299,10 +300,6 @@ func (f facts) atOnce(c change) bool {
 	}
 	return true
 }
-
-// stoppedAddons are the reasons of an AddonsApplied whose apply stopped on an
-// object refused or another owner's, or did not finish.
-var stoppedAddons = []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonApplying}
 
 // readyForMaintenance is what keeps Ready from True, at whatever generation
 // each input describes, or nil. AddonsApplied is left out while it waits: a
@@ -357,7 +354,7 @@ func (f facts) settle(m *maintenance, c change, ready *metav1.Condition, granted
 			m.settlingSince = &since
 		}
 	}
-	if cause := c.cause(cp); cause != "" {
+	if cause := c.cause(cp, nil); cause != "" {
 		m.failed = "the change Lodia started failed: " + cause
 		return
 	}

@@ -420,7 +420,8 @@ func TestARolloutReadThatFailsOnAStaleReadIsDecidedFromTheServer(t *testing.T) {
 	}
 }
 
-func TestARefusedApplyStopsThePass(t *testing.T) {
+// An apply the tenant forbids is refused, past which the pass applies the rest, and AddonsApplied stays True naming every object refused.
+func TestAnApplyTheTenantForbidsIsRefused(t *testing.T) {
 	cp, admin := servedTenant(t, "tenant-refused-apply")
 	testenv.Eventually(t, func() error {
 		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
@@ -428,10 +429,7 @@ func TestARefusedApplyStopsThePass(t *testing.T) {
 	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	ctx := t.Context()
-	rebindOperator(t, admin, []rbacv1.PolicyRule{
-		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
-		{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
-	}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
+	rebindOperator(t, admin, writesButConfigMaps, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
 	refresh(t, cp)
 	applyStatus(t, cp, tenant.FieldManager, map[string]any{"conditions": []any{
 		conditionAt(lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, cp.Generation-1),
@@ -442,7 +440,7 @@ func TestARefusedApplyStopsThePass(t *testing.T) {
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose apply was refused returned %v, want the refusal", err)
 	}
-	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refusedConfigMaps("is refused by the tenant's API server"), cp.Generation-1); err != nil {
 		t.Error(err)
 	}
 	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
@@ -474,10 +472,11 @@ func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T)
 			t.Fatal(err)
 		}
 	}
+	taken := cp.Generation
 	setCoreDNS(t, cp, true)
 	const others = "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon"
 	testenv.Eventually(t, func() error {
-		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, others, taken)
 	})
 	pause(t, cp)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
@@ -497,11 +496,8 @@ func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T)
 	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apierrors.IsForbidden(err) {
 		t.Errorf("a pass whose rollout read was refused returned %v, want the refusal", err)
 	}
-	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, others, cp.Generation-1); err != nil {
 		t.Error(err)
-	}
-	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != others {
-		t.Errorf("AddonsApplied says %q", c.Message)
 	}
 }
 
@@ -983,13 +979,7 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 	setCoreDNS(t, cp, true)
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	testenv.Eventually(t, func() error {
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
-			return err
-		}
-		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); !strings.Contains(c.Message, "Deployment kube-system/coredns is refused") {
-			return fmt.Errorf("AddonsApplied says %q", c.Message)
-		}
-		return nil
+		return expectAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "Deployment kube-system/coredns is refused by the tenant's API server; the reason is in Lodia's log", cp.Generation)
 	})
 	if !exists(t, admin, "ConfigMap kube-system/coredns") || !slices.Contains(inventoryOf(t, admin), "ConfigMap kube-system/coredns") {
 		t.Fatal("the objects before the refused one were not applied, or not recorded before they were")
@@ -1004,6 +994,113 @@ func TestAnObjectTheTenantRefusesIsReportedAndNeverLeaks(t *testing.T) {
 		if exists(t, admin, gone) {
 			t.Errorf("%s, applied by the pass the tenant refused, leaked", gone)
 		}
+	}
+}
+
+// A refused update of an object the tenant holds keeps AddonsApplied True at the generation it took up, and a refused creation of a missing one turns it False.
+func TestARefusalOfAnObjectTheTenantHoldsKeepsAddonsAppliedTrue(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-refused-update")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	taken := cp.Generation
+	refuseConfigMap(t, admin, "coredns")
+
+	setReplicas(t, cp, 3)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	const refused = "ConfigMap kube-system/coredns is refused by the tenant's API server; the reason is in Lodia's log"
+	testenv.Eventually(t, func() error {
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refused, taken)
+	})
+
+	if err := admin.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}}); err != nil {
+		t.Fatal(err)
+	}
+	setReplicas(t, cp, 4)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	testenv.Eventually(t, func() error {
+		return expectAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, refused, cp.Generation)
+	})
+}
+
+// A refusal stops no other object: one of the render that is missing after it is created again, and AddonsApplied stays True naming the refusal.
+func TestARefusalStopsNoOtherObject(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-refused-missing")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	taken := cp.Generation
+	refuseConfigMap(t, admin, "coredns")
+	if err := admin.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}}); err != nil {
+		t.Fatal(err)
+	}
+	setReplicas(t, cp, 3)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	const refused = "ConfigMap kube-system/coredns is refused by the tenant's API server; the reason is in Lodia's log"
+	testenv.Eventually(t, func() error {
+		if !exists(t, admin, "Deployment kube-system/coredns") {
+			return errors.New("Deployment kube-system/coredns, after the refused ConfigMap, is not created again")
+		}
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refused, taken)
+	})
+}
+
+// A pass with a refusal, of an apply or of a prune, leaves the inventory listing what left the render, which the first pass without a refusal prunes.
+func TestAPassWithARefusalLeavesItsPruneToTheNext(t *testing.T) {
+	coreDNS := []string{"ConfigMap kube-system/coredns", "Deployment kube-system/coredns", "ServiceAccount kube-system/coredns", "ClusterRole system:coredns"}
+	for _, c := range []struct {
+		name, refused string
+		kept          []string
+		refuse        func(*testing.T, *tenantClient) string
+	}{
+		{"an apply", "ConfigMap kube-system/kube-proxy", coreDNS, func(t *testing.T, admin *tenantClient) string {
+			refuseConfigMap(t, admin, "kube-proxy")
+			return "no-kube-proxy"
+		}},
+		{"a prune", "ConfigMap kube-system/coredns", coreDNS[:1], func(t *testing.T, admin *tenantClient) string {
+			return refuseDelete(t, admin, "coredns")
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			cp, admin := servedTenant(t, "tenant-refused-prune-"+strings.ReplaceAll(c.name, " ", "-"))
+			testenv.Eventually(t, func() error {
+				return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+			})
+			taken := cp.Generation
+			binding := c.refuse(t, admin)
+			setCoreDNS(t, cp, false)
+			testenv.Eventually(t, func() error {
+				return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, c.refused+" is refused by the tenant's API server; the reason is in Lodia's log", taken)
+			})
+			listed := inventoryOf(t, admin)
+			for _, entry := range coreDNS {
+				if !slices.Contains(listed, entry) {
+					t.Errorf("%s, which left the render, is no longer listed after a pass with a refusal", entry)
+				}
+			}
+			for _, entry := range c.kept {
+				if !exists(t, admin, entry) {
+					t.Errorf("%s is pruned by a pass with a refusal", entry)
+				}
+			}
+
+			if err := admin.Delete(ctx, &admissionregistrationv1.ValidatingAdmissionPolicyBinding{ObjectMeta: metav1.ObjectMeta{Name: binding}}); err != nil {
+				t.Fatal(err)
+			}
+			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+			testenv.Eventually(t, func() error {
+				return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+			})
+			listed = inventoryOf(t, admin)
+			for _, entry := range coreDNS {
+				if exists(t, admin, entry) || slices.Contains(listed, entry) {
+					t.Errorf("%s is left after the first pass without a refusal", entry)
+				}
+			}
+		})
 	}
 }
 
@@ -1205,15 +1302,10 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 		}
 	}
 
+	taken := cp.Generation
 	setCoreDNS(t, cp, true)
 	testenv.Eventually(t, func() error {
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere); err != nil {
-			return err
-		}
-		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon" {
-			return fmt.Errorf("AddonsApplied says %q", c.Message)
-		}
-		return nil
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon", taken)
 	})
 	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable); strings.Contains(c.Message, "coredns") {
 		t.Errorf("AddonsAvailable reads the owner's Deployment: %q", c.Message)
@@ -1263,6 +1355,23 @@ func TestAnInventoryReadTheTenantRefusesIsReported(t *testing.T) {
 		}
 		return nil
 	})
+}
+
+// writesButConfigMaps are lodia:operator's rules but for writing ConfigMaps.
+var writesButConfigMaps = []rbacv1.PolicyRule{
+	{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+	{APIGroups: []string{""}, Resources: []string{"serviceaccounts", "services", "endpoints", "secrets"}, Verbs: []string{"*"}},
+	{APIGroups: []string{rbacv1.GroupName, appsv1.GroupName, "discovery.k8s.io"}, Resources: []string{"*"}, Verbs: []string{"*"}},
+	{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
+}
+
+// refusedConfigMaps is AddonsApplied's message while the tenant refuses every ConfigMap of the render with verdict.
+func refusedConfigMaps(verdict string) string {
+	var named []string
+	for _, name := range []string{"kube-public/cluster-info", "kube-system/kubeadm-config", "kube-system/kubelet-config", "kube-system/kube-proxy", "kube-system/coredns"} {
+		named = append(named, "ConfigMap "+name+" "+verdict)
+	}
+	return strings.Join(named, "; ") + "; the reason is in Lodia's log"
 }
 
 func rebindOperator(t *testing.T, admin *tenantClient, rules []rbacv1.PolicyRule, denied authorizationv1.ResourceAttributes) {
@@ -1579,6 +1688,96 @@ func expectCondition(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType
 		return fmt.Errorf("%s is %s %s at generation %d (%s), want %s %s at %d", conditionType, c.Status, c.Reason, c.ObservedGeneration, c.Message, status, reason, cp.Generation)
 	}
 	return nil
+}
+
+func expectAddonsApplied(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.ConditionStatus, reason, message string, generation int64) error {
+	t.Helper()
+	c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied)
+	if c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != generation {
+		return fmt.Errorf("AddonsApplied is %s %s at generation %d (%s), want %s %s %q at %d", c.Status, c.Reason, c.ObservedGeneration, c.Message, status, reason, message, generation)
+	}
+	return nil
+}
+
+func refuseConfigMap(t *testing.T, admin *tenantClient, name string) {
+	t.Helper()
+	ctx := t.Context()
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-" + name},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				ResourceNames: []string{name},
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != 'kube-system'", Message: "kept out by the tenant's policy"}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec:       admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		if err := admin.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testenv.Eventually(t, func() error {
+		current := &corev1.ConfigMap{}
+		if err := admin.Get(ctx, client.ObjectKey{Namespace: "kube-system", Name: name}, current); err != nil {
+			return err
+		}
+		if err := admin.Update(ctx, current, client.DryRunAll); err == nil {
+			return errors.New("the policy does not refuse the ConfigMap yet")
+		}
+		return nil
+	})
+	t.Cleanup(func() {
+		_ = admin.Delete(context.Background(), binding)
+		_ = admin.Delete(context.Background(), policy)
+	})
+}
+
+// refuseDelete has the tenant refuse the deletion of the kube-system ConfigMap name until the test ends, and returns the policy's binding.
+func refuseDelete(t *testing.T, admin *tenantClient, name string) string {
+	t.Helper()
+	ctx := t.Context()
+	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "no-delete-" + name},
+		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
+			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
+				ResourceNames: []string{name},
+				RuleWithOperations: admissionregistrationv1.RuleWithOperations{
+					Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Delete},
+					Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}},
+				},
+			}}},
+			Validations: []admissionregistrationv1.Validation{{Expression: "oldObject.metadata.namespace != 'kube-system'", Message: "kept by the tenant's policy"}},
+		},
+	}
+	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: policy.Name},
+		Spec:       admissionregistrationv1.ValidatingAdmissionPolicyBindingSpec{PolicyName: policy.Name, ValidationActions: []admissionregistrationv1.ValidationAction{admissionregistrationv1.Deny}},
+	}
+	for _, obj := range []client.Object{policy, binding} {
+		if err := admin.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testenv.Eventually(t, func() error {
+		current := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: name}}
+		if err := admin.Delete(ctx, current, client.DryRunAll); err == nil {
+			return errors.New("the policy does not refuse the deletion yet")
+		}
+		return nil
+	})
+	t.Cleanup(func() {
+		_ = admin.Delete(context.Background(), binding)
+		_ = admin.Delete(context.Background(), policy)
+	})
+	return binding.Name
 }
 
 func expectNow(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string, status metav1.ConditionStatus, reason string) {

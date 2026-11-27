@@ -245,10 +245,12 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true}},
 		{"3: addons never applied in full", held(closedWindow, condition(waitingForAccess), func(f *facts) { f.cp.Status.Addons = nil }),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
-		{"3: addons refused", held(closedWindow, condition(refused)),
-			granted{revision: revisionB, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"}},
-		{"3: addons stopped on another owner's object", held(closedWindow, condition(elsewhere)),
-			granted{revision: revisionB, reason: lodiav1alpha1.ReasonFailed, message: "AddonsApplied: ObjectsControlledElsewhere: ConfigMap kube-system/x exists and is not Lodia's"}},
+		{"3: not addons refused while the tenant lacks an object, a refusal rule 4 holds", held(closedWindow, condition(refused)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"}},
+		{"3: not addons refused while the tenant serves", held(closedWindow, condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "the tenant refuses"})),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"}},
+		{"3: not addons stopped on another owner's object, a refusal rule 4 holds", held(closedWindow, condition(elsewhere)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "AddonsApplied: ObjectsControlledElsewhere: ConfigMap kube-system/x exists and is not Lodia's"}},
 		{"3: addons whose apply did not finish", held(closedWindow, condition(applying)),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
 		{"3: APIServerReady False WaitingForTarget at the object's generation", held(closedWindow, condition(heldAPI)),
@@ -303,6 +305,43 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: new(present.Add(-time.Hour)), requeue: 30 * time.Second}},
 		{"7: the window's start, kept from the wait, is when it became eligible", held(fleet(holding("a", "a")), inWindow("12:00", "13:00", ""), scheduled(time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)), func(f *facts) { f.limit = 1 }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: new(time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)), requeue: 30 * time.Second}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			expectGrant(t, c.f, c.want)
+		})
+	}
+}
+
+// A refusal a held writer's trial finds holds the grant in a closed window under whatever status it names it, Tenant's False Refused over an inventory that is not whole and Workloads' False Refused or AuthenticationInvalid over the grant's wait included, while a write no dry run can try over that wait leaves the grant at once.
+func TestARefusalAHeldTrialFindsHoldsTheGrantWhateverItsStatus(t *testing.T) {
+	const triedDNS = "the grant's write of Deployment kube-system/coredns would be refused: the dry run is refused by the tenant's API server; the reason is in Lodia's log"
+	const triedScheduler = "the grant's write of Deployment dev-kube-scheduler would be refused: the API server refuses the dry run; the reason is in Lodia's log"
+	const invalid = "the authentication configuration of spec.apiServer.authentication is not written: jwt[0].issuer.url: Invalid value"
+	const untried = "the grant's write of NetworkPolicy dev-kube-scheduler cannot be tried: admission webhook \"probe.lodia.io\" does not support dry run"
+	holding := "waiting for Lifecycle to grant the running operator revision " + revisionB + "; status.target.operatorRevision is " + revisionA
+	api := func(status metav1.ConditionStatus, reason, message string) func(*facts) {
+		return condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: status, Reason: reason, Message: message})
+	}
+	addons := func(status metav1.ConditionStatus) func(*facts) {
+		return condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: status, Reason: lodiav1alpha1.ReasonRefused, Message: triedDNS})
+	}
+	for _, c := range []struct {
+		name string
+		f    facts
+		want granted
+	}{
+		{"Tenant's trial over a wait, the inventory not whole", held(closedWindow, addons(metav1.ConditionFalse)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "AddonsApplied: Refused: " + triedDNS}},
+		{"Tenant's trial over what serves", held(closedWindow, addons(metav1.ConditionTrue)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "AddonsApplied: Refused: " + triedDNS}},
+		{"Workloads' trial over the grant's wait", held(closedWindow, api(metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, holding+"; "+triedScheduler)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "APIServerReady: Refused: " + holding + "; " + triedScheduler}},
+		{"Workloads' check over the grant's wait", held(closedWindow, api(metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, holding+"; "+invalid)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "APIServerReady: AuthenticationInvalid: " + holding + "; " + invalid}},
+		{"Workloads' trial over what serves", held(closedWindow, api(metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "every replica is ready; "+triedScheduler)),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "APIServerReady: Refused: every replica is ready; " + triedScheduler}},
+		{"a write no dry run can try over the grant's wait", held(closedWindow, api(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, holding+"; "+untried)),
+			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			expectGrant(t, c.f, c.want)
@@ -547,12 +586,159 @@ func TestProgressingOrderWithMaintenance(t *testing.T) {
 	}
 }
 
+var gatewayMode = func(f *facts) {
+	f.cp.Spec.Endpoint.Gateway = &lodiav1alpha1.GatewayEndpoint{}
+	set(f, metav1.Condition{Type: lodiav1alpha1.ConditionRoutesReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonAccepted, ObservedGeneration: 3})
+}
+
+var loadBalancerMode = func(f *facts) {
+	f.cp.Spec.Endpoint.LoadBalancer = &lodiav1alpha1.LoadBalancerEndpoint{}
+	set(f, metav1.Condition{Type: lodiav1alpha1.ConditionLoadBalancerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, ObservedGeneration: 3})
+}
+
+type refusalOn struct {
+	name    string
+	refusal metav1.Condition
+	mode    func(*facts)
+}
+
+func (r refusalOn) reported(f *facts) {
+	if r.mode != nil {
+		r.mode(f)
+	}
+	condition(r.refusal)(f)
+}
+
+func refusedBeforeHold(conditionType, message string) metav1.Condition {
+	return metav1.Condition{Type: conditionType, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefusedBeforeHold, Message: message}
+}
+
+const untried = `cannot be tried: admission webhook "probe.lodia.io" does not support dry run`
+
+// untriedUnderTheHold are the refusals of each held writer whose grant's writes no dry run can try.
+var untriedUnderTheHold = []refusalOn{
+	{"APIServerReady", refusedBeforeHold(lodiav1alpha1.ConditionAPIServerReady, "every replica is ready; the grant's write of ConfigMap dev-egress-selector "+untried), nil},
+	{"LoadBalancerReady", refusedBeforeHold(lodiav1alpha1.ConditionLoadBalancerReady, "the load balancer reports 203.0.113.10; the grant's write of Service dev-apiserver "+untried), loadBalancerMode},
+	{"RoutesReady", refusedBeforeHold(lodiav1alpha1.ConditionRoutesReady, "every route is Accepted; the grant's write of TLSRoute dev-apiserver "+untried), gatewayMode},
+	{"DatastoreReady", refusedBeforeHold(lodiav1alpha1.ConditionDatastoreReady, "Etcd dev-etcd has quorum; the grant's write of NetworkPolicy dev-etcd "+untried), nil},
+}
+
+// metUnderTheHold are refusals a held writer meets itself or by its dry run of the grant's writes, which it tries again on every pass, True and False, and one beside one no dry run can try.
+var metUnderTheHold = []refusalOn{
+	{"APIServerReady True Refused", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "every replica is ready; the API server refuses NetworkPolicy dev-kube-scheduler"}, nil},
+	{"APIServerReady True ObjectsControlledElsewhere", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, Message: "every replica is ready; another owner keeps ConfigMap dev-egress"}, nil},
+	{"APIServerReady True AuthenticationInvalid", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonAuthenticationInvalid, Message: "every replica is ready; the authentication configuration is not written"}, nil},
+	{"APIServerReady, a refusal met beside one no dry run can try", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "every replica is ready; the API server refuses NetworkPolicy dev-kube-scheduler; the grant's write of ConfigMap dev-egress-selector " + untried}, nil},
+	{"APIServerReady, a refusal of the dry run", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "every replica is ready; the grant's write of ConfigMap dev-egress-selector would be refused: the API server refuses the dry run"}, nil},
+	{"APIServerReady False", metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the API server refuses Deployment dev-kube-scheduler"}, nil},
+	{"LoadBalancerReady True", metav1.Condition{Type: lodiav1alpha1.ConditionLoadBalancerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "the load balancer reports 203.0.113.10; the API server refuses Service dev-apiserver"}, loadBalancerMode},
+	{"LoadBalancerReady False", metav1.Condition{Type: lodiav1alpha1.ConditionLoadBalancerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the API server refuses Service dev-apiserver"}, loadBalancerMode},
+	{"RoutesReady", metav1.Condition{Type: lodiav1alpha1.ConditionRoutesReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "every route is Accepted; the API server refuses TLSRoute dev-apiserver"}, gatewayMode},
+	{"AddonsApplied True Refused", metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "ConfigMap kube-system/coredns is refused by the tenant's API server"}, nil},
+	{"AddonsApplied True ObjectsControlledElsewhere", metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonObjectsControlledElsewhere, Message: "ConfigMap kube-system/x exists and is not Lodia's"}, nil},
+	{"DatastoreReady", metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "Etcd dev-etcd has quorum; the API server refuses Etcd dev-etcd on certificate generation 2, the rest of its spec as stored"}, nil},
+	{"AccessReady", metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "the bindings are bound; ClusterRoleBinding lodia:operator is refused"}, nil},
+}
+
+// A refusal no dry run of a held writer can try does not hold the running revision: it waits through a closed window and a full fleet, Failed naming it, and is granted in an open window, or with none, in a slot, also while a renderer is behind both revisions.
+func TestARefusalNoDryRunCanTryIsGrantedInTheWindowAndASlot(t *testing.T) {
+	nextStart := time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
+	nowSecond := now.Rfc3339Copy().Time
+	for _, r := range untriedUnderTheHold {
+		failed := "the change Lodia started failed: " + quoted(&r.refusal)
+		for _, c := range []struct {
+			name string
+			f    facts
+			want granted
+		}{
+			{"a closed window", held(closedWindow, r.reported),
+				granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: quoted(&r.refusal), scheduledFor: &nextStart, requeue: 30 * time.Minute}},
+			{"a full fleet", held(fleet(holding("a", "a")), func(f *facts) { f.limit = 1 }, r.reported),
+				granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: quoted(&r.refusal), scheduledFor: &nowSecond, requeue: fleetRequeue}},
+			{"an open window", held(inWindow("12:00", "13:00", ""), r.reported),
+				granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed, slot: true, takesSlot: true}},
+			{"no window", held(r.reported),
+				granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed, slot: true, takesSlot: true}},
+			{"a renderer behind both revisions", held(r.reported, func(f *facts) { f.cp.Status.Components.Scheduler.OperatorRevision = revisionC }),
+				granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed, slot: true, takesSlot: true}},
+		} {
+			t.Run(r.name+", "+c.name, func(t *testing.T) {
+				expectGrant(t, c.f, c.want)
+			})
+		}
+	}
+}
+
+// The slot a refusal no dry run can try leaves open grants everything pending with the revision: a patch update and a class edit.
+func TestTheSlotOverARefusalNoDryRunCanTryGrantsEverythingPending(t *testing.T) {
+	refusal := untriedUnderTheHold[0].refusal
+	failed := "the change Lodia started failed: " + quoted(&refusal)
+	d := expectGrant(t, held(inWindow("12:00", "13:00", ""), patches, onClass(4, 4, 5), condition(refusal)),
+		granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed, slot: true, takesSlot: true})
+	expectVersion(t, d, versioned{version: latest137, step: lodiav1alpha1.UpgradeStepAPIServer, since: now.Rfc3339Copy().Time})
+	expectClass(t, d, shared(5))
+}
+
+// A revision granted at once, an owner's edit, has its writer send the refused object again, so the refusal no dry run could try then holds a pending patch update as any refusal its writer retries does.
+func TestARevisionGrantedAtOnceLeavesThePatchToTheRefusal(t *testing.T) {
+	refusal := untriedUnderTheHold[0].refusal
+	d := expectGrant(t, held(inWindow("12:00", "13:00", ""), patches, edited, condition(refusal)),
+		granted{revision: revisionB, reason: lodiav1alpha1.ReasonFailed, message: quoted(&refusal)})
+	expectVersion(t, d, versioned{version: "v1.37.1"})
+}
+
+// After the grant a refusal no dry run could try that its writer meets again fails the change, which keeps its slot, and one whose cause is gone lets the change roll.
+func TestAfterTheGrantARefusalNoDryRunCouldTryFailsTheChangeOrEnds(t *testing.T) {
+	refusal := untriedUnderTheHold[0].refusal
+	failed := "the change Lodia started failed: " + quoted(&refusal)
+	f := held(condition(refusal))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed, slot: true, takesSlot: true}))
+	adopt(f.cp, expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed, slot: true}))
+	f.now = present.Add(24 * time.Hour)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: failed, slot: true})
+
+	met := metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "every replica is ready; the API server refuses ConfigMap dev-egress-selector; the reason is in Lodia's log"}
+	condition(met)(&f)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "the change Lodia started failed: " + quoted(&met), slot: true})
+
+	condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "every replica is ready"})(&f)
+	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, message: "the change Lodia started rolls: kube-apiserver: reports operator revision " + revisionA + ", not " + revisionB, slot: true})
+}
+
+// A refusal its writer tries again on every pass holds every grant, in the window or out of it with no next start set: every one a held writer meets, and one no dry run could try once its writer is no longer held.
+func TestARefusalItsWriterRetriesKeepsEverySlot(t *testing.T) {
+	for _, r := range metUnderTheHold {
+		for window, open := range map[string]func(*facts){"open": inWindow("12:00", "13:00", ""), "closed": closedWindow} {
+			t.Run("held, "+r.name+", the window "+window, func(t *testing.T) {
+				expectGrant(t, held(open, r.reported), granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: quoted(&r.refusal)})
+			})
+		}
+	}
+	for _, r := range untriedUnderTheHold {
+		t.Run("at rest, "+r.name, func(t *testing.T) {
+			d := expectGrant(t, held(running(revisionA), inWindow("12:00", "13:00", ""), patches, r.reported), granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: quoted(&r.refusal)})
+			expectVersion(t, d, versioned{version: "v1.37.1"})
+		})
+	}
+}
+
+// Progressing and the grant name a refusal that blocks before one no dry run can try that comes first among Ready's inputs, so the operator reads why no grant comes.
+func TestProgressingNamesTheRefusalThatBlocksFirst(t *testing.T) {
+	blocking := metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonRefused, Message: "ConfigMap kube-system/coredns is refused by the tenant's API server"}
+	first := untriedUnderTheHold[0].refusal
+	for window, open := range map[string]func(*facts){"open": inWindow("12:00", "13:00", ""), "closed": closedWindow} {
+		t.Run("the window "+window, func(t *testing.T) {
+			expectGrant(t, held(open, condition(first), condition(blocking)), granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: quoted(&blocking)})
+		})
+	}
+}
+
 func TestAnOwnersRevisionThatIsRefusedFails(t *testing.T) {
 	refused := condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the tenant refuses"})
 	expectGrant(t, held(running(revisionA), refused, func(f *facts) { f.cp.Status.Components.APIServer.OperatorRevision = revisionC }),
 		granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"})
 	expectGrant(t, held(running(revisionA), refused),
-		granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle})
+		granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"})
 }
 
 func TestAnotherOwnersObjectInTheTenantFailsTheChangeInItsSlot(t *testing.T) {
