@@ -161,8 +161,14 @@ func previous(cp *lodiav1alpha1.ControlPlane, conditionType string) metav1.Condi
 	return statusapply.FirstPass(cp, conditionType)
 }
 
-func missingCAMessage(cas []string) string {
-	return "missing or unreadable CA key: " + strings.Join(cas, ", ") + "; restore it or rotate the CA, nothing it signs is written"
+func (t *tenant) missingCAMessage() string {
+	message := "missing or unreadable CA key: " + strings.Join(t.missingCAs, ", ") + "; restore it or rotate the CA, nothing it signs is written"
+	if t.etcdWithoutCA > 0 {
+		key := t.name("cakey-" + etcdCA)
+		message += fmt.Sprintf("; %s and %s are gone while etcd generation %d exists, whose members trust only that CA: restore %s from a backup without its metadata.ownerReferences",
+			key, t.secret(lodiav1alpha1.EtcdCASecret), t.etcdWithoutCA, key)
+	}
+	return message
 }
 
 // certificatesReady reads the state the pass leaves: a write that failed
@@ -171,7 +177,7 @@ func (t *tenant) certificatesReady() metav1.Condition {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionCertificatesReady, Status: metav1.ConditionFalse}
 	switch {
 	case len(t.missingCAs) > 0:
-		c.Reason, c.Message = lodiav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
+		c.Reason, c.Message = lodiav1alpha1.ReasonCAMissing, t.missingCAMessage()
 	case len(t.expiredCAs) > 0:
 		c.Reason, c.Message = lodiav1alpha1.ReasonCAExpired, "expired CA: "+strings.Join(t.expiredCAs, ", ")+"; rotate it, nothing it signs is written"
 	case len(t.unreadable) > 0:
@@ -210,7 +216,7 @@ func (t *tenant) caValidity(notice time.Duration) (metav1.Condition, bool) {
 	case len(expiring) > 0:
 		c.Status, c.Reason, c.Message = metav1.ConditionFalse, lodiav1alpha1.ReasonCAExpiring, "expiring within "+notice.String()+": "+strings.Join(expiring, ", ")+"; start its rotation"
 	case len(t.missingCAs) > 0:
-		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, lodiav1alpha1.ReasonCAMissing, missingCAMessage(t.missingCAs)
+		c.Status, c.Reason, c.Message = metav1.ConditionUnknown, lodiav1alpha1.ReasonCAMissing, t.missingCAMessage()
 	}
 	return c, len(t.caCerts)+len(t.missingCAs) == len(bundles)
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -270,6 +271,30 @@ func TestLeftoversUnderPKINames(t *testing.T) {
 			t.Errorf("%s restored without labels or owner was not adopted with its keys", name)
 		}
 	}
+}
+
+// A new tenant beside a predecessor's etcd generation that no ControlPlane controls gets its etcd CA, and the generation goes, neither kept nor adopted.
+func TestANewTenantBesideAnOrphanedEtcdGenerationGetsItsEtcdCA(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-etcd-orphaned")
+	publishEndpoint(t, cp)
+	predecessor, err := certs.NewCA("etcd-ca@1", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeGeneration(t, cp, 1, []*x509.Certificate{predecessor.Cert}, func(string) *certs.Certificate { return predecessor }, time.Now())
+	held := secretOf(t, cp, "dev-etcd-server-1")
+	held.OwnerReferences = []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "dev-etcd", UID: "8f0c6f2e-0d6e-4f4e-9e44-0d6a7c1b5a23"}}
+	if err := k8s.Update(ctx, held); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	if parseTLS(t, secretOf(t, cp, "dev-cakey-etcd")).Cert.Equal(predecessor.Cert) {
+		t.Fatal("the new tenant took the predecessor's etcd CA")
+	}
+	expectGenerations(t, cp, 2)
 }
 
 func TestAnOldGenerationChangedSinceItWasReadIsKept(t *testing.T) {

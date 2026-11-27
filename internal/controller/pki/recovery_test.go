@@ -15,6 +15,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -399,4 +400,266 @@ func TestAnEtcdGenerationRenewsWithoutAClientCA(t *testing.T) {
 	}
 	reconcile(t, r, cp)
 	expectGenerations(t, cp, 2)
+}
+
+// A running tenant that loses both etcd CA Secrets beside two etcd generations gets no new etcd CA: CertificatesReady and CAValidityAcceptable say CAMissing naming the newer generation, both generations stay as they were and every other certificate renews, until the key Secret is back.
+func TestNoEtcdCAIsCreatedBesideAnEtcdGeneration(t *testing.T) {
+	ctx := t.Context()
+	start := time.Now()
+	clock := clocktesting.NewFakePassiveClock(start)
+	r := newReconciler(time.Hour)
+	r.Clock = clock
+	cp := controlPlane(t, "pki-etcd-ca-lost")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	clock.SetTime(start.Add(41 * time.Minute))
+	reconcile(t, r, cp)
+	reconcile(t, r, cp)
+	expectGenerations(t, cp, 1, 2)
+	issued := secretsOf(t, cp)
+	before, _ := resourceVersions(t, cp)
+	lose := func() {
+		t.Helper()
+		for _, name := range []string{"dev-cakey-etcd", "dev-etcd-ca"} {
+			if err := k8s.Delete(ctx, secretOf(t, cp, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	lose()
+	reconcile(t, r, cp)
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonCAMissing ||
+		!strings.Contains(c.Message, "dev-cakey-etcd and dev-etcd-ca are gone while etcd generation 2 exists") ||
+		!strings.Contains(c.Message, "restore dev-cakey-etcd from a backup without its metadata.ownerReferences") {
+		t.Fatalf("CertificatesReady is %s %s: %s", c.Status, c.Reason, c.Message)
+	}
+	if v := condition(t, cp, lodiav1alpha1.ConditionCAValidityAcceptable); v.Status != metav1.ConditionUnknown || v.Reason != lodiav1alpha1.ReasonCAMissing ||
+		!strings.Contains(v.Message, "dev-cakey-etcd and dev-etcd-ca are gone while etcd generation 2 exists") {
+		t.Fatalf("CAValidityAcceptable is %s %s: %s", v.Status, v.Reason, v.Message)
+	}
+	after, _ := resourceVersions(t, cp)
+	for _, name := range []string{"dev-cakey-etcd", "dev-etcd-ca"} {
+		if _, created := after[name]; created {
+			t.Errorf("%s was written beside an etcd generation", name)
+		}
+	}
+	for name, version := range after {
+		if before[name] != version {
+			t.Errorf("%s was written while the etcd CA is lost", name)
+		}
+	}
+	expectGenerations(t, cp, 1, 2)
+
+	key := issued["dev-cakey-etcd"]
+	if err := k8s.Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}, Type: key.Type, Data: key.Data}); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+	restored := secretsOf(t, cp)
+	if !metav1.IsControlledBy(restored["dev-cakey-etcd"], cp) || !maps.EqualFunc(restored["dev-cakey-etcd"].Data, key.Data, bytes.Equal) {
+		t.Error("the etcd CA put back was not adopted as it is")
+	}
+	if !bytes.Equal(restored["dev-etcd-ca"].Data[lodiav1alpha1.CACertKey], issued["dev-etcd-ca"].Data[lodiav1alpha1.CACertKey]) {
+		t.Error("dev-etcd-ca does not hold the etcd CA put back")
+	}
+	for name, s := range restored {
+		if name != "dev-cakey-etcd" && name != "dev-etcd-ca" && before[name] != s.ResourceVersion {
+			t.Errorf("%s was written once the etcd CA was back", name)
+		}
+	}
+	expectGenerations(t, cp, 1, 2)
+
+	lose()
+	clock.SetTime(start.Add(90 * time.Minute))
+	reconcileOnce(t, r, cp)
+	expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionFalse, lodiav1alpha1.ReasonCAMissing)
+	renewed := secretsOf(t, cp)
+	for _, name := range []string{"dev-apiserver-serving", "dev-apiserver-kubelet-client", "dev-front-proxy-client", "dev-konnectivity-server",
+		"dev-konnectivity-kubeconfig", "dev-controller-manager-kubeconfig", "dev-scheduler-kubeconfig", "dev-lodia-kubeconfig", "dev-admin-kubeconfig"} {
+		if leafOf(t, renewed[name]).Cert.Equal(leafOf(t, issued[name]).Cert) {
+			t.Errorf("%s was not renewed while the etcd CA is lost", name)
+		}
+	}
+	for name, s := range renewed {
+		if name == "dev-cakey-etcd" || name == "dev-etcd-ca" {
+			t.Errorf("%s was written beside an etcd generation", name)
+		}
+		if (name == "dev-apiserver-etcd-client" || s.Labels[lodiav1alpha1.EtcdCertificatesLabel] != "") && s.ResourceVersion != before[name] {
+			t.Errorf("%s, signed by the lost etcd CA, was written", name)
+		}
+	}
+	expectGenerations(t, cp, 1, 2)
+}
+
+// A tenant that loses both etcd CA Secrets while a finalizer holds its etcd generation being deleted gets no new etcd CA.
+func TestNoEtcdCAIsCreatedBesideAnEtcdGenerationBeingDeleted(t *testing.T) {
+	ctx := t.Context()
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-etcd-ca-lost-held")
+	publishEndpoint(t, cp)
+	reconcile(t, r, cp)
+	for name, s := range secretsOf(t, cp) {
+		if s.Labels[lodiav1alpha1.EtcdCertificatesLabel] != "" {
+			s.Finalizers = []string{"example.com/hold"}
+			if err := k8s.Update(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+		} else if name != "dev-cakey-etcd" && name != "dev-etcd-ca" {
+			continue
+		}
+		if err := k8s.Delete(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reconcileOnce(t, r, cp)
+	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
+	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "while etcd generation 1 exists") {
+		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
+	}
+	if secretsOf(t, cp)["dev-cakey-etcd"] != nil {
+		t.Error("an etcd CA was created beside the generation being deleted")
+	}
+}
+
+// A running tenant with an etcd generation that loses the cluster CA or the client CA, key and bundle, gets a new one: only the etcd CA is held back by a generation.
+func TestANewCAIsCreatedBesideAnEtcdGenerationForAnyCAButEtcd(t *testing.T) {
+	for _, c := range []struct{ name, key, bundle string }{
+		{"cluster", "dev-cakey-cluster", "dev-ca-bundle"},
+		{"client", "dev-cakey-client", "dev-client-ca"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newReconciler(time.Hour)
+			cp := controlPlane(t, "pki-new-ca-"+c.name)
+			publishEndpoint(t, cp)
+			reconcile(t, r, cp)
+			expectGenerations(t, cp, 1)
+			lost := parseTLS(t, secretOf(t, cp, c.key)).Cert
+			for _, name := range []string{c.key, c.bundle} {
+				if err := k8s.Delete(t.Context(), secretOf(t, cp, name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reconcile(t, r, cp)
+			created := secretsOf(t, cp)[c.key]
+			if created == nil || parseTLS(t, created).Cert.Equal(lost) {
+				t.Fatalf("%s was not created anew beside etcd generation 1", c.key)
+			}
+			expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
+			expectGenerations(t, cp, 1)
+		})
+	}
+}
+
+// A previous etcd generation is kept only if its ca.crt holds the etcd CA alone and the etcd CA signed each of its leaves, expired or not.
+func TestAPreviousEtcdGenerationIsKeptOnlyIfItChains(t *testing.T) {
+	other, err := certs.NewCA("etcd-ca@1", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etcdAlone := func(etcd *certs.Certificate) []*x509.Certificate { return []*x509.Certificate{etcd.Cert} }
+	signedByOther := func(leaf string) func(*certs.Certificate, string) *certs.Certificate {
+		return func(etcd *certs.Certificate, role string) *certs.Certificate {
+			if role == leaf {
+				return other
+			}
+			return etcd
+		}
+	}
+	for i, c := range []struct {
+		name   string
+		bundle func(etcd *certs.Certificate) []*x509.Certificate
+		signer func(etcd *certs.Certificate, role string) *certs.Certificate
+		issued time.Time
+		want   []int
+	}{
+		{"of another etcd CA", func(*certs.Certificate) []*x509.Certificate { return []*x509.Certificate{other.Cert} },
+			func(*certs.Certificate, string) *certs.Certificate { return other }, time.Now(), []int{1, 3}},
+		{"whose ca.crt holds the etcd CA before another", func(etcd *certs.Certificate) []*x509.Certificate { return []*x509.Certificate{etcd.Cert, other.Cert} },
+			func(etcd *certs.Certificate, _ string) *certs.Certificate { return etcd }, time.Now(), []int{1, 3}},
+		{"whose ca.crt holds the etcd CA after another", func(etcd *certs.Certificate) []*x509.Certificate { return []*x509.Certificate{other.Cert, etcd.Cert} },
+			func(etcd *certs.Certificate, _ string) *certs.Certificate { return etcd }, time.Now(), []int{1, 3}},
+		{"with a server leaf another CA signed", etcdAlone, signedByOther("server"), time.Now(), []int{1, 3}},
+		{"with a client leaf another CA signed", etcdAlone, signedByOther("client"), time.Now(), []int{1, 3}},
+		{"with a peer leaf another CA signed", etcdAlone, signedByOther("peer"), time.Now(), []int{1, 3}},
+		{"with a backup-restore leaf another CA signed", etcdAlone, signedByOther("backup-restore"), time.Now(), []int{1, 3}},
+		{"whose leaves expired", func(etcd *certs.Certificate) []*x509.Certificate { return []*x509.Certificate{etcd.Cert} },
+			func(etcd *certs.Certificate, _ string) *certs.Certificate { return etcd }, time.Now().Add(-2 * time.Hour), []int{2, 3}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newReconciler(time.Hour)
+			cp := controlPlane(t, "pki-etcd-chain-"+strconv.Itoa(i))
+			reconcile(t, r, cp)
+			etcd := parseTLS(t, secretOf(t, cp, "dev-cakey-etcd"))
+			writeGeneration(t, cp, 2, c.bundle(etcd), func(role string) *certs.Certificate { return c.signer(etcd, role) }, c.issued)
+			reconcile(t, r, cp)
+			expectGenerations(t, cp, c.want...)
+			for name, s := range secretsOf(t, cp) {
+				if s.Labels[lodiav1alpha1.EtcdCertificatesLabel] != "" && !metav1.IsControlledBy(s, cp) {
+					t.Errorf("%s, which PKI keeps, was not adopted", name)
+				}
+			}
+		})
+	}
+}
+
+// A current etcd generation whose ca Secret holds the etcd CA beside another, or is not immutable, is replaced by the next, and the old one is kept as previous only if it still chains.
+func TestACurrentEtcdGenerationNeedsItsCASecretImmutableAndHoldingTheEtcdCAAlone(t *testing.T) {
+	other, err := certs.NewCA("etcd-ca@1", time.Now(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range []struct {
+		name      string
+		bundle    func(etcd []byte) []byte
+		immutable bool
+		want      []int
+	}{
+		{"holding another CA beside the etcd CA", func(etcd []byte) []byte { return append(etcd, mustPEM(t, other.Cert)...) }, true, []int{2}},
+		{"not immutable", func(etcd []byte) []byte { return etcd }, false, []int{1, 2}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			r := newReconciler(time.Hour)
+			cp := controlPlane(t, "pki-etcd-current-ca-"+strconv.Itoa(i))
+			reconcile(t, r, cp)
+			expectGenerations(t, cp, 1)
+			s := secretOf(t, cp, "dev-etcd-ca-1")
+			if err := k8s.Delete(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+			replaced := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: s.Name, Namespace: s.Namespace, Labels: s.Labels, OwnerReferences: s.OwnerReferences}, Type: s.Type,
+				Data: map[string][]byte{lodiav1alpha1.CACertKey: c.bundle(s.Data[lodiav1alpha1.CACertKey])}, Immutable: new(c.immutable)}
+			if err := k8s.Create(ctx, replaced); err != nil {
+				t.Fatal(err)
+			}
+			reconcile(t, r, cp)
+			expectGenerations(t, cp, c.want...)
+		})
+	}
+}
+
+func writeGeneration(t *testing.T, cp *lodiav1alpha1.ControlPlane, g int, bundle []*x509.Certificate, signer func(role string) *certs.Certificate, issued time.Time) {
+	t.Helper()
+	labels := map[string]string{lodiav1alpha1.ControlPlaneLabel: cp.Name, lodiav1alpha1.EtcdCertificatesLabel: strconv.Itoa(g)}
+	write := func(role string, typ corev1.SecretType, data map[string][]byte) {
+		s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: cp.Name + "-etcd-" + role + "-" + strconv.Itoa(g), Namespace: cp.Namespace, Labels: labels}, Type: typ, Data: data, Immutable: new(true)}
+		if err := k8s.Create(t.Context(), s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ca []byte
+	for _, c := range bundle {
+		ca = append(ca, mustPEM(t, c)...)
+	}
+	write("ca", corev1.SecretTypeOpaque, map[string][]byte{lodiav1alpha1.CACertKey: ca})
+	for _, role := range []string{"server", "client", "peer", "backup-restore"} {
+		c, err := signer(role).Issue(certs.Profile{CommonName: cp.Name + "-etcd-" + role, Usages: serverClientAuth}, issued, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(role, corev1.SecretTypeTLS, map[string][]byte{lodiav1alpha1.TLSCertKey: mustPEM(t, c.Cert), lodiav1alpha1.TLSPrivateKeyKey: mustKeyPEM(t, c.Key)})
+	}
 }
