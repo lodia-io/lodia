@@ -444,7 +444,7 @@ func TestAnApplyTheTenantForbidsIsRefused(t *testing.T) {
 	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refusedConfigMaps("is refused by the tenant's API server"), cp.Generation-1); err != nil {
 		t.Error(err)
 	}
-	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+	if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending); err != nil {
 		t.Error(err)
 	}
 }
@@ -475,7 +475,7 @@ func TestAnotherOwnersObjectStaysReportedThoughTheRolloutReadFails(t *testing.T)
 	}
 	taken := cp.Generation
 	setCoreDNS(t, cp, true)
-	const others = "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon"
+	const others = "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; Deployment kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete them or disable their addons"
 	testenv.Eventually(t, func() error {
 		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, others, taken)
 	})
@@ -1144,6 +1144,62 @@ func TestATenantsWebhookThatFailsOrDeniesIsItsVerdict(t *testing.T) {
 	}
 }
 
+// The rollout is read after an apply the tenant refuses, so AddonsAvailable follows CoreDNS while AddonsApplied names the refusal, and both are True once the policy is gone.
+func TestTheRolloutIsReadAfterAnApplyTheTenantRefuses(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-refused-rollout")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	daemonSets := &appsv1.DaemonSetList{}
+	if err := admin.List(ctx, daemonSets, client.InNamespace("kube-system")); err != nil {
+		t.Fatal(err)
+	}
+	for _, ds := range daemonSets.Items {
+		rollOut(t, admin, ds.Name)
+	}
+	coreDNS := func(available int32) {
+		t.Helper()
+		d := get(t, admin, &appsv1.Deployment{}, "kube-system", "coredns")
+		d.Status = appsv1.DeploymentStatus{ObservedGeneration: d.Generation, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: available, AvailableReplicas: available}
+		if err := admin.Status().Update(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	coreDNS(2)
+	refuseConfigMap(t, admin, "coredns")
+	const refused = "ConfigMap kube-system/coredns is refused by the tenant's API server; the reason is in Lodia's log"
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	testenv.Eventually(t, func() error {
+		if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refused, cp.Generation); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable)
+	})
+
+	coreDNS(0)
+	testenv.Eventually(t, func() error {
+		if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refused, cp.Generation); err != nil {
+			return err
+		}
+		if c := condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable); c.Reason != lodiav1alpha1.ReasonRolloutPending || c.Message != "coredns 0 of 2 available" {
+			return fmt.Errorf("AddonsAvailable is %s %q, want RolloutPending naming CoreDNS", c.Reason, c.Message)
+		}
+		return nil
+	})
+
+	if err := admin.Delete(ctx, &admissionregistrationv1.ValidatingAdmissionPolicyBinding{ObjectMeta: metav1.ObjectMeta{Name: "no-coredns"}}); err != nil {
+		t.Fatal(err)
+	}
+	coreDNS(2)
+	testenv.Eventually(t, func() error {
+		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied); err != nil {
+			return err
+		}
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsAvailable, metav1.ConditionTrue, lodiav1alpha1.ReasonAvailable)
+	})
+}
+
 func TestATenantThatDoesNotAnswerKeepsATrueAddonsApplied(t *testing.T) {
 	cp := controlPlane(t, "tenant-unanswered")
 	publish(t, cp)
@@ -1345,7 +1401,7 @@ func TestAnotherOwnersObjectsAreNeitherAdoptedNorPruned(t *testing.T) {
 	taken := cp.Generation
 	setCoreDNS(t, cp, true)
 	testenv.Eventually(t, func() error {
-		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon", taken)
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; ServiceAccount kube-system/coredns exists and is not Lodia's: it has no field manager; Deployment kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete them or disable their addons", taken)
 	})
 	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable); strings.Contains(c.Message, "coredns") {
 		t.Errorf("AddonsAvailable reads the owner's Deployment: %q", c.Message)
@@ -1891,4 +1947,55 @@ func exists(t *testing.T, c client.Client, entry string) bool {
 		t.Fatal(err)
 	}
 	return true
+}
+
+// A narrowed inventory whose write the tenant refuses once every apply and prune succeeded is a refusal the pass goes past: AddonsApplied True Refused over the inventory the tenant holds, which still lists what left the render.
+func TestARefusedNarrowingOfTheInventoryIsARefusalOverWhatTheTenantHolds(t *testing.T) {
+	coreDNS := []string{"ConfigMap kube-system/coredns", "Deployment kube-system/coredns", "ServiceAccount kube-system/coredns", "ClusterRole system:coredns"}
+	cp, admin := servedTenant(t, "tenant-refused-narrowing")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	taken := cp.Generation
+	refuseConfigMap(t, admin, "lodia-inventory")
+	setCoreDNS(t, cp, false)
+	testenv.Eventually(t, func() error {
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "ConfigMap kube-system/lodia-inventory is refused by the tenant's API server; the reason is in Lodia's log", taken)
+	})
+	listed := inventoryOf(t, admin)
+	for _, entry := range coreDNS {
+		if exists(t, admin, entry) {
+			t.Errorf("%s, which left the render, is not pruned", entry)
+		}
+		if !slices.Contains(listed, entry) {
+			t.Errorf("%s is no longer listed, though the narrowed inventory was refused", entry)
+		}
+	}
+}
+
+// One message names the refused objects and every object of another owner, under the refusal's reason.
+func TestARefusalNamesTheObjectsOfAnotherOwnerBesideIt(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := servedTenant(t, "tenant-refused-and-others")
+	setCoreDNS(t, cp, false)
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	for _, obj := range []client.Object{
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}, Data: map[string]string{"Corefile": ".:53 { forward . 9.9.9.9 }"}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}},
+	} {
+		if err := admin.Create(ctx, obj, client.FieldOwner("kubectl-create")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refuseConfigMap(t, admin, "kube-proxy")
+	taken := cp.Generation
+	setCoreDNS(t, cp, true)
+	const want = "ConfigMap kube-system/kube-proxy is refused by the tenant's API server; the reason is in Lodia's log; " +
+		"ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; " +
+		"ServiceAccount kube-system/coredns exists and is not Lodia's: it has no field manager; delete them or disable their addons"
+	testenv.Eventually(t, func() error {
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, want, taken)
+	})
 }

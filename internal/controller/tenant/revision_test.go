@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
+	"go.lodia.io/lodia/internal/controller/lifecycle"
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/testenv"
@@ -91,6 +93,13 @@ func expectAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, conditionType string
 	t.Helper()
 	if c := condition(t, cp, conditionType); c.Status != status || c.Reason != reason || c.ObservedGeneration != generation {
 		t.Errorf("%s is %s %s at generation %d (%s), want %s %s at %d", conditionType, c.Status, c.Reason, c.ObservedGeneration, c.Message, status, reason, generation)
+	}
+}
+
+func expectRolloutRead(t *testing.T, cp *lodiav1alpha1.ControlPlane, before metav1.Condition) {
+	t.Helper()
+	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable); c.Reason != lodiav1alpha1.ReasonRolloutPending || !strings.Contains(c.Message, "coredns is missing") || c.ObservedGeneration != before.ObservedGeneration {
+		t.Errorf("AddonsAvailable is %s %q at generation %d, want the rollout with CoreDNS missing at %d", c.Reason, c.Message, c.ObservedGeneration, before.ObservedGeneration)
 	}
 }
 
@@ -292,7 +301,7 @@ func TestAHeldPassCreatesOnlyWhatTheInventoryListsAndTheTenantLacks(t *testing.T
 	expectSame(t, cp, available)
 }
 
-// A held create the tenant refuses is recorded, stops no create after it, and the next pass finishes it.
+// A held create the tenant refuses is recorded beside the rollout of what the inventory lists, stops no create after it, and the next pass finishes it and ends the refusal.
 func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing.T) {
 	ctx := t.Context()
 	cp, admin := heldTenant(t, "tenant-held-refused")
@@ -316,7 +325,7 @@ func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing
 	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); !strings.HasPrefix(c.Message, "Deployment kube-system/coredns is refused by the tenant's API server") {
 		t.Errorf("AddonsApplied says %q", c.Message)
 	}
-	expectSame(t, cp, available)
+	expectRolloutRead(t, cp, available)
 	created := get(t, admin, &corev1.ConfigMap{}, "kube-system", "coredns")
 	if !appliedByLodia(created) {
 		t.Error("the ConfigMap created before the refused Deployment is not Lodia's apply")
@@ -348,7 +357,7 @@ func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing
 	if got := get(t, admin, &corev1.ConfigMap{}, "kube-system", "coredns").ResourceVersion; got != created.ResourceVersion {
 		t.Errorf("the next held pass wrote the ConfigMap the refused pass created: resourceVersion %s, then %s", created.ResourceVersion, got)
 	}
-	expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, applied.ObservedGeneration)
+	expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, applied.ObservedGeneration)
 }
 
 // A held create that a fail-closed webhook the tenant cannot call keeps out is the tenant's refusal, named with the webhook, and the Deployment stays missing.
@@ -399,7 +408,7 @@ func TestAHeldCreateAWebhookTheTenantCannotCallKeepsOutIsRefused(t *testing.T) {
 	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "Deployment kube-system/coredns is refused by the tenant's API server: its admission webhook unreachable.example.test cannot be called; the reason is in Lodia's log" {
 		t.Errorf("AddonsApplied says %q", c.Message)
 	}
-	expectSame(t, cp, available)
+	expectRolloutRead(t, cp, available)
 	if exists(t, admin, "Deployment kube-system/coredns") {
 		t.Error("the Deployment exists although its create was refused")
 	}
@@ -479,14 +488,17 @@ func TestAHeldPassKeepsAddonsAppliedUnlessAWaitCoversWhatRuns(t *testing.T) {
 		status metav1.ConditionStatus
 		reason string
 	}{
-		{metav1.ConditionFalse, lodiav1alpha1.ReasonRefused},
-		{metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere},
 		{metav1.ConditionFalse, lodiav1alpha1.ReasonApplying},
 		{metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling},
 	} {
 		setAddonsApplied(t, cp, kept.status, kept.reason, generation)
 		heldPass(t, cp)
 		expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, kept.status, kept.reason, generation)
+	}
+	for _, ended := range []string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere} {
+		setAddonsApplied(t, cp, metav1.ConditionFalse, ended, generation)
+		heldPass(t, cp)
+		expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, generation)
 	}
 
 	inventory, listed := storedInventory(t, admin), inventoryOf(t, admin)
@@ -531,16 +543,6 @@ func TestAHeldPassKeepsAddonsAppliedUnlessAWaitCoversWhatRuns(t *testing.T) {
 			}
 		}, func() { deleteObject(t, admin, "ConfigMap kube-system/kube-proxy") }},
 		{"a listed object the render no longer has is gone", func() { writeInventory(t, admin, append(slices.Clone(inventory), leftTheRender)) }, func() { writeInventory(t, admin, inventory) }},
-		{"an object of the render the inventory does not list is a person's", func() {
-			writeInventory(t, admin, withoutCoreDNS(inventory, "ServiceAccount"))
-			deleteObject(t, admin, "ServiceAccount kube-system/coredns")
-			if err := admin.Create(t.Context(), &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}}); err != nil {
-				t.Fatal(err)
-			}
-		}, func() {
-			deleteObject(t, admin, "ServiceAccount kube-system/coredns")
-			writeInventory(t, admin, inventory)
-		}},
 	} {
 		setAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, generation)
 		c.breaks()
@@ -750,6 +752,8 @@ func TestAWaitKeepsARefusalAndAnUnfinishedApply(t *testing.T) {
 					{metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, true},
 					{metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, true},
 					{metav1.ConditionFalse, lodiav1alpha1.ReasonApplying, true},
+					{metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, true},
+					{metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, true},
 					{metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, false},
 				} {
 					setAddonsApplied(t, cp, before.status, before.reason, cp.Generation)
@@ -908,5 +912,185 @@ func TestARenewalReachesAHeldTenant(t *testing.T) {
 	}
 	if after := get(t, admin, &corev1.ConfigMap{}, "kube-system", "lodia-inventory").ResourceVersion; after != before {
 		t.Errorf("the held pass wrote the inventory: resourceVersion %s, then %s", before, after)
+	}
+}
+
+// A held pass over a refused update tries the grant's writes by dry run on every pass and reports the refusal, which blocks, and once the cause is gone the next held pass reports what runs.
+func TestAHeldPassTriesARefusedUpdateUntilItsCauseIsGone(t *testing.T) {
+	const refused = "ConfigMap kube-system/kube-proxy is refused by the tenant's API server; the reason is in Lodia's log"
+	const tried = "the grant's write of ConfigMap kube-system/kube-proxy would be refused: the dry run is refused by the tenant's API server; the reason is in Lodia's log"
+	cp, admin := heldTenant(t, "tenant-held-tries")
+	generation := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied).ObservedGeneration
+	refuseConfigMap(t, admin, "kube-proxy")
+	granted := runningOperator()
+	granted.Revision = previous
+	if err := passWith(t, granted, cp); !apistatus.Refused(err) {
+		t.Fatalf("a granted pass whose update is refused returned %v", err)
+	}
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refused, generation); err != nil {
+		t.Fatal(err)
+	}
+	before := resourceVersions(t, admin, inventoryOf(t, admin))
+	for range 2 {
+		if err := passWith(t, runningOperator(), cp); !apistatus.Refused(err) {
+			t.Fatalf("a held pass whose dry run is refused returned %v", err)
+		}
+		if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, tried, generation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if after := resourceVersions(t, admin, inventoryOf(t, admin)); !maps.Equal(after, before) {
+		t.Errorf("a held pass wrote the tenant:\n%v\nthen\n%v", before, after)
+	}
+	admitConfigMap(t, admin, "kube-proxy")
+	heldPass(t, cp)
+	want := fmt.Sprintf("the %d objects the inventory lists are applied; waiting for Lifecycle to grant the running operator revision %s", len(inventoryOf(t, admin)), revision)
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, want, generation); err != nil {
+		t.Error(err)
+	}
+}
+
+// A held pass checks the objects of the render the inventory does not list on every pass: another owner's is a refusal it meets, under its own reason, ended once the object is gone.
+func TestAHeldPassMeetsAnotherOwnersObject(t *testing.T) {
+	cp, admin := heldTenant(t, "tenant-held-others")
+	generation := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied).ObservedGeneration
+	inventory := storedInventory(t, admin)
+	writeInventory(t, admin, withoutCoreDNS(inventory, "ServiceAccount"))
+	deleteObject(t, admin, "ServiceAccount kube-system/coredns")
+	if err := admin.Create(t.Context(), &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "coredns"}}, client.FieldOwner("kubectl-create")); err != nil {
+		t.Fatal(err)
+	}
+	heldPass(t, cp)
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ServiceAccount kube-system/coredns exists and is not Lodia's: it has no field manager; delete it or disable the addon", generation); err != nil {
+		t.Fatal(err)
+	}
+	deleteObject(t, admin, "ServiceAccount kube-system/coredns")
+	heldPass(t, cp)
+	want := fmt.Sprintf("the %d objects the inventory lists are applied; waiting for Lifecycle to grant the running operator revision %s", len(inventory)-1, revision)
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, want, generation); err != nil {
+		t.Error(err)
+	}
+}
+
+// A held pass whose trial is refused over a wait, on an inventory that an administrator's object under a listed name keeps from whole, writes False Refused, and a real Lifecycle pass holds the grant over it, as over every refusal.
+func TestAHeldPassWhoseTrialIsRefusedOverAWaitHoldsTheGrant(t *testing.T) {
+	const tried = "the grant's write of ConfigMap kube-system/kube-proxy would be refused: the dry run is refused by the tenant's API server; the reason is in Lodia's log"
+	cp, admin := heldTenant(t, "tenant-held-not-whole")
+	deleteObject(t, admin, "ConfigMap kube-system/kube-proxy")
+	if err := admin.Create(t.Context(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "kube-proxy"}, Data: map[string]string{"by": "hand"}}, client.FieldOwner("kubectl-create")); err != nil {
+		t.Fatal(err)
+	}
+	refuseConfigMap(t, admin, "kube-proxy")
+	setAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, cp.Generation)
+	if err := passWith(t, runningOperator(), cp); !apistatus.Refused(err) {
+		t.Fatalf("a held pass whose dry run is refused returned %v", err)
+	}
+	if err := expectAddonsApplied(t, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, tried, cp.Generation); err != nil {
+		t.Fatal(err)
+	}
+	applyStatus(t, cp, lifecycle.FieldManager, map[string]any{"conditions": []any{conditionAt(lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonIdle, cp.Generation)}})
+	var others []any
+	for _, conditionType := range []string{lodiav1alpha1.ConditionCertificatesReady, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionLoadBalancerReady, lodiav1alpha1.ConditionReachable, lodiav1alpha1.ConditionControllersLeading} {
+		others = append(others, conditionAt(conditionType, metav1.ConditionTrue, "Fine", cp.Generation))
+	}
+	applyStatus(t, cp, "test/others", map[string]any{"conditions": others})
+	r := &lifecycle.Reconciler{Client: unpaused{k8s}, Reader: unpaused{k8s}, Clock: clock.RealClock{}, Revision: revision, MaxConcurrentRollouts: 1000, Settling: time.Minute}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	refresh(t, cp)
+	if p := condition(t, cp, lodiav1alpha1.ConditionProgressing); cp.Status.Target.OperatorRevision != previous || p.Reason != lodiav1alpha1.ReasonFailed {
+		t.Errorf("Lifecycle left status.target.operatorRevision at %s with Progressing %s %q, want %s and Failed", cp.Status.Target.OperatorRevision, p.Reason, p.Message, previous)
+	}
+}
+
+func admitConfigMap(t *testing.T, admin *tenantClient, name string) {
+	t.Helper()
+	for _, obj := range []client.Object{
+		&admissionregistrationv1.ValidatingAdmissionPolicyBinding{ObjectMeta: metav1.ObjectMeta{Name: "no-" + name}},
+		&admissionregistrationv1.ValidatingAdmissionPolicy{ObjectMeta: metav1.ObjectMeta{Name: "no-" + name}},
+	} {
+		if err := admin.Delete(t.Context(), obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	testenv.Eventually(t, func() error {
+		current := &corev1.ConfigMap{}
+		if err := admin.Get(t.Context(), client.ObjectKey{Namespace: "kube-system", Name: name}, current); err != nil {
+			return err
+		}
+		return admin.Update(t.Context(), current, client.DryRunAll)
+	})
+}
+
+// A refused narrowing of the inventory, whose pruned objects the inventory still lists, is tried by dry run through the hold and ends once the cause is gone, though the inventory lists what the tenant lacks.
+func TestAHeldPassTriesARefusedNarrowingOfTheInventory(t *testing.T) {
+	const tried = "the grant's write of ConfigMap kube-system/lodia-inventory would be refused: the dry run is refused by the tenant's API server; the reason is in Lodia's log"
+	cp, admin := servedTenant(t, "tenant-held-narrowing")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	taken := cp.Generation
+	refuseConfigMap(t, admin, "lodia-inventory")
+	setCoreDNS(t, cp, false)
+	testenv.Eventually(t, func() error {
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "ConfigMap kube-system/lodia-inventory is refused by the tenant's API server; the reason is in Lodia's log", taken)
+	})
+	pause(t, cp)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	setTarget(t, cp, version, previous)
+	refresh(t, cp)
+	for range 2 {
+		if err := passWith(t, runningOperator(), cp); !apistatus.Refused(err) {
+			t.Fatalf("a held pass whose dry run is refused returned %v", err)
+		}
+		if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, tried, taken); err != nil {
+			t.Fatal(err)
+		}
+	}
+	admitConfigMap(t, admin, "lodia-inventory")
+	heldPass(t, cp)
+	want := "the tenant accepts by dry run every write of the running operator revision " + revision + "; waiting for Lifecycle to grant it"
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, want, taken); err != nil {
+		t.Error(err)
+	}
+}
+
+// A refused update of a listed object the tenant's administrator created again by hand is tried by dry run through the hold, and ends once the cause is gone.
+func TestAHeldPassTriesARefusedUpdateOfAnObjectMadeByHand(t *testing.T) {
+	const tried = "the grant's write of ConfigMap kube-system/kube-proxy would be refused: the dry run is refused by the tenant's API server; the reason is in Lodia's log"
+	cp, admin := servedTenant(t, "tenant-held-by-hand")
+	testenv.Eventually(t, func() error {
+		return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+	})
+	taken := cp.Generation
+	pause(t, cp)
+	deleteObject(t, admin, "ConfigMap kube-system/kube-proxy")
+	if err := admin.Create(t.Context(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-system", Name: "kube-proxy"}, Data: map[string]string{"by": "hand"}}, client.FieldOwner("kubectl-create")); err != nil {
+		t.Fatal(err)
+	}
+	refuseConfigMap(t, admin, "kube-proxy")
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	testenv.Eventually(t, func() error {
+		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "ConfigMap kube-system/kube-proxy is refused by the tenant's API server; the reason is in Lodia's log", taken)
+	})
+	pause(t, cp)
+	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+	setTarget(t, cp, version, previous)
+	refresh(t, cp)
+	for range 2 {
+		if err := passWith(t, runningOperator(), cp); !apistatus.Refused(err) {
+			t.Fatalf("a held pass whose dry run is refused returned %v", err)
+		}
+		if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, tried, taken); err != nil {
+			t.Fatal(err)
+		}
+	}
+	admitConfigMap(t, admin, "kube-proxy")
+	heldPass(t, cp)
+	want := "the tenant accepts by dry run every write of the running operator revision " + revision + "; waiting for Lifecycle to grant it"
+	if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, want, taken); err != nil {
+		t.Error(err)
 	}
 }

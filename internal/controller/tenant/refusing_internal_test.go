@@ -24,7 +24,7 @@ func TestTheReadBackOfRefusedObjectsDecidesOnlyOnAnAnswer(t *testing.T) {
 		{entry: dns, reason: lodiav1alpha1.ReasonRefused, verdict: "is refused by the tenant's API server"},
 	}
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Generation: 2}}
-	refused := refusal(cp, previous.Type, failures)
+	refused := refusal(cp, previous.Type, failures, nil, nil)
 	if want := "ConfigMap kube-system/coredns is refused by the tenant's API server; Deployment kube-system/coredns is refused by the tenant's API server; the reason is in Lodia's log"; refused.Message != want {
 		t.Errorf("the refusal says %q, want %q", refused.Message, want)
 	}
@@ -81,11 +81,84 @@ func TestTheRefusalNamesTenObjectsAndCountsTheRest(t *testing.T) {
 	for i := range maxEntries {
 		failures = append(failures, &failure{entry: entry{Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRoleBinding", Name: fmt.Sprintf("%s-%03d", long[:249], i)}, reason: lodiav1alpha1.ReasonRefused, verdict: verdict})
 	}
-	got := refusal(&lodiav1alpha1.ControlPlane{}, lodiav1alpha1.ConditionAddonsApplied, failures).Message
+	got := refusal(&lodiav1alpha1.ControlPlane{}, lodiav1alpha1.ConditionAddonsApplied, failures, nil, nil).Message
 	if !strings.HasPrefix(got, failures[0].entry.String()+" "+verdict+"; ") || !strings.HasSuffix(got, "; "+failures[9].entry.String()+" "+verdict+"; 246 more objects are refused; the reason is in Lodia's log") {
 		t.Errorf("the refusal of %d objects says %q", len(failures), got)
 	}
 	if len(got) > 32768 {
 		t.Errorf("the refusal of %d objects is %d bytes, past a condition's message bound of 32768", len(failures), len(got))
+	}
+}
+
+// One message names every object refused and every object of another owner, each list bounded as the refusals are, under the refusal's reason while there is one.
+func TestTheRefusalNamesTheObjectsOfAnotherOwnerBesideTheRefusedOnes(t *testing.T) {
+	const refusedOne = "ConfigMap kube-system/coredns is refused by the tenant's API server; the reason is in Lodia's log"
+	other := func(name string) foreignObject {
+		return foreignObject{entry: entry{Version: "v1", Kind: "ServiceAccount", Namespace: "kube-system", Name: name}, managers: managers{names: []string{"kubectl-create"}}}
+	}
+	refused := []*failure{{entry: configMap, reason: lodiav1alpha1.ReasonRefused, verdict: "is refused by the tenant's API server"}}
+	many := make([]foreignObject, 0, 12)
+	for i := range 12 {
+		many = append(many, other(fmt.Sprintf("o-%02d", i)))
+	}
+	for _, c := range []struct {
+		name     string
+		failures []*failure
+		others   []foreignObject
+		reason   string
+		want     string
+	}{
+		{"one of another owner", nil, []foreignObject{other("coredns")}, lodiav1alpha1.ReasonObjectsControlledElsewhere,
+			"ServiceAccount kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; delete it or disable the addon"},
+		{"a refused one and two of another owner", refused, []foreignObject{other("coredns"), other("kube-proxy")}, lodiav1alpha1.ReasonRefused,
+			refusedOne + "; ServiceAccount kube-system/coredns exists and is not Lodia's: its field managers are kubectl-create; ServiceAccount kube-system/kube-proxy exists and is not Lodia's: its field managers are kubectl-create; delete them or disable their addons"},
+		{"twelve of another owner", nil, many, lodiav1alpha1.ReasonObjectsControlledElsewhere,
+			"ServiceAccount kube-system/o-00 exists and is not Lodia's: its field managers are kubectl-create; ServiceAccount kube-system/o-01"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := refusal(&lodiav1alpha1.ControlPlane{}, lodiav1alpha1.ConditionAddonsApplied, c.failures, c.others, nil)
+			if got.Status != metav1.ConditionFalse || got.Reason != c.reason || !strings.HasPrefix(got.Message, c.want) {
+				t.Errorf("the refusal is %s %s %q, want False %s %q", got.Status, got.Reason, got.Message, c.reason, c.want)
+			}
+		})
+	}
+	if got := refusal(&lodiav1alpha1.ControlPlane{}, lodiav1alpha1.ConditionAddonsApplied, nil, many, nil).Message; !strings.HasSuffix(got, "ServiceAccount kube-system/o-09 exists and is not Lodia's: its field managers are kubectl-create; 2 more objects are another owner's; delete them or disable their addons") {
+		t.Errorf("the refusal of twelve objects of another owner says %q", got)
+	}
+}
+
+// The dry run of the grant's writes is named after what the pass met, each write bounded as the refusals are, under the reason of a refusal the pass met, and Refused otherwise.
+func TestTheRefusalNamesWhatTheDryRunOfTheGrantFound(t *testing.T) {
+	const (
+		refusedOne = "ConfigMap kube-system/coredns is refused by the tenant's API server; the reason is in Lodia's log"
+		otherOne   = "ServiceAccount kube-system/coredns exists and is not Lodia's: it has no field manager; delete it or disable the addon"
+		wouldBe    = "the grant's write of Deployment kube-system/coredns would be refused: the dry run is refused by the tenant's admission webhook deny.example.com"
+	)
+	met := []*failure{{entry: configMap, reason: lodiav1alpha1.ReasonRefused, verdict: "is refused by the tenant's API server"}}
+	other := []foreignObject{{entry: entry{Version: "v1", Kind: "ServiceAccount", Namespace: "kube-system", Name: "coredns"}}}
+	refused := &failure{entry: dns, reason: lodiav1alpha1.ReasonRefused, verdict: "is refused by the tenant's admission webhook deny.example.com"}
+	many := make([]*failure, 0, 12)
+	for range 12 {
+		many = append(many, refused)
+	}
+	for _, c := range []struct {
+		name     string
+		failures []*failure
+		others   []foreignObject
+		tried    []*failure
+		reason   string
+		want     string
+	}{
+		{"a write refused", nil, nil, []*failure{refused}, lodiav1alpha1.ReasonRefused, wouldBe + "; the reason is in Lodia's log"},
+		{"a write refused beside another owner's object", nil, other, []*failure{refused}, lodiav1alpha1.ReasonObjectsControlledElsewhere, otherOne + "; " + wouldBe + "; the reason is in Lodia's log"},
+		{"a write refused beside a refused creation", met, nil, []*failure{refused}, lodiav1alpha1.ReasonRefused, refusedOne + "; " + wouldBe + "; the reason is in Lodia's log"},
+		{"twelve writes refused", nil, nil, many, lodiav1alpha1.ReasonRefused, strings.Repeat(wouldBe+"; ", 10) + "2 more writes of the grant would be refused; the reason is in Lodia's log"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := refusal(&lodiav1alpha1.ControlPlane{}, lodiav1alpha1.ConditionAddonsApplied, c.failures, c.others, c.tried)
+			if got.Status != metav1.ConditionFalse || got.Reason != c.reason || got.Message != c.want {
+				t.Errorf("the refusal is %s %s %q, want False %s %q", got.Status, got.Reason, got.Message, c.reason, c.want)
+			}
+		})
 	}
 }

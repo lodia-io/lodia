@@ -291,14 +291,14 @@ func apply(ctx context.Context, a tenantAPI, obj *unstructured.Unstructured) err
 }
 
 // heldInventory reads what a held pass acts on: the stored inventory, the
-// objects of the render it lists that the tenant lacks, and whether it is
-// applied: it lists something, every object it lists is stored with Lodia's
-// apply but those missing ones, and no object of the render it does not list
-// is another owner's. Without a render, nil objects, only the inventory is read.
-func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]entry, []*unstructured.Unstructured, bool, error) {
+// objects of the render it lists that the tenant lacks, the objects of the
+// render it does not list that are another owner's, and whether every object
+// it lists is stored with Lodia's apply but those missing ones, and it lists
+// something. Without a render, nil objects, only the inventory is read.
+func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]entry, []*unstructured.Unstructured, []foreignObject, bool, error) {
 	listed, err := readInventory(ctx, a)
 	if err != nil || objects == nil {
-		return union(listed), nil, false, err
+		return union(listed), nil, nil, false, err
 	}
 	listed = union(listed)
 	applied := len(listed) > 0
@@ -306,7 +306,7 @@ func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Uns
 	for _, e := range listed {
 		existing, err := readEntry(ctx, a, e)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, nil, false, err
 		}
 		i := slices.IndexFunc(objects, func(obj *unstructured.Unstructured) bool { return compareEntries(entryOf(obj), e) == 0 })
 		switch {
@@ -318,7 +318,7 @@ func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Uns
 	}
 	others, err := foreign(ctx, a, objects, listed)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, nil, false, err
 	}
-	return listed, missing, applied && len(others) == 0, nil
+	return listed, missing, others, applied, nil
 }
