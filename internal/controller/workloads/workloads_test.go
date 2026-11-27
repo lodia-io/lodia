@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1154,6 +1155,31 @@ func TestAQuotaThatRefusesTheServiceIsSaid(t *testing.T) {
 		}
 		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)
 	})
+}
+
+// A management webhook that fails closed, or that denies with 500, refuses the Service, over which APIServerReady keeps the tenant that serves.
+func TestAWebhookOfTheManagementClusterThatFailsOrDeniesRefusesTheService(t *testing.T) {
+	for _, hook := range []func(*testing.T) testenv.Hook{
+		func(*testing.T) testenv.Hook { return testenv.Uncallable() },
+		func(t *testing.T) testenv.Hook { return testenv.Denying(t, http.StatusInternalServerError) },
+	} {
+		cp := running(t)
+		taken := get(t, cp).Generation
+		configuration := testenv.RefusingWebhook(hook(t), admissionregistrationv1.RuleWithOperations{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+			Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"services"}},
+		}, &metav1.LabelSelector{MatchLabels: map[string]string{corev1.LabelMetadataName: cp.Namespace}})
+		if err := k8s.Create(t.Context(), configuration); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = k8s.Delete(context.Background(), configuration) })
+		testenv.Eventually(t, func() error {
+			if _, err := operatorAt(k8s, revision).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
+				return fmt.Errorf("a pass whose Service the webhook refuses returned %w", err)
+			}
+			return expectAt(cp, taken, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, allReady+"the API server refuses Service dev-kube-apiserver; the reason is in Lodia's log")
+		})
+	}
 }
 
 func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {

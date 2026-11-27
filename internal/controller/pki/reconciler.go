@@ -285,7 +285,7 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 	if len(refused) > 0 {
 		messages := make([]string, 0, len(refused))
 		for _, f := range refused {
-			messages = append(messages, "ClusterRoleBinding "+f.name+" is refused by the tenant's API server")
+			messages = append(messages, "ClusterRoleBinding "+f.name+" "+tenantclient.Refused(f.err))
 		}
 		c.Reason, c.Message = lodiav1alpha1.ReasonRefused, strings.Join(messages, "; ")+"; the reason is in Lodia's log"
 		if kept == nil || kept.Status != metav1.ConditionTrue {

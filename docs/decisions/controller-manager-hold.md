@@ -128,9 +128,9 @@ A write that is refused or fails changes the row's condition:
 |---|---|
 | succeeded | the row's condition |
 | a conflict | the Lease is read again and **the row is selected again** from what it says, so a retry never writes over a holder row 14 does not allow; when the retries run out, as "failed otherwise" |
-| a take refused (`apistatus.Refused`: a webhook, `Forbidden`) | `HoldBlocked`, naming the refusal; the next pass tries again |
+| a take refused (`apistatus.Refused`: a webhook's denial or one that fails closed and cannot be called, whatever the code, `Forbidden`) | `HoldBlocked`, naming the refusal and the webhook; the next pass tries again |
 | a renewal or a release refused | `NodesSilent`, the Lease still `lodia`'s; the next pass tries again, and a refused renewal lapses at 60 s if it lasts |
-| failed otherwise (a timeout, a 5xx, `NotFound`) | kept, nothing applied; the next pass reads what the Lease says |
+| failed otherwise (a timeout, a 5xx that names no webhook, `NotFound`) | kept, nothing applied; the next pass reads what the Lease says |
 | a create meets `AlreadyExists` | nothing applied; the next pass reads it |
 | row 14's pod list failed | kept, nothing applied, no take |
 

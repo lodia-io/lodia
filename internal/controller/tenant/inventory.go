@@ -110,7 +110,7 @@ func (f *failure) Unwrap() error {
 func failed(e entry, err error) error {
 	f := &failure{entry: e, err: err}
 	if apistatus.Refused(err) {
-		f.reason, f.verdict = lodiav1alpha1.ReasonRefused, "is refused by the tenant's API server"
+		f.reason, f.verdict = lodiav1alpha1.ReasonRefused, tenantclient.Refused(err)
 	}
 	return f
 }

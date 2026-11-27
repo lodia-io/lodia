@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1100,6 +1101,45 @@ func TestAPassWithARefusalLeavesItsPruneToTheNext(t *testing.T) {
 					t.Errorf("%s is left after the first pass without a refusal", entry)
 				}
 			}
+		})
+	}
+}
+
+// A webhook the tenant cannot call, failing closed, and one that denies with 500 are the tenant's verdict, which AddonsApplied names until the configuration is gone.
+func TestATenantsWebhookThatFailsOrDeniesIsItsVerdict(t *testing.T) {
+	for name, c := range map[string]struct {
+		hook    func(*testing.T) testenv.Hook
+		refused string
+	}{
+		"cannot be called": {func(*testing.T) testenv.Hook { return testenv.Uncallable() }, "is refused by the tenant's API server: its admission webhook " + testenv.Webhook + " cannot be called"},
+		"denies with 500":  {func(t *testing.T) testenv.Hook { return testenv.Denying(t, http.StatusInternalServerError) }, "is refused by the tenant's admission webhook " + testenv.Webhook},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cp, admin := servedTenant(t, "tenant-webhook-"+strings.ReplaceAll(name, " ", "-"))
+			testenv.Eventually(t, func() error {
+				return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+			})
+			taken := cp.Generation
+			configuration := testenv.RefusingWebhook(c.hook(t), admissionregistrationv1.RuleWithOperations{
+				Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+				Rule:       admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"configmaps"}},
+			}, nil)
+			if err := admin.Create(t.Context(), configuration); err != nil {
+				t.Fatal(err)
+			}
+			setReplicas(t, cp, 3)
+			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+			testenv.Eventually(t, func() error {
+				return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refusedConfigMaps(c.refused), taken)
+			})
+
+			if err := admin.Delete(t.Context(), configuration); err != nil {
+				t.Fatal(err)
+			}
+			setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
+			testenv.Eventually(t, func() error {
+				return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
+			})
 		})
 	}
 }

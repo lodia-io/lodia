@@ -29,7 +29,8 @@ import (
 //     escaped, 126 bytes; a cause's reason is compared with
 //     NamespaceTerminating, 120;
 //   - MaxNumberRaw: a number kept is an int32, at most 11 bytes;
-//   - MaxMessageRaw: a Status's message past it is replaced by a sentence.
+//   - MaxMessage: a Status's message is kept to its first MaxMessage bytes,
+//     decoded, so that a long answer is read as a short one is.
 //
 // A token past its bound, but for a word, fails the read, or stops a list of
 // nodes, and the error names the field and the bound and nothing of the value.
@@ -40,7 +41,7 @@ const (
 	MaxWordRaw    = 72
 	MaxReasonRaw  = 126
 	MaxNumberRaw  = 11
-	MaxMessageRaw = 1024
+	MaxMessage    = 1024
 )
 
 // Cut keeps a copy of the first most+1 bytes of s: a string over most is never

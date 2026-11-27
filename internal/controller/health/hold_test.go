@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -15,9 +16,11 @@ import (
 	"testing"
 	"time"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clocktesting "k8s.io/utils/clock/testing"
@@ -27,8 +30,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/controller/health"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 const (
@@ -1225,7 +1230,7 @@ func TestALongRefusalIsCutInTheMessageAndTheStatusIsApplied(t *testing.T) {
 	longStatus := denyWith(func(w http.ResponseWriter) {
 		refuseSaying(w, http.StatusForbidden, metav1.StatusReasonForbidden, strings.Repeat("d", 40000))
 	})
-	const tooLong = "the server's message is longer than 1024 bytes"
+	tooLong := strings.Repeat("d", 1024)
 	t.Run("of a renewal", func(t *testing.T) {
 		h := holding(t, "a", "b", "c")
 		h.inject(longStatus)
@@ -1295,6 +1300,42 @@ func TestARefusedTakeIsHoldBlockedAndNeverNodesSilent(t *testing.T) {
 			t.Fatal("a refused Create wrote the Lease")
 		}
 	})
+}
+
+// A take the tenant's webhook refuses, failing closed or denying with 500, is HoldBlocked naming the webhook.
+func TestATakeATenantsWebhookRefusesIsHoldBlockedNamingIt(t *testing.T) {
+	for _, c := range []struct {
+		hook    func(*testing.T) testenv.Hook
+		refused string
+	}{
+		{func(*testing.T) testenv.Hook { return testenv.Uncallable() }, "is refused by the tenant's API server: its admission webhook " + testenv.Webhook + " cannot be called: "},
+		{func(t *testing.T) testenv.Hook { return testenv.Denying(t, http.StatusInternalServerError) }, "is refused by the tenant's admission webhook " + testenv.Webhook + ": "},
+	} {
+		h := sampling(t, "a", "b", "c")
+		h.at(0)
+		configuration := testenv.RefusingWebhook(c.hook(t), admissionregistrationv1.RuleWithOperations{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+			Rule:       admissionregistrationv1.Rule{APIGroups: []string{coordinationv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"leases"}},
+		}, nil, admissionregistrationv1.MatchCondition{Name: "the-controller-managers", Expression: "object.metadata.name == '" + contract.ControllerManagerLease + "'"})
+		if err := tenant.Create(t.Context(), configuration); err != nil {
+			t.Fatal(err)
+		}
+		testenv.Eventually(t, func() error {
+			probe := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Namespace: contract.LeaderElectionNamespace, Name: contract.ControllerManagerLease}}
+			if err := tenant.Create(t.Context(), probe, client.DryRunAll); !apistatus.Refused(err) {
+				return fmt.Errorf("a create of the Lease returned %w", err)
+			}
+			return nil
+		})
+		h.at(20)
+		held := meta.FindStatusCondition(get(t, h.cp).Status.Conditions, lodiav1alpha1.ConditionControllerManagerHeld)
+		if want := "the take of Lease " + contract.LeaderElectionNamespace + "/" + contract.ControllerManagerLease + " " + c.refused; held == nil || held.Reason != lodiav1alpha1.ReasonHoldBlocked || !strings.HasPrefix(held.Message, want) {
+			t.Errorf("ControllerManagerHeld is %+v, want HoldBlocked starting %q", held, want)
+		}
+		if err := tenant.Delete(t.Context(), configuration); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestARefusedRenewalKeepsNodesSilentWithTheLeaseStillLodias(t *testing.T) {

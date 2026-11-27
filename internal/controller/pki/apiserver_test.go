@@ -37,6 +37,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/certs"
 	"go.lodia.io/lodia/internal/controller/pki"
+	"go.lodia.io/lodia/internal/testenv"
 )
 
 func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
@@ -259,6 +260,45 @@ func TestATenantAPIServerStartedFromTheCertificates(t *testing.T) {
 	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused)
 	if c := condition(t, cp, lodiav1alpha1.ConditionAccessReady); c.Message != "ClusterRoleBinding lodia:kubelet-api-admins is refused by the tenant's API server; the reason is in Lodia's log" {
 		t.Errorf("AccessReady over a missing binding says %q", c.Message)
+	}
+
+	if err := admin.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().Delete(ctx, policy.Name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+		return err == nil
+	})
+	expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
+	taken := condition(t, cp, lodiav1alpha1.ConditionAccessReady).ObservedGeneration
+	for _, c := range []struct {
+		hook    testenv.Hook
+		refused string
+	}{
+		{testenv.Uncallable(), "is refused by the tenant's API server: its admission webhook " + testenv.Webhook + " cannot be called"},
+		{testenv.Denying(t, http.StatusInternalServerError), "is refused by the tenant's admission webhook " + testenv.Webhook},
+	} {
+		configuration, err := admin.AdmissionregistrationV1().ValidatingWebhookConfigurations().Create(ctx, testenv.RefusingWebhook(c.hook, admissionregistrationv1.RuleWithOperations{
+			Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create, admissionregistrationv1.Update},
+			Rule:       admissionregistrationv1.Rule{APIGroups: []string{rbacv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"clusterrolebindings"}},
+		}, nil), metav1.CreateOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound; ClusterRoleBinding lodia:operator " + c.refused + "; ClusterRoleBinding lodia:cluster-admins " + c.refused + "; ClusterRoleBinding lodia:kubelet-api-admins " + c.refused + "; the reason is in Lodia's log"
+		waitFor(t, 30*time.Second, func() bool {
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+			got := condition(t, cp, lodiav1alpha1.ConditionAccessReady)
+			return err != nil && got.Status == metav1.ConditionTrue && got.Reason == lodiav1alpha1.ReasonRefused && got.Message == want && got.ObservedGeneration == taken
+		})
+		if err := admin.AdmissionregistrationV1().ValidatingWebhookConfigurations().Delete(ctx, configuration.Name, metav1.DeleteOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, 10*time.Second, func() bool {
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
+			return err == nil
+		})
+		expectCondition(t, cp, lodiav1alpha1.ConditionAccessReady, metav1.ConditionTrue, lodiav1alpha1.ReasonBound)
 	}
 }
 

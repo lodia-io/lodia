@@ -6,14 +6,19 @@ package tenant_test
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -29,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/controller/pki"
 	"go.lodia.io/lodia/internal/controller/tenant"
 	"go.lodia.io/lodia/internal/testenv"
@@ -345,7 +351,8 @@ func TestAHeldCreateTheTenantRefusesIsRefusedAndTheNextPassFinishesIt(t *testing
 	expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, applied.ObservedGeneration)
 }
 
-func TestAHeldCreateTheTenantFailsWithoutARefusalChangesNothing(t *testing.T) {
+// A held create that a fail-closed webhook the tenant cannot call keeps out is the tenant's refusal, named with the webhook, and the Deployment stays missing.
+func TestAHeldCreateAWebhookTheTenantCannotCallKeepsOutIsRefused(t *testing.T) {
 	ctx := t.Context()
 	cp, admin := heldTenant(t, "tenant-held-create-fails")
 	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
@@ -385,19 +392,75 @@ func TestAHeldCreateTheTenantFailsWithoutARefusalChangesNothing(t *testing.T) {
 		}
 		return nil
 	})
+	if err := passWith(t, runningOperator(), cp); !apistatus.Refused(err) {
+		t.Errorf("a held pass whose create the webhook keeps out returned %v, want the refusal", err)
+	}
+	expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, applied.ObservedGeneration)
+	if c := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied); c.Message != "Deployment kube-system/coredns is refused by the tenant's API server: its admission webhook unreachable.example.test cannot be called; the reason is in Lodia's log" {
+		t.Errorf("AddonsApplied says %q", c.Message)
+	}
+	expectSame(t, cp, available)
+	if exists(t, admin, "Deployment kube-system/coredns") {
+		t.Error("the Deployment exists although its create was refused")
+	}
+}
+
+// A held create the tenant does not answer, held past the pass's deadline by a slow webhook that fails open, changes nothing.
+func TestAHeldCreateTheTenantDoesNotAnswerChangesNothing(t *testing.T) {
+	ctx := t.Context()
+	cp, admin := heldTenant(t, "tenant-held-create-unanswered")
+	applied, available := *condition(t, cp, lodiav1alpha1.ConditionAddonsApplied), *condition(t, cp, lodiav1alpha1.ConditionAddonsAvailable)
+	deleteObject(t, admin, "Deployment kube-system/coredns")
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(6 * time.Second)
+		review := &admissionv1.AdmissionReview{}
+		if body, err := io.ReadAll(r.Body); err != nil || json.Unmarshal(body, review) != nil || review.Request == nil {
+			http.Error(w, "no review", http.StatusBadRequest)
+			return
+		}
+		review.Response = &admissionv1.AdmissionResponse{UID: review.Request.UID, Allowed: true}
+		review.Request = nil
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(review)
+	}))
+	t.Cleanup(srv.Close)
+	hook := testenv.Hook{URL: srv.URL + "/validate", CABundle: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})}
+	configuration := testenv.RefusingWebhook(hook, admissionregistrationv1.RuleWithOperations{
+		Operations: []admissionregistrationv1.OperationType{admissionregistrationv1.Create},
+		Rule:       admissionregistrationv1.Rule{APIGroups: []string{appsv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"deployments"}},
+	}, nil)
+	ignore, timeout := admissionregistrationv1.Ignore, int32(10)
+	configuration.Webhooks[0].FailurePolicy, configuration.Webhooks[0].TimeoutSeconds = &ignore, &timeout
+	if err := admin.Create(ctx, configuration); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = admin.Delete(context.Background(), configuration) })
+	testenv.Eventually(t, func() error {
+		start := time.Now()
+		_ = admin.Create(ctx, &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "probe"},
+			Spec: appsv1.DeploymentSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "probe"}},
+				Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "probe"}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "probe", Image: "probe"}}}},
+			},
+		}, client.DryRunAll)
+		if time.Since(start) < 5*time.Second {
+			return errors.New("the slow webhook is not called yet")
+		}
+		return nil
+	})
 	refresh(t, cp)
 	written := cp.ResourceVersion
-
-	if err := passWith(t, runningOperator(), cp); !apierrors.IsInternalError(err) {
-		t.Errorf("a held pass whose create the tenant fails without a refusal returned %v, want the failure", err)
+	pass, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if _, err := runningOperator().Reconcile(pass, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err == nil {
+		t.Fatal("a held pass whose create the tenant did not answer succeeded")
 	}
+	refresh(t, cp)
 	expectSame(t, cp, applied)
 	expectSame(t, cp, available)
 	if cp.ResourceVersion != written {
-		t.Errorf("a held pass whose create failed without a refusal wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
-	}
-	if exists(t, admin, "Deployment kube-system/coredns") {
-		t.Error("the Deployment exists although its create failed")
+		t.Errorf("a held pass whose create the tenant did not answer wrote the ControlPlane: resourceVersion %s, then %s", written, cp.ResourceVersion)
 	}
 }
 
