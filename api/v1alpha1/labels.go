@@ -92,6 +92,13 @@ const (
 	// they were rendered with.
 	OperatorRevisionAnnotation = "lodia.io/operator-revision"
 
+	// MemberRestoreDetectedAtAnnotation, written by Workloads in the pod
+	// templates of the API server, the controller manager and the scheduler,
+	// is the status.memberRestore.detectedAt each rolls for, which
+	// status.components.<component>.memberRestoreDetectedAt reports once
+	// every replica runs it.
+	MemberRestoreDetectedAtAnnotation = "lodia.io/member-restore-detected-at"
+
 	// DatastoreFinalizer, held by the Datastore controller, keeps a
 	// ControlPlane until its etcd is deleted and its claims reclaimed.
 	DatastoreFinalizer = "lodia.io/datastore"

@@ -19,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	clocktesting "k8s.io/utils/clock/testing"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -267,6 +268,42 @@ func TestTheLiveDecisionReadsTheBackupOfItsOwnMinor(t *testing.T) {
 	}
 	if err := quiet.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: preUpgrade(cp)}, &lodiav1alpha1.Backup{}); err != nil {
 		t.Errorf("the Backup of the live minor: %v", err)
+	}
+}
+
+func TestAWriteThatMovesAMinorOnACacheBehindLifecyclesConditionsRecordsNoTransition(t *testing.T) {
+	cp := quietControlPlane(t)
+	seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
+	createBackup(t, cp, preUpgrade(cp), metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
+	behind := getQuiet(t, cp)
+	quietPass(t, cp)
+	written := getQuiet(t, cp)
+	backup := &lodiav1alpha1.Backup{}
+	if err := quiet.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: preUpgrade(cp)}, backup); err != nil {
+		t.Fatal(err)
+	}
+	backup.Status.Conditions = []metav1.Condition{{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonCompleted, LastTransitionTime: metav1.NewTime(startedAt)}}
+	if err := quiet.Status().Update(t.Context(), backup); err != nil {
+		t.Fatal(err)
+	}
+	recorded := events.NewFakeRecorder(10)
+	applies := 0
+	r := &lifecycle.Reconciler{Client: staleClient(behind, &applies), Reader: quiet, Events: recorded, Clock: clocktesting.NewFakePassiveClock(later), Revision: runningRevision, MaxConcurrentRollouts: 5, Settling: settlingTime}
+	if _, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); err != nil {
+		t.Fatal(err)
+	}
+	fresh := getQuiet(t, cp)
+	if fresh.Status.Target.Version != "v1.37.1" || fresh.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepAPIServer {
+		t.Fatalf("a Completed Backup left the target at %s and the upgrade %+v, want v1.37.1 at step APIServer", fresh.Status.Target.Version, fresh.Status.Kubernetes.Upgrade)
+	}
+	for _, conditionType := range []string{lodiav1alpha1.ConditionReady, lodiav1alpha1.ConditionProgressing} {
+		before, after := meta.FindStatusCondition(written.Status.Conditions, conditionType), meta.FindStatusCondition(fresh.Status.Conditions, conditionType)
+		if before == nil || after == nil || after.Status != before.Status || after.Reason != before.Reason || !after.LastTransitionTime.Equal(&before.LastTransitionTime) {
+			t.Errorf("%s is %+v after the write that moved the minor on a cache behind Lifecycle's, want the status, reason and lastTransitionTime of %+v", conditionType, after, before)
+		}
+	}
+	for len(recorded.Events) > 0 {
+		t.Errorf("the write that moved the minor on a cache behind Lifecycle's recorded %q", <-recorded.Events)
 	}
 }
 

@@ -112,7 +112,8 @@ func dbSize(t *testing.T, c *clientv3.Client, endpoint string) int64 {
 
 func sampler(objs ...client.Object) (*datastore.SampleReconciler, *clocktesting.FakeClock) {
 	clk := clocktesting.NewFakeClock(sampledAt)
-	return &datastore.SampleReconciler{Druid: newDruid(), Cache: fakeCache(objs...), Clock: clk}, clk
+	c := fakeCache(objs...)
+	return &datastore.SampleReconciler{Druid: newDruid(), Cache: c, Reader: c, Clock: clk, Latches: datastore.NewLatches()}, clk
 }
 
 func TestOneMemberGivesItsLeaderAndItsSize(t *testing.T) {
@@ -460,6 +461,91 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 	}
 }
 
+func TestTheRulesAnswersAndTheLatchGoWithTheControlPlaneAloneNotWithAPassThatReadsNone(t *testing.T) {
+	t.Parallel()
+	recorded := &lodiav1alpha1.MemberRestoreStatus{Member: asSidecar.Name, DetectedAt: metav1.NewTime(sampledAt.Add(-2 * time.Hour)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
+	earlier := lodiav1alpha1.MemberRestoreStatus{Member: asSidecar.Name, DetectedAt: metav1.NewTime(sampledAt.Add(-time.Hour)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
+	for _, c := range []struct {
+		name      string
+		between   func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object
+		listFails bool
+		recreated bool
+		kept      bool
+	}{
+		{name: "deleted", between: func(*lodiav1alpha1.ControlPlane, *druidv1alpha1.Etcd) []client.Object { return nil }},
+		{name: "being deleted", between: func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
+			cp.Finalizers, cp.DeletionTimestamp = []string{lodiav1alpha1.DatastoreFinalizer}, &metav1.Time{Time: sampledAt}
+			return []client.Object{cp, etcd}
+		}},
+		{name: "created again", recreated: true},
+		{name: "paused", kept: true, between: func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
+			cp.Spec.Paused = true
+			return []client.Object{cp, etcd}
+		}},
+		{name: "without its Etcd", kept: true, between: func(cp *lodiav1alpha1.ControlPlane, _ *druidv1alpha1.Etcd) []client.Object {
+			return []client.Object{cp}
+		}},
+		{name: "with an Etcd not formed", kept: true, between: func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
+			delete(etcd.Annotations, lodiav1alpha1.EtcdFormedAnnotation)
+			return []client.Object{cp, etcd}
+		}},
+		{name: "with an Etcd created again", kept: true, between: func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
+			etcd.Annotations[lodiav1alpha1.EtcdFormedAnnotation] = "a-predecessor"
+			return []client.Object{cp, etcd}
+		}},
+		{name: "with an Etcd another ControlPlane controls", kept: true, between: func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
+			etcd.OwnerReferences[0].UID = "a-predecessor"
+			return []client.Object{cp, etcd}
+		}},
+		{name: "whose member list fails", kept: true, listFails: true, between: func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
+			return []client.Object{cp, etcd}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			member := testetcd.Start(t, asSidecar)
+			member.Restart(asSidecar)
+			cp, etcd := sampledControlPlane("restored", "uid-restored")
+			cp.Status.MemberRestore = recorded
+			r, clk := sampler(cp, etcd)
+			dial := func(context.Context, *etcddruid.Store) (*clientv3.Client, error) {
+				return clientv3.New(clientv3.Config{Endpoints: []string{member.ClientURL}, DialTimeout: 5 * time.Second})
+			}
+			r.EtcdClient = dial
+			drain(t, r.Latches)
+			key := client.ObjectKeyFromObject(cp)
+			samplePass(t, r, key)
+			if got := datastore.Latched(r.Latches, key); got != nil {
+				t.Fatalf("the first answer of a restored member under a record from snapshots told %+v, want nothing", got)
+			}
+			datastore.Tell(r.Latches, key, cp.UID, earlier)
+			if c.recreated {
+				cp, etcd = sampledControlPlane("restored", "uid-created-again")
+				cp.Status.MemberRestore = recorded
+				r.Cache = fakeCache(cp, etcd)
+				r.Reader = r.Cache
+			} else {
+				r.Cache = fakeCache(c.between(cp.DeepCopy(), etcd.DeepCopy())...)
+				if c.listFails {
+					r.EtcdClient = dialURL(unreachable.String())
+				}
+				samplePass(t, r, key)
+				if got := datastore.Latched(r.Latches, key); (got != nil) != c.kept {
+					t.Errorf("a pass on a ControlPlane %s left the latch %+v, want it kept: %t", c.name, got, c.kept)
+				}
+				r.Cache, r.EtcdClient = fakeCache(cp, etcd), dial
+			}
+			member.StartEmpty(asSidecar)
+			clk.Step(time.Minute)
+			samplePass(t, r, key)
+			got := datastore.Latched(r.Latches, key)
+			if told := got != nil && got.DetectedAt.Equal(&metav1.Time{Time: clk.Now()}); told != c.kept || !c.kept && got != nil {
+				t.Errorf("a member restored again after a pass on a ControlPlane %s left the latch %+v, want its new life told: %t", c.name, got, c.kept)
+			}
+		})
+	}
+}
+
 func TestAReadOfTheCacheThatFailsForgetsTheSampleUntilTheNextMinute(t *testing.T) {
 	t.Parallel()
 	member := testetcd.Start(t, testetcd.Config{})
@@ -645,7 +731,7 @@ func runSampler(t *testing.T, ns string, dial func(context.Context, *etcddruid.S
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &datastore.SampleReconciler{Druid: newDruid(), Cache: mgr.GetCache(), EtcdClient: dial, Clock: clock.RealClock{}}
+	r := &datastore.SampleReconciler{Druid: newDruid(), Cache: mgr.GetCache(), Reader: mgr.GetAPIReader(), EtcdClient: dial, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 	if err := r.SetupWithManager(mgr, 1); err != nil {
 		t.Fatal(err)
 	}

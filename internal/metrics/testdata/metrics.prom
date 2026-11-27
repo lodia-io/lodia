@@ -807,6 +807,10 @@ lodia_controlplane_datastore_has_leader{controlplane="restored",namespace="tenan
 lodia_controlplane_datastore_has_leader{controlplane="rolling",namespace="tenants"} 0
 lodia_controlplane_datastore_has_leader{controlplane="upgrading",namespace="tenants"} 1
 lodia_controlplane_datastore_has_leader{controlplane="waiting",namespace="tenants"} 0
+# HELP lodia_controlplane_datastore_member_restore_timestamp_seconds status.memberRestore.detectedAt, labelled with its from: when Lodia found a member of the etcd restored from the store's snapshots (Snapshots) or started empty (Empty), up to about two minutes after it happened; absent without a record.
+# TYPE lodia_controlplane_datastore_member_restore_timestamp_seconds gauge
+lodia_controlplane_datastore_member_restore_timestamp_seconds{controlplane="failed",from="Empty",namespace="tenants"} 1.7943768e+09
+lodia_controlplane_datastore_member_restore_timestamp_seconds{controlplane="restored",from="Snapshots",namespace="tenants"} 1.7943822e+09
 # HELP lodia_controlplane_datastore_members status.datastore.members.total: the members the etcd asks for.
 # TYPE lodia_controlplane_datastore_members gauge
 lodia_controlplane_datastore_members{controlplane="crowded",namespace="tenants"} 1

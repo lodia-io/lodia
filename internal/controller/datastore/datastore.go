@@ -37,6 +37,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
@@ -58,8 +59,9 @@ const maxRevision = 128
 
 type Reconciler struct {
 	client.Client
-	// Reader reads the API server: what the label-filtered cache does not
-	// hold, and the Etcd a deletion acts on.
+	// Reader reads the API server: the ControlPlane at the top of every pass,
+	// what the label-filtered cache does not hold, and the Etcd a deletion
+	// acts on.
 	Reader client.Reader
 	// Events records the transitions of the conditions it writes;
 	// SetupWithManager sets it.
@@ -79,6 +81,9 @@ type Reconciler struct {
 	// failed copy for a minute, and bounds the wait on an etcd-druid
 	// reconcile in flight.
 	Clock clock.PassiveClock
+	// Latches hold what the sampler tells of a member's new data life, and
+	// enqueue its ControlPlane.
+	Latches *Latches
 }
 
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
@@ -112,6 +117,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager, workers int) error {
 		WatchesMetadata(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(controlPlaneOf), builder.WithPredicates(predicate.Or(certificates, backupCopy, caBundle))).
 		Watches(&lodiav1alpha1.DatastoreClass{}, handler.EnqueueRequestsFromMapFunc(r.controlPlanesUsing)).
 		Watches(&lodiav1alpha1.Backup{}, handler.EnqueueRequestsFromMapFunc(restore.RestoresOf(r.Client))).
+		WatchesRawSource(source.Channel(r.Latches.told, &handler.EnqueueRequestForObject{})).
 		Complete(r)
 }
 
@@ -155,6 +161,11 @@ func (r *Reconciler) controlPlanesUsing(ctx context.Context, class client.Object
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // get on etcd-druid's Deployment is a Role in its namespace, which the chart writes: no marker can name that namespace.
 
+// Reconcile ends a pass whose status apply conflicts with a write since its
+// read with a requeue a second later, and no error and no event: the next
+// pass decides everything again from a new read, where retrying the apply
+// would land what the old read decided. A conflict yields to the pass's other
+// errors, which it returns, so that they are logged and counted.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := r.Get(ctx, req.NamespacedName, cp); err != nil {
@@ -166,17 +177,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if cp.Spec.Paused {
 		return ctrl.Result{}, nil
 	}
-	// A restore decides from its own status and carries it into every apply,
-	// and a held pass keeps each condition at the generation it describes;
-	// both read it live, since the cache can lag behind this controller's own
-	// last write.
-	if cp.Spec.RestoreFrom != nil || r.held(cp) {
-		if err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady); err != nil {
-			return ctrl.Result{}, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
-		}
+	l, err := r.lock(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	result, err := r.reconcile(ctx, cp, l)
+	if errors.As(err, new(conflicted)) {
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	return result, err
+}
+
+type conflicted struct{ error }
+
+func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPlane, l *lock) (ctrl.Result, error) {
 	if !cp.DeletionTimestamp.IsZero() {
-		requeueAfter, err := r.finalize(ctx, cp)
+		requeueAfter, err := r.finalize(ctx, cp, l)
 		return ctrl.Result{RequeueAfter: requeueAfter}, err
 	}
 	if !controllerutil.ContainsFinalizer(cp, lodiav1alpha1.DatastoreFinalizer) {
@@ -189,17 +205,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		case err != nil:
 			return ctrl.Result{}, err
 		}
+		l.version = cp.ResourceVersion
 	}
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady) == nil {
 		first := statusapply.FirstPass(cp, lodiav1alpha1.ConditionDatastoreReady)
 		backup := first
 		backup.Type = lodiav1alpha1.ConditionBackupReady
-		if err := r.applyStatus(ctx, cp, cp.Status.Datastore, cp.Status.Restore, first, backup); err != nil {
+		if err := r.applyStatus(ctx, cp, l, cp.Status.Datastore, cp.Status.Restore, first, backup); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 	if granted(cp) == "" {
-		return ctrl.Result{}, r.waitForTarget(ctx, cp)
+		return ctrl.Result{}, r.waitForTarget(ctx, cp, l)
 	}
 	out, err := r.reconcileEtcd(ctx, cp)
 	if out == nil {
@@ -220,18 +237,109 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		err = errors.Join(err, policyErr)
 	}
-	datastore, readErr := r.datastoreStatus(ctx, cp, out.etcd, out.rollout, out.applied)
-	if readErr != nil {
-		return ctrl.Result{}, errors.Join(err, readErr)
-	}
 	ready, backup := out.condition, r.backupReady(out.etcd)
 	if r.held(cp) {
 		ready.ObservedGeneration, backup.ObservedGeneration = described(cp, ready.Type), described(cp, backup.Type)
 	}
-	if statusErr := r.applyStatus(ctx, cp, datastore, out.restore, ready, backup); statusErr != nil || err != nil {
+	ready = r.memberRestored(cp, l, ready)
+	if statusErr := r.applyStatus(ctx, cp, l, datastoreStatus(cp, out.etcd, out.rollout, out.applied), out.restore, ready, backup); statusErr != nil || err != nil {
+		if err != nil && errors.As(statusErr, new(conflicted)) {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	return ctrl.Result{RequeueAfter: out.requeueAfter}, nil
+}
+
+// lock is what every status apply of a pass carries: the resourceVersion of
+// the pass's live read, or of the pass's own last write since, so that a
+// write decided from a read conflicts once another write has landed since, a
+// previous leader's included; and status.memberRestore, the one the read
+// showed or the latch's record the pass writes.
+type lock struct {
+	key     types.NamespacedName
+	version string
+	record  *lodiav1alpha1.MemberRestoreStatus
+	// writes is the latch whose record the pass writes, dropped once that
+	// lands.
+	writes *latch
+}
+
+// lock takes the latch the sampler holds for cp, then reads cp live: its two
+// conditions, status.datastore, status.restore, status.memberRestore and
+// Workloads' status.components, as the API server holds them whatever the
+// cache shows, a previous leader's last write included. The first pass that
+// takes a latch keeps the record that read showed as its base, and a pass
+// writes the latch's record while the record is still the base; it drops the
+// latch once the record has landed, and leaves any other record, which was
+// written over the base, and so after the restore the latch tells, by a write
+// that moved the annotation too.
+func (r *Reconciler) lock(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lock, error) {
+	key := client.ObjectKeyFromObject(cp)
+	taken, latched := r.Latches.take(key)
+	version, err := live.Datastore(ctx, r.Reader, cp, lodiav1alpha1.ConditionDatastoreReady, lodiav1alpha1.ConditionBackupReady)
+	if err != nil {
+		return nil, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+	}
+	l := &lock{key: key, version: version, record: cp.Status.MemberRestore}
+	if !latched || taken.uid != cp.UID {
+		return l, nil
+	}
+	base := taken.base
+	if !taken.based {
+		base = cp.Status.MemberRestore
+		r.Latches.setBase(key, taken, base)
+	}
+	record := taken.record(base)
+	switch {
+	case same(cp.Status.MemberRestore, base):
+		l.record, l.writes = record, &taken
+	case same(cp.Status.MemberRestore, record):
+		r.Latches.drop(key, taken)
+	}
+	return l, nil
+}
+
+// memberRestored is DatastoreReady over status.memberRestore: True Ready
+// becomes MemberRestored while the record is unreported or its roll is not
+// done, the pass that first reports it writing reportedAt. The three reports
+// come from lock's read: a next leader's cache can lack those of a roll the
+// previous leader saw done, and would report MemberRestored again.
+func (r *Reconciler) memberRestored(cp *lodiav1alpha1.ControlPlane, l *lock, ready metav1.Condition) metav1.Condition {
+	record := l.record
+	// @todo: end MemberRestored at its first report for a member restored from snapshots once etcd-backup-restore restores with RevisionBump and MarkCompacted; one that starts empty still waits for the roll (todo.md).
+	if record == nil || ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonReady || record.ReportedAt != nil && rolled(cp, record.DetectedAt) {
+		return ready
+	}
+	if record.ReportedAt == nil {
+		reported := *record
+		reported.ReportedAt = new(metav1.NewTime(r.Clock.Now()).Rfc3339Copy())
+		l.record = &reported
+	}
+	ready.Reason, ready.Message = lodiav1alpha1.ReasonMemberRestored, restoredMessage(*record)
+	return ready
+}
+
+func rolled(cp *lodiav1alpha1.ControlPlane, detectedAt metav1.Time) bool {
+	c := cp.Status.Components
+	if c == nil {
+		return false
+	}
+	for _, component := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+		if component == nil || component.MemberRestoreDetectedAt == nil || !component.MemberRestoreDetectedAt.Equal(&detectedAt) {
+			return false
+		}
+	}
+	return true
+}
+
+func restoredMessage(record lodiav1alpha1.MemberRestoreStatus) string {
+	at := record.DetectedAt.UTC().Format(time.RFC3339)
+	const roll = "Lodia rolls the API server, then the controller manager and the scheduler"
+	if record.From == lodiav1alpha1.MemberRestoreFromEmpty {
+		return fmt.Sprintf("member %s was found started empty at %s: every write is lost and the tenant's cluster starts again from nothing; %s", record.Member, at, roll)
+	}
+	return fmt.Sprintf("member %s was found restored from the store's snapshots at %s: the writes etcd acknowledged after the last delta snapshot are lost; %s", record.Member, at, roll)
 }
 
 // held says whether cp's writes wait for Lifecycle to grant the running
@@ -248,8 +356,9 @@ func granted(cp *lodiav1alpha1.ControlPlane) string {
 }
 
 // described is the generation a held pass reports a condition at: the one
-// the condition describes, read live, so that an owner's edit does not read
-// as reported before Lifecycle grants the running revision.
+// the condition describes, read live at the pass's start, so that an owner's
+// edit does not read as reported before Lifecycle grants the running
+// revision.
 func described(cp *lodiav1alpha1.ControlPlane, conditionType string) int64 {
 	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
 		return c.ObservedGeneration
@@ -259,11 +368,11 @@ func described(cp *lodiav1alpha1.ControlPlane, conditionType string) int64 {
 
 // waitForTarget writes nothing but both conditions, waiting, until Lifecycle
 // grants a first operator revision.
-func (r *Reconciler) waitForTarget(ctx context.Context, cp *lodiav1alpha1.ControlPlane) error {
+func (r *Reconciler) waitForTarget(ctx context.Context, cp *lodiav1alpha1.ControlPlane, l *lock) error {
 	waiting := notReady(lodiav1alpha1.ReasonWaitingForTarget, "waiting for Lifecycle to set status.target.operatorRevision")
 	backup := waiting
 	backup.Type = lodiav1alpha1.ConditionBackupReady
-	return r.applyStatus(ctx, cp, cp.Status.Datastore, cp.Status.Restore,
+	return r.applyStatus(ctx, cp, l, cp.Status.Datastore, cp.Status.Restore,
 		statusapply.Wait(cp, meta.FindStatusCondition(cp.Status.Conditions, waiting.Type), waiting),
 		statusapply.Wait(cp, meta.FindStatusCondition(cp.Status.Conditions, backup.Type), backup))
 }
@@ -866,7 +975,7 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.Cont
 	return nil, nil
 }
 
-func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (time.Duration, error) {
+func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlane, l *lock) (time.Duration, error) {
 	if !controllerutil.ContainsFinalizer(cp, lodiav1alpha1.DatastoreFinalizer) {
 		return 0, nil
 	}
@@ -881,11 +990,7 @@ func (r *Reconciler) finalize(ctx context.Context, cp *lodiav1alpha1.ControlPlan
 		etcd = nil
 	}
 	deleting := notReady(lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted: the Etcd goes first, then its claims as the class says")
-	datastore, err := r.datastoreStatus(ctx, cp, etcd, nil, false)
-	if err != nil {
-		return 0, err
-	}
-	if err := r.applyStatus(ctx, cp, datastore, cp.Status.Restore, deleting, r.backupReady(etcd)); err != nil {
+	if err := r.applyStatus(ctx, cp, l, datastoreStatus(cp, etcd, nil, false), cp.Status.Restore, deleting, r.backupReady(etcd)); err != nil {
 		return 0, err
 	}
 	// A claim no pass has labelled yet can only be this Etcd's: VolumesExist
@@ -966,7 +1071,7 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 // datastoreStatus says where the API server reaches the etcd, its endpoint,
 // where its snapshots go, and the class and the operator revision it runs:
 // those the Etcd records once RolledOut says so and its stamp fits the field,
-// and until then those the API server holds, since
+// and until then those the API server held at the pass's start, since
 // the field is written whole on every pass and the cache can lag this
 // controller's own last write. While no revision is reported, or the Etcd
 // applied records a class the report does not name, as after one was created
@@ -975,9 +1080,9 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 // Only a person changes the name an Etcd records, and the report follows it
 // at once, since the Etcd takes the class of that name; a UID or generation
 // that moves under one name waits for RolledOut.
-func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, rollout *etcddruid.Rollout, applied bool) (*lodiav1alpha1.DatastoreStatus, error) {
+func datastoreStatus(cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, rollout *etcddruid.Rollout, applied bool) *lodiav1alpha1.DatastoreStatus {
 	if etcd == nil {
-		return nil, nil
+		return nil
 	}
 	host, port := etcd.Endpoint()
 	status := &lodiav1alpha1.DatastoreStatus{
@@ -987,10 +1092,7 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	status.Snapshots, _ = snapshots(etcd)
 	if stamp := etcd.Revision(); etcd.RolledOut(rollout) && len(stamp) <= maxRevision {
 		status.Class, status.OperatorRevision = etcd.ClassStatus(), stamp
-		return status, nil
-	}
-	if err := live.Datastore(ctx, r.Reader, cp); err != nil {
-		return nil, fmt.Errorf("read ControlPlane %s: %w", cp.Name, err)
+		return status
 	}
 	if previous := cp.Status.Datastore; previous != nil {
 		status.Class, status.OperatorRevision = previous.Class, previous.OperatorRevision
@@ -998,7 +1100,7 @@ func (r *Reconciler) datastoreStatus(ctx context.Context, cp *lodiav1alpha1.Cont
 	if c := etcd.ClassStatus(); applied && (status.OperatorRevision == "" || c != nil && (status.Class == nil || status.Class.Name != c.Name)) {
 		status.Class = c
 	}
-	return status, nil
+	return status
 }
 
 // snapshots is where the Etcd's store puts its snapshots, nil without a store
@@ -1048,16 +1150,30 @@ func (r *Reconciler) backupReady(etcd *etcddruid.Store) metav1.Condition {
 
 // applyStatus writes DatastoreReady and BackupReady together: the conditions
 // are a list keyed by type, and an apply that left one out would give up its
-// ownership. The restore is carried into every apply for the same reason.
-// Each condition is at cp's generation unless it names one.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, datastore *lodiav1alpha1.DatastoreStatus, restore *lodiav1alpha1.RestoreStatus, ready, backup metav1.Condition) error {
+// ownership. The restore and the member restore are carried into every apply
+// for the same reason, under l. Each condition is at cp's generation unless
+// it names one.
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, l *lock, datastore *lodiav1alpha1.DatastoreStatus, restore *lodiav1alpha1.RestoreStatus, ready, backup metav1.Condition) error {
 	for _, c := range []*metav1.Condition{&ready, &backup} {
 		if c.ObservedGeneration == 0 {
 			c.ObservedGeneration = cp.Generation
 		}
 	}
-	changed := !equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) || !equality.Semantic.DeepEqual(cp.Status.Restore, restore)
-	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{ready, backup}, Datastore: datastore, Restore: restore}, changed)
+	changed := !equality.Semantic.DeepEqual(cp.Status.Datastore, datastore) || !equality.Semantic.DeepEqual(cp.Status.Restore, restore) || !equality.Semantic.DeepEqual(cp.Status.MemberRestore, l.record)
+	desired := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{ready, backup}, Datastore: datastore, Restore: restore, MemberRestore: l.record}
+	version, err := statusapply.Writer{Client: r.Client, Manager: FieldManager, Events: r.Events}.ApplyVersion(ctx, cp, desired, changed, l.version)
+	if apierrors.IsConflict(err) {
+		return conflicted{err}
+	}
+	if err != nil || version == "" {
+		return err
+	}
+	l.version = version
+	if l.writes != nil {
+		r.Latches.drop(l.key, *l.writes)
+		l.writes = nil
+	}
+	return nil
 }
 
 func notReady(reason, message string) metav1.Condition {

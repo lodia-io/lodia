@@ -573,6 +573,13 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	if hash, ok := r.hashes[component]; ok {
 		template.Annotations = map[string]string{restartHashAnnotation: hash}
 	}
+	// @todo: stop this roll for a member restored from snapshots once etcd-backup-restore restores with RevisionBump and MarkCompacted; a member that starts empty keeps it (todo.md).
+	if detectedAt := rollsFor(cp, component); detectedAt != nil {
+		if template.Annotations == nil {
+			template.Annotations = map[string]string{}
+		}
+		template.Annotations[lodiav1alpha1.MemberRestoreDetectedAtAnnotation] = annotated(*detectedAt)
+	}
 	d := &appsv1.Deployment{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"},
 		ObjectMeta: objectMeta(cp, deploymentName(cp.Name, component)),
@@ -590,6 +597,28 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	d.Annotations = map[string]string{lodiav1alpha1.OperatorRevisionAnnotation: r.revision}
 	return d
 }
+
+// rollsFor is the memberRestore.detectedAt the component's template carries:
+// the API server's is the record's, and the controller manager's and the
+// scheduler's the value every API server replica runs, as they run at its
+// version, so that they roll once it has rolled and never again for a later
+// rollout of the API server. Both come from the read at the top of the pass,
+// since a render from a cache behind the record would roll the API server
+// back and forth.
+func rollsFor(cp *lodiav1alpha1.ControlPlane, component string) *metav1.Time {
+	if component == apiServer {
+		if record := cp.Status.MemberRestore; record != nil {
+			return &record.DetectedAt
+		}
+		return nil
+	}
+	if c := cp.Status.Components; c != nil && c.APIServer != nil {
+		return c.APIServer.MemberRestoreDetectedAt
+	}
+	return nil
+}
+
+func annotated(t metav1.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func defaultReplicas(cp *lodiav1alpha1.ControlPlane) int32 {
 	if cp.Spec.HighAvailability != nil {

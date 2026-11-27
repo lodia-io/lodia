@@ -151,6 +151,7 @@ func golden() []client.Object {
 	})
 	restored.Status.Components = components(count(1, 1, 1), count(0, 0, 0), count(1, 1, 1))
 	restored.Status.Nodes = &lodiav1alpha1.NodesStatus{}
+	restored.Status.MemberRestore = &lodiav1alpha1.MemberRestoreStatus{Member: "restored-etcd-0", DetectedAt: *ago(30 * time.Minute), From: lodiav1alpha1.MemberRestoreFromSnapshots}
 
 	failed := controlPlane("failed", 4)
 	failed.Generation = 2
@@ -158,6 +159,7 @@ func golden() []client.Object {
 	failed.Status.Conditions = conditions(failed, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionFalse, lodiav1alpha1.ReasonMaintenanceFailed}})
 	failed.Status.Datastore = datastore(count(1, 1))
 	failed.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotSince: ago(3 * time.Hour)}
+	failed.Status.MemberRestore = &lodiav1alpha1.MemberRestoreStatus{Member: "failed-etcd-0", DetectedAt: *ago(2 * time.Hour), From: lodiav1alpha1.MemberRestoreFromEmpty, ReportedAt: ago(2 * time.Hour)}
 
 	queued := controlPlane("queued", 5)
 	steady(queued, "v1.37.1")

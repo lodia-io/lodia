@@ -186,6 +186,7 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 	dialEtcd := func(ctx context.Context, etcd *etcddruid.Store) (*clientv3.Client, error) {
 		return druid.Dial(ctx, secrets, etcd)
 	}
+	latches := datastore.NewLatches()
 	c := &controllers{
 		pki: &pki.Reconciler{
 			Client:              mgr.GetClient(),
@@ -207,9 +208,10 @@ func newControllers(mgr ctrl.Manager, in Inputs, revision string) *controllers {
 			OperatorNamespace: in.OperatorNamespace,
 			EtcdClient:        dialEtcd,
 			Clock:             clock.RealClock{},
+			Latches:           latches,
 		},
 		backup:    &datastore.BackupReconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
-		sampler:   &datastore.SampleReconciler{Cache: mgr.GetCache(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}},
+		sampler:   &datastore.SampleReconciler{Cache: mgr.GetCache(), Reader: mgr.GetAPIReader(), Druid: druid, EtcdClient: dialEtcd, Clock: clock.RealClock{}, Latches: latches},
 		lifecycle: newLifecycle(mgr.GetClient(), mgr.GetAPIReader(), in.Config, in.EtcdDruidStatusSync, revision),
 		tenant:    &tenant.Reconciler{Client: mgr.GetClient(), Reader: mgr.GetAPIReader(), Secrets: secrets, ApplyPeriod: 10 * time.Minute, TunnelImage: in.TunnelImage, Revision: revision, Dial: in.Dial},
 		health:    newHealth(mgr.GetClient(), mgr.GetAPIReader(), secrets, in.Config.Health),

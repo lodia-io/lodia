@@ -103,22 +103,28 @@ type Writer struct {
 // that copy holds with another reason, since a writer tells its first pass
 // from a cache that can lag behind its own last write.
 func (w Writer) Apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	_, _, err := w.write(ctx, cp, desired, changed, false)
+	_, _, err := w.write(ctx, cp, desired, changed, "")
 	return err
 }
 
-// ApplyVersion is Apply returning the resourceVersion its write left, empty
-// when it wrote nothing. A locked write carries the resourceVersion cp was
-// read at, so that it conflicts once cp has changed since.
-func (w Writer) ApplyVersion(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed, locked bool) (string, error) {
-	_, version, err := w.write(ctx, cp, desired, changed, locked)
+// ApplyVersion is ApplyInto returning the resourceVersion its write left,
+// empty when it wrote nothing, locked on resourceVersion unless that is
+// empty. A locked write conflicts once the object has changed since the read
+// it was decided from, a successor under the name included, so it reads
+// nothing: it takes the transitions from cp, whose conditions of the types it
+// writes are the API server's at resourceVersion.
+func (w Writer) ApplyVersion(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool, resourceVersion string) (string, error) {
+	written, version, err := w.write(ctx, cp, desired, changed, resourceVersion)
+	if written != nil {
+		cp.Status.Conditions = written
+	}
 	return version, err
 }
 
 // ApplyInto is Apply for a writer that goes on from its own conditions in the
 // same pass: it leaves cp with the conditions it wrote.
 func (w Writer) ApplyInto(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool) error {
-	written, _, err := w.write(ctx, cp, desired, changed, false)
+	written, _, err := w.write(ctx, cp, desired, changed, "")
 	if written != nil {
 		cp.Status.Conditions = written
 	}
@@ -139,7 +145,7 @@ func Live(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPl
 
 // write returns the conditions it wrote among cp's, nil when it wrote none,
 // and the resourceVersion the write left.
-func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed, locked bool) ([]metav1.Condition, string, error) {
+func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desired lodiav1alpha1.ControlPlaneStatus, changed bool, resourceVersion string) ([]metav1.Condition, string, error) {
 	ctx, cancel, err := ownDeadline(ctx)
 	if err != nil {
 		return nil, "", err
@@ -150,13 +156,16 @@ func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desir
 	}) {
 		return nil, "", nil
 	}
-	conditionTypes := make([]string, 0, len(desired.Conditions))
-	for _, c := range desired.Conditions {
-		conditionTypes = append(conditionTypes, c.Type)
-	}
-	read := cp.DeepCopy()
-	if err := live.Conditions(ctx, w.Reader, read, conditionTypes...); err != nil {
-		return nil, "", err
+	read := cp
+	if resourceVersion == "" {
+		conditionTypes := make([]string, 0, len(desired.Conditions))
+		for _, c := range desired.Conditions {
+			conditionTypes = append(conditionTypes, c.Type)
+		}
+		read = cp.DeepCopy()
+		if err := live.Conditions(ctx, w.Reader, read, conditionTypes...); err != nil {
+			return nil, "", err
+		}
 	}
 	conditions := slices.Clone(desired.Conditions)
 	for i, c := range conditions {
@@ -178,8 +187,8 @@ func (w Writer) write(ctx context.Context, cp *lodiav1alpha1.ControlPlane, desir
 	}
 	fields["conditions"] = applied
 	metadata := map[string]any{"name": cp.Name, "namespace": cp.Namespace}
-	if locked {
-		metadata["resourceVersion"] = cp.ResourceVersion
+	if resourceVersion != "" {
+		metadata["resourceVersion"] = resourceVersion
 	}
 	version, err := w.apply(ctx, "ControlPlane", metadata, fields)
 	if err != nil {

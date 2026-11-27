@@ -945,7 +945,7 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 	for _, c := range []struct {
 		name            string
 		check           func()
@@ -983,7 +983,7 @@ func TestARestoreCheckThatCannotRunKeepsTheStatusTheCacheLacks(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
-		reconciler := &datastore.Reconciler{Client: noControlPlaneWrite(t, stale), Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+		reconciler := &datastore.Reconciler{Client: noControlPlaneWrite(t, stale), Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, injected) {
 			t.Fatalf("the pass returned %v, want %v", err, injected)
 		}
@@ -1014,7 +1014,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 	r.etcd.unreachable.Store(false)
 	poke(t, r.ns)
 	marker := r.cleanedUp(t)
-	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now, Latches: datastore.NewLatches()}
 	pass := func() (time.Duration, error) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return result.RequeueAfter, err
@@ -1027,7 +1027,7 @@ func TestAFullSnapshotThatEndsShortOfTheMarkerIsSentAgain(t *testing.T) {
 			}
 			return c.Delete(ctx, obj, opts...)
 		},
-	}), Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
+	}), Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now, Latches: datastore.NewLatches()}
 	ops := r.opsTask(t)
 	if !ops.CreationTimestamp.After(readyAt) {
 		t.Fatalf("the first EtcdOpsTask was created at %s, not after the Etcd was ready at %s", ops.CreationTimestamp.UTC(), readyAt.UTC())
@@ -1114,7 +1114,7 @@ func TestAFullSnapshotRejectedBeforeTheEtcdIsReadyGoesOnceItIs(t *testing.T) {
 	marker := r.cleanedUp(t)
 	r.setReady(t, druidtest.Ready(false, created.Add(5*time.Minute), time.Now().Truncate(time.Second)))
 	now := clocktesting.NewFakePassiveClock(time.Now())
-	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now, Latches: datastore.NewLatches()}
 	pass := func() error {
 		_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return err
@@ -1600,7 +1600,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 				return c.Get(ctx, key, obj, opts...)
 			},
 		})
-		reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+		reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
 			t.Fatal(err)
 		}
@@ -1686,7 +1686,7 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	reconciler := &datastore.Reconciler{Client: stale, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1825,7 +1825,7 @@ func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	reconciler := &datastore.Reconciler{Client: stale, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}
+	reconciler := &datastore.Reconciler{Client: stale, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1857,7 +1857,7 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 	failed := time.Now().Truncate(time.Second)
 	failCopy(t, r.ns, task.Name, "the bucket is gone", failed)
 	now := clocktesting.NewFakePassiveClock(failed.Add(time.Minute - time.Second))
-	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}
+	reconciler := &datastore.Reconciler{Client: cached, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now, Latches: datastore.NewLatches()}
 	pass := func() (time.Duration, error) {
 		result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}})
 		return result.RequeueAfter, err
@@ -1883,7 +1883,7 @@ func TestAFailedCopyStaysAMinute(t *testing.T) {
 			return c.Delete(ctx, obj, opts...)
 		},
 	})
-	if _, err := (&datastore.Reconciler{Client: refusing, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, refused) {
+	if _, err := (&datastore.Reconciler{Client: refusing, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: now, Latches: datastore.NewLatches()}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !errors.Is(err, refused) {
 		t.Fatalf("a pass whose delete was refused returned %v, want %v", err, refused)
 	}
 	if again := r.copyTask(t); again == nil || again.UID != task.UID || !again.DeletionTimestamp.IsZero() {
@@ -1908,7 +1908,7 @@ func TestAFailedCopyReplacedBeforeItsDeleteStays(t *testing.T) {
 	failed := time.Now().Truncate(time.Second)
 	failCopy(t, r.ns, task.Name, "the bucket is gone", failed)
 	racing := &replacing{WithWatch: k8s, t: t, kind: &druidv1alpha1.EtcdCopyBackupsTask{}}
-	reconciler := &datastore.Reconciler{Client: racing, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clocktesting.NewFakePassiveClock(failed.Add(time.Minute))}
+	reconciler := &datastore.Reconciler{Client: racing, Reader: apiReader, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clocktesting.NewFakePassiveClock(failed.Add(time.Minute)), Latches: datastore.NewLatches()}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: r.ns, Name: restoredCP}}); !apierrors.IsConflict(err) {
 		t.Fatalf("a pass whose failed copy was replaced before its delete returned %v, want a conflict", err)
 	}

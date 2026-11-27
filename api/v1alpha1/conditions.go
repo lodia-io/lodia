@@ -92,6 +92,7 @@ const (
 	ReasonRestoreFailed           = "RestoreFailed"
 	ReasonCAPredatesControlPlane  = "CAPredatesControlPlane"
 	ReasonSecretNotFound          = "SecretNotFound"
+	ReasonMemberRestored          = "MemberRestored"
 )
 
 // APIServerReady.
@@ -219,7 +220,8 @@ const (
 	// WarningRefusal is a spec, or an object a controller finds, that it does
 	// not serve as it is.
 	WarningRefusal WarningGroup = "Refusal"
-	// WarningFailure is a change or an operation that did not complete.
+	// WarningFailure is a change or an operation that did not complete, or
+	// writes the datastore acknowledged and lost.
 	WarningFailure WarningGroup = "Failure"
 	// WarningLoss is something that served and no longer does, or will not.
 	WarningLoss WarningGroup = "Loss"
@@ -266,6 +268,7 @@ var WarningReasons = map[string]WarningGroup{
 	ReasonAPIServerFailed:          WarningFailure,
 	ReasonListFailed:               WarningFailure,
 	ReasonCopyFailed:               WarningFailure,
+	ReasonMemberRestored:           WarningFailure,
 
 	ReasonQuorumLost:                  WarningLoss,
 	ReasonUnavailable:                 WarningLoss,

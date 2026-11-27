@@ -43,6 +43,7 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 				Source:      lodiav1alpha1.UIDReference{Name: "a", UID: "5e1f7c3a-0000-4000-8000-000000000004"},
 				CompletedAt: at,
 			},
+			MemberRestore: &lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: at, From: lodiav1alpha1.MemberRestoreFromSnapshots},
 			Endpoint: &lodiav1alpha1.EndpointStatus{
 				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.com", Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.com", Port: 443},
@@ -77,14 +78,24 @@ func cachedAs(uid types.UID) *lodiav1alpha1.ControlPlane {
 	}
 }
 
-func TestDatastoreTakesTheAPIServersStatus(t *testing.T) {
+func TestDatastoreTakesTheAPIServersStatusAndReturnsItsResourceVersionApart(t *testing.T) {
 	reader, server := held(t)
-	cp := cachedAs(server.UID)
-	if err := live.Datastore(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady); err != nil {
+	stored := &lodiav1alpha1.ControlPlane{}
+	if err := reader.Get(t.Context(), client.ObjectKeyFromObject(server), stored); err != nil {
 		t.Fatal(err)
 	}
-	if !equality.Semantic.DeepEqual(cp.Status.Datastore, server.Status.Datastore) || !equality.Semantic.DeepEqual(cp.Status.Restore, server.Status.Restore) {
-		t.Errorf("status.datastore %+v and status.restore %+v, want the API server's %+v and %+v", cp.Status.Datastore, cp.Status.Restore, server.Status.Datastore, server.Status.Restore)
+	cp := cachedAs(server.UID)
+	cp.ResourceVersion = "1"
+	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: new(metav1.NewTime(at.Add(-time.Hour)))}}
+	version, err := live.Datastore(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != stored.ResourceVersion || cp.ResourceVersion != "1" {
+		t.Errorf("the read returned resourceVersion %q and left %q on the cached copy, want the API server's %q returned and the cache's 1 left", version, cp.ResourceVersion, stored.ResourceVersion)
+	}
+	if !equality.Semantic.DeepEqual(cp.Status.Datastore, server.Status.Datastore) || !equality.Semantic.DeepEqual(cp.Status.Restore, server.Status.Restore) || !equality.Semantic.DeepEqual(cp.Status.MemberRestore, server.Status.MemberRestore) || !equality.Semantic.DeepEqual(cp.Status.Components, server.Status.Components) {
+		t.Errorf("status.datastore %+v, status.restore %+v, status.memberRestore %+v and status.components %+v, want the API server's %+v, %+v, %+v and %+v", cp.Status.Datastore, cp.Status.Restore, cp.Status.MemberRestore, cp.Status.Components, server.Status.Datastore, server.Status.Restore, server.Status.MemberRestore, server.Status.Components)
 	}
 	for _, c := range []struct {
 		conditionType string
@@ -104,8 +115,8 @@ func TestComponentsTakesTheAPIServersStatus(t *testing.T) {
 	if err := live.Components(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		t.Fatal(err)
 	}
-	if !equality.Semantic.DeepEqual(cp.Status.Components, server.Status.Components) || !equality.Semantic.DeepEqual(cp.Status.Endpoint, server.Status.Endpoint) {
-		t.Errorf("status.components %+v and status.endpoint %+v, want the API server's %+v and %+v", cp.Status.Components, cp.Status.Endpoint, server.Status.Components, server.Status.Endpoint)
+	if !equality.Semantic.DeepEqual(cp.Status.Components, server.Status.Components) || !equality.Semantic.DeepEqual(cp.Status.Endpoint, server.Status.Endpoint) || !equality.Semantic.DeepEqual(cp.Status.MemberRestore, server.Status.MemberRestore) {
+		t.Errorf("status.components %+v, status.endpoint %+v and status.memberRestore %+v, want the API server's %+v, %+v and %+v", cp.Status.Components, cp.Status.Endpoint, cp.Status.MemberRestore, server.Status.Components, server.Status.Endpoint, server.Status.MemberRestore)
 	}
 	for _, c := range []struct {
 		conditionType string
@@ -200,7 +211,8 @@ func TestAReadOfAnotherObjectFails(t *testing.T) {
 			return live.Conditions(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady)
 		}},
 		{"Datastore", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
-			return live.Datastore(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady)
+			_, err := live.Datastore(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady)
+			return err
 		}},
 		{"Components", func(reader client.Reader, cp *lodiav1alpha1.ControlPlane) error {
 			return live.Components(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady)

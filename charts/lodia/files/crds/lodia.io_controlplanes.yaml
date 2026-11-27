@@ -1393,6 +1393,20 @@ spec:
                   apiServer:
                     description: apiServer is the rollout of the API server.
                     properties:
+                      memberRestoreDetectedAt:
+                        description: |-
+                          memberRestoreDetectedAt is the value of the annotation
+                          lodia.io/member-restore-detected-at that Workloads rendered for the
+                          component, once every replica runs a template that carries it, its new
+                          replicas all available, old pods that still terminate aside, and the
+                          previous value until then. The API server's template carries
+                          memberRestore.detectedAt, and the controller manager's and the
+                          scheduler's the API server's memberRestoreDetectedAt.
+                        format: date-time
+                        type: string
+                        x-kubernetes-validations:
+                        - message: memberRestoreDetectedAt cannot move back
+                          rule: self >= oldSelf
                       operatorRevision:
                         description: |-
                           operatorRevision is the operator revision of that render, which the
@@ -1428,6 +1442,20 @@ spec:
                     description: controllerManager is the rollout of the controller
                       manager.
                     properties:
+                      memberRestoreDetectedAt:
+                        description: |-
+                          memberRestoreDetectedAt is the value of the annotation
+                          lodia.io/member-restore-detected-at that Workloads rendered for the
+                          component, once every replica runs a template that carries it, its new
+                          replicas all available, old pods that still terminate aside, and the
+                          previous value until then. The API server's template carries
+                          memberRestore.detectedAt, and the controller manager's and the
+                          scheduler's the API server's memberRestoreDetectedAt.
+                        format: date-time
+                        type: string
+                        x-kubernetes-validations:
+                        - message: memberRestoreDetectedAt cannot move back
+                          rule: self >= oldSelf
                       operatorRevision:
                         description: |-
                           operatorRevision is the operator revision of that render, which the
@@ -1462,6 +1490,20 @@ spec:
                   scheduler:
                     description: scheduler is the rollout of the scheduler.
                     properties:
+                      memberRestoreDetectedAt:
+                        description: |-
+                          memberRestoreDetectedAt is the value of the annotation
+                          lodia.io/member-restore-detected-at that Workloads rendered for the
+                          component, once every replica runs a template that carries it, its new
+                          replicas all available, old pods that still terminate aside, and the
+                          previous value until then. The API server's template carries
+                          memberRestore.detectedAt, and the controller manager's and the
+                          scheduler's the API server's memberRestoreDetectedAt.
+                        format: date-time
+                        type: string
+                        x-kubernetes-validations:
+                        - message: memberRestoreDetectedAt cannot move back
+                          rule: self >= oldSelf
                       operatorRevision:
                         description: |-
                           operatorRevision is the operator revision of that render, which the
@@ -1915,6 +1957,48 @@ spec:
                     format: date-time
                     type: string
                 type: object
+              memberRestore:
+                description: |-
+                  memberRestore is the last member of the dedicated etcd that the
+                  Datastore controller found restored from the store's snapshots or
+                  started empty, a new data life the API server's watch cache does not
+                  know: Workloads rolls the API server, then the controller manager and
+                  the scheduler, once for each. The next one replaces it, and it is kept
+                  for the ControlPlane's life, with or without a store.
+                properties:
+                  detectedAt:
+                    description: |-
+                      detectedAt is when an operator replica found the new data life, up to
+                      about two minutes after it began, or one second after the detectedAt of
+                      the record it replaced when that is not earlier.
+                    format: date-time
+                    type: string
+                    x-kubernetes-validations:
+                    - message: memberRestore.detectedAt cannot move back
+                      rule: self >= oldSelf
+                  from:
+                    description: |-
+                      from is Snapshots for a member restored from the store's snapshots, and
+                      Empty for one that started empty.
+                    enum:
+                    - Snapshots
+                    - Empty
+                    type: string
+                  member:
+                    description: member is the member's name.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  reportedAt:
+                    description: reportedAt is when DatastoreReady first reported
+                      it, as MemberRestored.
+                    format: date-time
+                    type: string
+                required:
+                - detectedAt
+                - from
+                - member
+                type: object
               nodes:
                 description: nodes summarise the tenant's nodes.
                 properties:
@@ -2068,6 +2152,21 @@ spec:
                     type: string
                 type: object
             type: object
+            x-kubernetes-validations:
+            - message: memberRestore cannot be removed once set
+              rule: '!has(oldSelf.memberRestore) || has(self.memberRestore)'
+            - message: components.apiServer.memberRestoreDetectedAt cannot be removed
+                once set
+              rule: '!oldSelf.?components.?apiServer.?memberRestoreDetectedAt.hasValue()
+                || self.?components.?apiServer.?memberRestoreDetectedAt.hasValue()'
+            - message: components.controllerManager.memberRestoreDetectedAt cannot
+                be removed once set
+              rule: '!oldSelf.?components.?controllerManager.?memberRestoreDetectedAt.hasValue()
+                || self.?components.?controllerManager.?memberRestoreDetectedAt.hasValue()'
+            - message: components.scheduler.memberRestoreDetectedAt cannot be removed
+                once set
+              rule: '!oldSelf.?components.?scheduler.?memberRestoreDetectedAt.hasValue()
+                || self.?components.?scheduler.?memberRestoreDetectedAt.hasValue()'
         required:
         - spec
         type: object

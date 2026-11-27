@@ -72,6 +72,9 @@ var (
 		"The largest dbSize among the etcd's members that answered the last sample; absent when none did and wherever lodia_controlplane_datastore_has_leader is.")
 	datastoreHasLeader = perControlPlane("lodia_controlplane_datastore_has_leader",
 		"The last sample of the etcd: 1 when a quorum of the voting members answered naming one leader, else 0; absent while the ControlPlane is paused or being deleted, until its Etcd is formed, and after a pass that could not read the cache, or the client certificate in time, until one does.")
+	datastoreMemberRestore = perControlPlane("lodia_controlplane_datastore_member_restore_timestamp_seconds",
+		"status.memberRestore.detectedAt, labelled with its from: when Lodia found a member of the etcd restored from the store's snapshots (Snapshots) or started empty (Empty), up to about two minutes after it happened; absent without a record.",
+		"from")
 	datastoreAlarm = perControlPlane("lodia_controlplane_datastore_alarm",
 		"1 for each alarm armed in the etcd in the last sample; none wherever lodia_controlplane_datastore_has_leader is absent.",
 		"alarm")
@@ -101,7 +104,7 @@ var (
 		info, condition, conditionReason, conditionLastTransition, generation, observedGeneration,
 		nodes, nodesReady, nodesOutdatedKubelets, componentReplicas, componentReplicasReady,
 		datastoreMembers, datastoreMembersReady, datastoreMembersUpdated,
-		datastoreQuota, datastoreDeltaSnapshotPeriod, datastoreDBSize, datastoreHasLeader, datastoreAlarm, operatorRevisionGranted,
+		datastoreQuota, datastoreDeltaSnapshotPeriod, datastoreDBSize, datastoreHasLeader, datastoreAlarm, datastoreMemberRestore, operatorRevisionGranted,
 		slotSince, scheduledFor, upgradeStarted, maxConcurrentRollouts, holdThresholdRatio,
 		certificatesExpiration, endOfSupport, nodesSilent, nodesCounted,
 	}
@@ -285,6 +288,10 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 		for _, alarm := range sample.Alarms {
 			emit(datastoreAlarm, 1, alarm)
 		}
+	}
+
+	if r := status.MemberRestore; r != nil {
+		emit(datastoreMemberRestore, seconds(r.DetectedAt), string(r.From))
 	}
 
 	emit(operatorRevisionGranted, oneIf(status.Target != nil && status.Target.OperatorRevision == c.Revision))

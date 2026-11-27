@@ -7,21 +7,27 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	eventsv1 "k8s.io/api/events/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
@@ -29,6 +35,7 @@ import (
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/etcddruid"
 )
 
 const deltasClass = "e2e-deltas"
@@ -45,6 +52,7 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 	var (
 		k8s      client.Client
 		access   *tenantAccess
+		writer   client.Client
 		event    *corev1.Event
 		marker   *corev1.ConfigMap
 		full     int64
@@ -53,6 +61,13 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 		member   types.UID
 		claim    types.UID
 		deletion time.Time
+		after    time.Time
+		busy     *appsv1.Deployment
+		lost     *corev1.ConfigMap
+		probe    *appsv1.Deployment
+		lease    string
+		holder   string
+		guard    *apiServerGuard
 	)
 	key := client.ObjectKey{Namespace: "team-deltas", Name: controlPlane}
 	etcdKey := client.ObjectKey{Namespace: key.Namespace, Name: contract.EtcdName(key.Name)}
@@ -101,7 +116,16 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 			if period := etcd.Spec.Backup.DeltaSnapshotPeriod; period == nil || period.Duration != 10*time.Second || etcd.Spec.Backup.FullSnapshotSchedule == nil || *etcd.Spec.Backup.FullSnapshotSchedule != "0 0 * * *" {
 				t.Fatalf("Etcd %s snapshots with a delta period of %v and the full schedule %v, want 10s and the class's default", etcd.Name, period, etcd.Spec.Backup.FullSnapshotSchedule)
 			}
+			lease = druidv1alpha1.GetMemberLeaseNames(etcd)[0]
 			access = openTenant(ctx, t, k8s, key)
+			unthrottled := rest.CopyConfig(access.cfg)
+			unthrottled.QPS = -1
+			var err error
+			if writer, err = client.New(unthrottled, client.Options{}); err != nil {
+				t.Fatal(err)
+			}
+			busy = deploymentOf("e2e-busy")
+			create(ctx, t, access.client, busy)
 			return ctx
 		}).
 		Assess("2. an Event, then a full snapshot at or past the current revision, then a marker, then a delta that holds it and one more", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
@@ -152,6 +176,7 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 				return nil
 			})
 			until(ctx, t, 3*time.Minute, "a delta snapshot after the one that holds the marker", func(ctx context.Context) error {
+				after = time.Now()
 				var err error
 				if next, err = snapshotLease(ctx, k8s, key.Namespace, druidv1alpha1.GetDeltaSnapshotLeaseName(metav1.ObjectMeta{Name: etcdKey.Name})); err != nil {
 					return err
@@ -164,7 +189,17 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 			t.Logf("the full snapshot is at revision %d, the marker at %d, %d revisions after it, the delta snapshot that holds it reaches %d and the next %d", full, revision, revision-full, delta, next)
 			return ctx
 		}).
-		Assess("3. the member's claim and then its pod are deleted", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		Assess("3. a ConfigMap e2e-lost and a hundred updates of e2e-busy before the next delta, then the member's claim and its pod are deleted", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			guard = guardAPIServer(ctx, t, k8s, key)
+			holder = memberHolder(ctx, t, k8s, key.Namespace, lease)
+			lost = &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: "e2e-lost"}, Data: map[string]string{"after": "the last delta snapshot"}}
+			create(ctx, t, writer, lost)
+			for i := range 100 {
+				patch := fmt.Appendf(nil, `{"metadata":{"annotations":{"e2e.lodia.io/update":"%d"}}}`, i)
+				if err := writer.Patch(ctx, busy, client.RawPatch(types.MergePatchType, patch)); err != nil {
+					t.Fatal(err)
+				}
+			}
 			pvc := &corev1.PersistentVolumeClaim{}
 			if err := k8s.Get(ctx, claimKey, pvc); err != nil {
 				t.Fatal(err)
@@ -180,10 +215,43 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 			if err := k8s.Delete(ctx, pod, client.Preconditions{UID: &member}); err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("claim %s (%s) and pod %s (%s) deleted", claimKey.Name, claim, pod.Name, member)
+			t.Logf("claim %s (%s) and pod %s (%s) deleted, %s after the delta snapshot that follows the marker's", claimKey.Name, claim, pod.Name, member, time.Since(after).Round(time.Millisecond))
+			until(ctx, t, 2*time.Minute, "the member pod "+string(member)+" is gone", func(ctx context.Context) error {
+				current := &corev1.Pod{}
+				err := k8s.Get(ctx, client.ObjectKeyFromObject(pod), current)
+				switch {
+				case apierrors.IsNotFound(err):
+					return nil
+				case err != nil:
+					return err
+				case current.UID != member:
+					return nil
+				}
+				return fmt.Errorf("pod %s is %s still", pod.Name, current.UID)
+			})
+			snapshotted, err := snapshotLease(ctx, k8s, key.Namespace, druidv1alpha1.GetDeltaSnapshotLeaseName(metav1.ObjectMeta{Name: etcdKey.Name}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lostAt, err := strconv.ParseInt(lost.ResourceVersion, 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshotted >= lostAt {
+				t.Fatalf("unable to lose a write: the delta snapshot Lease holds revision %d, at or past e2e-lost's %d", snapshotted, lostAt)
+			}
+			t.Logf("e2e-lost is at revision %d, the last delta snapshot reaches %d", lostAt, snapshotted)
 			return ctx
 		}).
 		Assess("4. a new member on a new claim is Ready again, restored through at least two deltas, and the tenant serves the Event and the marker", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			probe = deploymentOf("e2e-probe")
+			for err := access.client.Create(ctx, probe); err != nil; err = access.client.Create(ctx, probe) {
+				if time.Since(deletion) > 10*time.Minute {
+					t.Fatalf("no create through the tenant's API server succeeded within 10 minutes of the deletion: %v", err)
+				}
+				time.Sleep(250 * time.Millisecond)
+			}
+			t.Logf("e2e-probe created at revision %s, %s after the deletion", probe.ResourceVersion, time.Since(deletion).Round(time.Second))
 			var pod *corev1.Pod
 			until(ctx, t, 10*time.Minute, "a new member pod on a new claim is Ready", func(ctx context.Context) error {
 				pod = &corev1.Pod{}
@@ -256,7 +324,100 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 			})
 			return ctx
 		}).
+		Assess("5. Lodia records the restore and rolls the API server, then the controller manager and the scheduler: e2e-lost is listed no more and e2e-probe gets its ReplicaSet", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if err := access.client.Get(ctx, client.ObjectKeyFromObject(lost), &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("a get of e2e-lost, which etcd answers, returned %v, want NotFound: the write was not lost", err)
+			}
+			var record *lodiav1alpha1.MemberRestoreStatus
+			until(ctx, t, 5*time.Minute, "status.memberRestore from Snapshots, reported", func(ctx context.Context) error {
+				cp := &lodiav1alpha1.ControlPlane{}
+				if err := k8s.Get(ctx, key, cp); err != nil {
+					return err
+				}
+				if record = cp.Status.MemberRestore; record == nil || record.From != lodiav1alpha1.MemberRestoreFromSnapshots || record.ReportedAt == nil {
+					return fmt.Errorf("status.memberRestore is %+v", record)
+				}
+				return nil
+			})
+			if record.DetectedAt.Time.Before(deletion.Truncate(time.Second)) {
+				t.Errorf("the restore was found at %s, before the member was lost at %s", record.DetectedAt.UTC(), deletion.UTC())
+			}
+			t.Logf("status.memberRestore %s from %s found %s after the deletion", record.Member, record.From, record.DetectedAt.Sub(deletion).Round(time.Second))
+			until(ctx, t, time.Until(record.DetectedAt.Add(5*time.Minute)), "within five minutes of detectedAt, e2e-lost is listed no more and e2e-probe has a ReplicaSet", func(ctx context.Context) error {
+				listed := &corev1.ConfigMapList{}
+				if err := access.client.List(ctx, listed, client.InNamespace(metav1.NamespaceDefault)); err != nil {
+					return err
+				}
+				var problems []string
+				for _, c := range listed.Items {
+					if c.Name == lost.Name {
+						problems = append(problems, "the API server still lists e2e-lost, which etcd lost")
+					}
+				}
+				sets := &appsv1.ReplicaSetList{}
+				if err := access.client.List(ctx, sets, client.InNamespace(metav1.NamespaceDefault)); err != nil {
+					return err
+				}
+				if !slicesContainOwner(sets.Items, probe.UID) {
+					problems = append(problems, "e2e-probe has no ReplicaSet")
+				}
+				if len(problems) > 0 {
+					return errors.New(strings.Join(problems, "; "))
+				}
+				return nil
+			})
+			until(ctx, t, 2*time.Minute, "a Warning event MemberRestored from lodia.io/datastore regarding the ControlPlane", func(ctx context.Context) error {
+				events := &eventsv1.EventList{}
+				if err := k8s.List(ctx, events, client.InNamespace(key.Namespace)); err != nil {
+					return err
+				}
+				for _, e := range events.Items {
+					if e.Regarding.Kind == "ControlPlane" && e.Regarding.Name == key.Name && e.Reason == lodiav1alpha1.ReasonMemberRestored && e.Type == corev1.EventTypeWarning && e.ReportingController == "lodia.io/datastore" {
+						return nil
+					}
+				}
+				return fmt.Errorf("none among %d events", len(events.Items))
+			})
+			until(ctx, t, 5*time.Minute, "DatastoreReady Ready with the three components rolled for detectedAt", func(ctx context.Context) error {
+				cp := &lodiav1alpha1.ControlPlane{}
+				if err := k8s.Get(ctx, key, cp); err != nil {
+					return err
+				}
+				if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady {
+					return fmt.Errorf("DatastoreReady is %+v", c)
+				}
+				for _, c := range []*lodiav1alpha1.ComponentStatus{cp.Status.Components.APIServer, cp.Status.Components.ControllerManager, cp.Status.Components.Scheduler} {
+					if c == nil || c.MemberRestoreDetectedAt == nil || !c.MemberRestoreDetectedAt.Equal(&record.DetectedAt) {
+						return fmt.Errorf("status.components reports %+v", cp.Status.Components)
+					}
+				}
+				return nil
+			})
+			if err := guard.wait(); err != nil {
+				t.Fatalf("unable to show the defect: %v", err)
+			}
+			until(ctx, t, 2*time.Minute, "the member Lease names the restored member", func(ctx context.Context) error {
+				now := memberHolder(ctx, t, k8s, key.Namespace, lease)
+				memberID, cluster, _ := strings.Cut(now, ":")
+				before, _, _ := strings.Cut(holder, ":")
+				if memberID == before {
+					return fmt.Errorf("the Lease's holder is %s, the member before the loss", now)
+				}
+				clusterID, err := strconv.ParseUint(strings.SplitN(cluster, ":", 2)[0], 16, 64)
+				if err != nil {
+					return err
+				}
+				if !etcddruid.RestoredFromSnapshots(clusterID) {
+					t.Fatalf("the restored member runs under cluster ID %x, which is not the one of a restore from snapshots: etcd-druid or its sidecar restores under other names", clusterID)
+				}
+				return nil
+			})
+			return ctx
+		}).
 		Teardown(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			if guard != nil {
+				guard.stop()
+			}
 			closeTenant(ctx, t, k8s, key, deltasClass)
 			return ctx
 		}).
@@ -315,4 +476,143 @@ func restoreOf(logs string) (int, int64, time.Duration, error) {
 		return 0, 0, 0, fmt.Errorf("the restore went through %d delta snapshots, want the one that holds the marker and the next", deltas)
 	}
 	return deltas, base, ended.Sub(started), nil
+}
+
+func deploymentOf(name string) *appsv1.Deployment {
+	labels := map[string]string{"app.kubernetes.io/name": name}
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: metav1.NamespaceDefault, Name: name},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "pause", Image: "registry.k8s.io/pause:3.10"}}},
+			},
+		},
+	}
+}
+
+func slicesContainOwner(sets []appsv1.ReplicaSet, owner types.UID) bool {
+	for _, set := range sets {
+		for _, ref := range set.OwnerReferences {
+			if ref.UID == owner {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func memberHolder(ctx context.Context, t *testing.T, k8s client.Client, namespace, name string) string {
+	t.Helper()
+	lease := &coordinationv1.Lease{}
+	if err := k8s.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, lease); err != nil {
+		t.Fatal(err)
+	}
+	return ptr.Deref(lease.Spec.HolderIdentity, "")
+}
+
+type apiServerGuard struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	mu     sync.Mutex
+	err    error
+}
+
+type guardedPod struct {
+	name     string
+	uid      types.UID
+	restarts int32
+	started  metav1.Time
+}
+
+func guardAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey) *apiServerGuard {
+	t.Helper()
+	pods := &corev1.PodList{}
+	if err := k8s.List(ctx, pods, client.InNamespace(key.Namespace), client.MatchingLabels{lodiav1alpha1.ControlPlaneLabel: key.Name, lodiav1alpha1.ComponentLabel: lodiav1alpha1.APIServerComponent}); err != nil {
+		t.Fatal(err)
+	}
+	var pending []guardedPod
+	for _, pod := range pods.Items {
+		status, ok := apiServerContainer(&pod)
+		if !ok || status.State.Running == nil {
+			t.Fatalf("pod %s has no running kube-apiserver container", pod.Name)
+		}
+		pending = append(pending, guardedPod{name: pod.Name, uid: pod.UID, restarts: status.RestartCount, started: status.State.Running.StartedAt})
+	}
+	if len(pending) == 0 {
+		t.Fatalf("ControlPlane %s has no kube-apiserver pod", key)
+	}
+	ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	g := &apiServerGuard{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(g.done)
+		recorded := func() bool {
+			cp := &lodiav1alpha1.ControlPlane{}
+			return k8s.Get(ctx, key, cp) == nil && cp.Status.MemberRestore != nil
+		}
+		for len(pending) > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+			var still []guardedPod
+			for _, p := range pending {
+				pod := &corev1.Pod{}
+				err := k8s.Get(ctx, client.ObjectKey{Namespace: key.Namespace, Name: p.name}, pod)
+				switch {
+				case err != nil && !apierrors.IsNotFound(err):
+					still = append(still, p)
+				case err != nil || pod.UID != p.uid:
+					if !recorded() {
+						g.fail(fmt.Errorf("kube-apiserver pod %s is gone before status.memberRestore exists", p.name))
+					}
+				case pod.DeletionTimestamp != nil:
+					if !recorded() {
+						g.fail(fmt.Errorf("kube-apiserver pod %s is being deleted before status.memberRestore exists", p.name))
+					}
+				default:
+					status, _ := apiServerContainer(pod)
+					switch {
+					case status.RestartCount != p.restarts:
+						g.fail(fmt.Errorf("kube-apiserver in pod %s restarted, %d times before the loss and %d now", p.name, p.restarts, status.RestartCount))
+					case status.State.Running != nil && !status.State.Running.StartedAt.Equal(&p.started):
+						g.fail(fmt.Errorf("kube-apiserver in pod %s started again at %s, after %s", p.name, status.State.Running.StartedAt.UTC(), p.started.UTC()))
+					default:
+						still = append(still, p)
+					}
+				}
+			}
+			pending = still
+		}
+	}()
+	return g
+}
+
+func apiServerContainer(pod *corev1.Pod) (corev1.ContainerStatus, bool) {
+	for _, s := range pod.Status.ContainerStatuses {
+		if s.Name == lodiav1alpha1.APIServerComponent {
+			return s, true
+		}
+	}
+	return corev1.ContainerStatus{}, false
+}
+
+func (g *apiServerGuard) fail(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.err = errors.Join(g.err, err)
+}
+
+func (g *apiServerGuard) wait() error {
+	<-g.done
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.err
+}
+
+func (g *apiServerGuard) stop() {
+	g.cancel()
+	<-g.done
 }

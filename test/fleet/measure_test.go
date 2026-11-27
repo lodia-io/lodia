@@ -99,10 +99,11 @@ type delta struct {
 	requests, tracked map[string]int64
 	reconciles        map[string]float64
 	errors            map[string]float64
+	conflicts         int64
 }
 
 func diff(before, after operatorStats) delta {
-	d := delta{requests: map[string]int64{}, tracked: map[string]int64{}, reconciles: map[string]float64{}, errors: map[string]float64{}}
+	d := delta{requests: map[string]int64{}, tracked: map[string]int64{}, reconciles: map[string]float64{}, errors: map[string]float64{}, conflicts: after.Conflicts - before.Conflicts}
 	for k, v := range after.Requests {
 		if n := v - before.Requests[k]; n != 0 {
 			d.requests[k] = n

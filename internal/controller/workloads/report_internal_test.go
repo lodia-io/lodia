@@ -5,6 +5,7 @@ package workloads
 
 import (
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -135,7 +136,7 @@ func TestAComponentReportsTheVersionOnlyOnceEveryReplicaRunsIt(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got := rolledOut(deploymentOf(controllerManager, c.image, c.replicas, c.status), controllerManager, c.previous)
+			got := rolledOut(deploymentOf(controllerManager, c.image, c.replicas, c.status), controllerManager, c.previous, nil)
 			if got == nil || !equality.Semantic.DeepEqual(*got, c.want) {
 				t.Errorf("the report is %+v, want %+v", got, c.want)
 			}
@@ -153,13 +154,49 @@ func TestAComponentWhoseDeploymentIsGoneKeepsItsReportWithNoReplicas(t *testing.
 			&lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: "v1.37.1"}}},
 		{"a revision", &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{OperatorRevision: "v0.1.0+abc"}},
 			&lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{OperatorRevision: "v0.1.0+abc"}}},
+		{"a roll after a restored member", &lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt},
+			&lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt}},
 		{"counts alone", &lodiav1alpha1.ComponentStatus{RolloutCount: counts(2, 2, new(int32(2)))}, nil},
 		{"none", nil, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			got := rolledOut(nil, apiServer, c.previous)
+			got := rolledOut(nil, apiServer, c.previous, &laterAt)
 			if !equality.Semantic.DeepEqual(got, c.want) {
 				t.Errorf("the report is %+v, want %+v", got, c.want)
+			}
+		})
+	}
+}
+
+var (
+	restoreAt = metav1.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+	laterAt   = metav1.Date(2026, 11, 26, 11, 0, 0, 0, time.UTC)
+)
+
+func TestARollAfterARestoredMemberIsReportedOnceEveryReplicaRunsTheValueRendered(t *testing.T) {
+	rolled := appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: 2, AvailableReplicas: 2}
+	for _, c := range []struct {
+		name       string
+		annotation string
+		status     appsv1.DeploymentStatus
+		want       *metav1.Time
+	}{
+		{"the value rendered, rolled out", annotated(laterAt), rolled, &laterAt},
+		{"the value rendered, old pods still terminating", annotated(laterAt), appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: 2, AvailableReplicas: 2, TerminatingReplicas: new(int32(2))}, &laterAt},
+		{"the value rendered, one replica not updated", annotated(laterAt), appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 2, UpdatedReplicas: 1, ReadyReplicas: 2, AvailableReplicas: 2}, &restoreAt},
+		{"the value rendered, the generation not observed", annotated(laterAt), appsv1.DeploymentStatus{ObservedGeneration: 2, Replicas: 2, UpdatedReplicas: 2, ReadyReplicas: 2, AvailableReplicas: 2}, &restoreAt},
+		{"another value, rolled out", annotated(metav1.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)), rolled, &restoreAt},
+		{"an older value, rolled out", annotated(restoreAt), rolled, &restoreAt},
+		{"no value, rolled out", "", rolled, &restoreAt},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := deploymentOf(apiServer, "registry.k8s.io/kube-apiserver:v1.37.1", 2, c.status)
+			if c.annotation != "" {
+				d.Spec.Template.Annotations = map[string]string{lodiav1alpha1.MemberRestoreDetectedAtAnnotation: c.annotation}
+			}
+			got := rolledOut(d, apiServer, &lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt}, &laterAt)
+			if got == nil || !equality.Semantic.DeepEqual(got.MemberRestoreDetectedAt, c.want) {
+				t.Errorf("the report is %+v, want memberRestoreDetectedAt %v", got, c.want)
 			}
 		})
 	}

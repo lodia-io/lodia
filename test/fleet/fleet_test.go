@@ -403,7 +403,7 @@ func (f *fleet) rest() {
 	if n := d.requests["get secrets"]; n > 0 {
 		f.t.Errorf("at rest the operator sent %d reads of Secrets in %s, want none: Tenant, health, health-nodes and the etcd sampler read them from memory", n, restWindow)
 	}
-	f.report("at rest: passes %s; errors %s", counts(d.reconciles, restWindow), counts(d.errors, 0))
+	f.report("at rest: passes %s; errors %s; the Datastore's status applies that conflicted %d", counts(d.reconciles, restWindow), counts(d.errors, 0), d.conflicts)
 	f.report("at rest: health passes a tenant every %s; health-nodes every %s", quantiles(intervals[kindProbe+"/"+classHonest]), quantiles(intervals[kindNodeLeases+"/"+classHonest]))
 	f.report("at rest: memory at the end %s; peak %s; %s a tenant by RSS, %s by heap in use", last, peak, kib(last.RSS, f.size), kib(last.HeapInuse, f.size))
 }
@@ -502,8 +502,8 @@ func (f *fleet) updateOne() {
 	after, _ := f.settle(time.Minute)
 	d := diff(quiet, after)
 	window := after.at.Sub(quiet.at)
-	f.report("one ControlPlane updated (a label): passes %s (beside the fleet's %s in as long before it); its namespace's requests %s, less the reads a tenant sends at rest in the %s it took to settle: %s",
-		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0), window.Round(time.Second), counts(f.less(d.tracked, window, 1), 0))
+	f.report("one ControlPlane updated (a label): passes %s (beside the fleet's %s in as long before it); its namespace's requests %s, less the reads a tenant sends at rest in the %s it took to settle: %s; the Datastore's status applies that conflicted %d",
+		counts(only(d.reconciles), 0), counts(only(background.reconciles), 0), counts(d.tracked, 0), window.Round(time.Second), counts(f.less(d.tracked, window, 1), 0), d.conflicts)
 }
 
 func only(m map[string]float64) map[string]float64 {
@@ -534,8 +534,8 @@ func (f *fleet) updateAll() {
 	peak, _, _ := s.end()
 	d := diff(before, after)
 	caused := f.net(d.requests, after.at.Sub(before.at))
-	f.report("every ControlPlane updated at once: settled in %s; passes %s; requests %d, of which besides those of %d tenants at rest over %s %d: %s; peak %s",
-		took.Round(time.Second), counts(only(d.reconciles), 0), total(d.requests), f.size, after.at.Sub(before.at).Round(time.Second), total(caused), counts(caused, 0), peak)
+	f.report("every ControlPlane updated at once: settled in %s; passes %s; requests %d, of which besides those of %d tenants at rest over %s %d: %s; the Datastore's status applies that conflicted %d; peak %s",
+		took.Round(time.Second), counts(only(d.reconciles), 0), total(d.requests), f.size, after.at.Sub(before.at).Round(time.Second), total(caused), counts(caused, 0), d.conflicts, peak)
 }
 
 func (f *fleet) each(from, to int, do func(int)) {
@@ -615,7 +615,7 @@ func (f *fleet) restart() {
 	caused := f.net(after.Requests, after.at.Sub(f.op.started))
 	f.report("a restart over %d tenants: settled in %s; passes %s; requests %d, of which besides those of %d tenants at rest over %s %d: %s", f.size, took.Round(time.Second), counts(after.Reconciles, 0), total(after.Requests),
 		f.size, after.at.Sub(f.op.started).Round(time.Second), total(caused), counts(caused, 0))
-	f.report("a restart: peak %s; after it %s", peak, last)
+	f.report("a restart: the Datastore's status applies that conflicted %d; peak %s; after it %s", after.Conflicts, peak, last)
 }
 
 func (f *fleet) start(settings operatorSettings) *sampler {
@@ -644,7 +644,7 @@ func (f *fleet) wave() {
 	peak, _, busiest := s.end()
 	f.report("a wave over %d tenants with %d slots: every tenant on the new revision and Ready in %s, settled in %s; status writes %d, %.1f/s, at most %d in a second",
 		f.size, f.size, rolledIn.Round(time.Second), took.Round(time.Second), after.Requests[statusWrites], float64(after.Requests[statusWrites])/took.Seconds(), busiest)
-	f.report("a wave: passes %s; requests %d: %s; peak %s", counts(after.Reconciles, 0), total(after.Requests), counts(after.Requests, 0), peak)
+	f.report("a wave: passes %s; requests %d: %s; the Datastore's status applies that conflicted %d; peak %s", counts(after.Reconciles, 0), total(after.Requests), counts(after.Requests, 0), after.Conflicts, peak)
 }
 
 func rolled(cp *lodiav1alpha1.ControlPlane, revision string) bool {
@@ -761,8 +761,8 @@ func (f *fleet) defaultWave() {
 	window := to.at.Sub(from.at)
 	d := diff(from, to)
 	caused := f.net(d.requests, window)
-	f.report("a wave at the default %d slots, from its second minute to its %s: %.1f tenants granted a minute, %d granted and %d queued at the end; passes %s; requests besides those of %d tenants at rest %.1f/s: %s; peak %s",
-		settings.MaxConcurrentRollouts, defaultWave, float64(after-before)/window.Minutes(), after, waiting, counts(only(d.reconciles), window), f.size, float64(total(caused))/window.Seconds(), counts(caused, window), peak)
+	f.report("a wave at the default %d slots, from its second minute to its %s: %.1f tenants granted a minute, %d granted and %d queued at the end; passes %s; requests besides those of %d tenants at rest %.1f/s: %s; the Datastore's status applies that conflicted %d; peak %s",
+		settings.MaxConcurrentRollouts, defaultWave, float64(after-before)/window.Minutes(), after, waiting, counts(only(d.reconciles), window), f.size, float64(total(caused))/window.Seconds(), counts(caused, window), d.conflicts, peak)
 }
 
 func (f *fleet) write() {

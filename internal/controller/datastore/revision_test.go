@@ -58,7 +58,7 @@ func unpaused(c client.WithWatch) client.WithWatch {
 }
 
 func operatorAt(c client.WithWatch, operatorRevision string) *datastore.Reconciler {
-	return &datastore.Reconciler{Client: c, Reader: k8s, Druid: newDruid(), Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}}
+	return &datastore.Reconciler{Client: c, Reader: k8s, Druid: newDruid(), Revision: operatorRevision, OperatorNamespace: operatorNamespace, Clock: clock.RealClock{}, Latches: datastore.NewLatches()}
 }
 
 func ahead(r *datastore.Reconciler, by time.Duration) *datastore.Reconciler {
@@ -315,7 +315,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 func TestAHeldPassCopiesTheCredentialsOfTheStoreTheEtcdNames(t *testing.T) {
 	t.Parallel()
 	ns, credentialsNamespace := namespace(t), namespace(t)
-	const cp = "held-store"
+	const cp = "held-credentials"
 	create(t, credentials(credentialsNamespace))
 	createClass(t, fullClass(cp, credentialsNamespace))
 	heldTenant(t, ns, cp, cp, nil)

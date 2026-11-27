@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"go.uber.org/zap/zapcore"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	crzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -85,7 +86,7 @@ func TestARequestThatFailsBeforeItsAnswerCarriesNoByteOfTheTokenItAsksWith(t *te
 						t.Fatal("the list did not fail")
 					}
 					var logged bytes.Buffer
-					logger := crzap.New(crzap.WriteTo(&logged))
+					logger := crzap.New(crzap.WriteTo(&logged), crzap.StacktraceLevel(zapcore.PanicLevel))
 					logger.Error(err, "list the tenant's "+l.name)
 					if _, err := r.list(logf.IntoContext(t.Context(), logger), tenant, &sampling{}, time.Now()); err != nil {
 						logger.Error(err, "list the node Leases")

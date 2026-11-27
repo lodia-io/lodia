@@ -172,6 +172,28 @@ groups:
           summary: "The etcd of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} has armed {{ $labels.alarm }}."
           runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdalarm
 
+      - alert: LodiaEtcdMemberRestored
+        expr: |
+          time() - max without (pod, instance) (lodia_controlplane_datastore_member_restore_timestamp_seconds{from="Snapshots"}) < 86400
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        keep_firing_for: 4m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A member of the etcd of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} was restored from the store's snapshots: the writes after the last delta snapshot are lost."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdmemberrestored
+
+      - alert: LodiaEtcdMemberStartedEmpty
+        expr: |
+          time() - max without (pod, instance) (lodia_controlplane_datastore_member_restore_timestamp_seconds{from="Empty"}) < 86400
+          unless on (namespace, controlplane) lodia_controlplane_condition_reason{type="Ready",reason="Deleting"}
+        keep_firing_for: 4m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A member of the etcd of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} started empty: every write of the tenant's cluster is lost."
+          runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaetcdmemberstartedempty
+
       - alert: LodiaControllerManagerHeld
         expr: |
           max without (pod, instance, type, status) (lodia_controlplane_condition{type="ControllerManagerHeld",status="True"}) == 1

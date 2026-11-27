@@ -55,11 +55,12 @@ import (
 )
 
 var (
-	k8s          client.WithWatch
-	cached       client.Client
-	apiReader    client.Reader
-	asDatastore  *rest.Config
-	managerReads *reads
+	k8s            client.WithWatch
+	cached         client.Client
+	apiReader      client.Reader
+	asDatastore    *rest.Config
+	managerReads   *reads
+	managerLatches *datastore.Latches
 )
 
 type reads struct {
@@ -67,9 +68,13 @@ type reads struct {
 	mu        sync.Mutex
 	etcdReady map[client.ObjectKey]druidv1alpha1.Condition
 	paused    map[client.ObjectKey]int64
+	left      map[string]bool
 }
 
 func (r *reads) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*lodiav1alpha1.ControlPlane); ok && r.leaves(key.Namespace) {
+		return apierrors.NewNotFound(lodiav1alpha1.GroupVersion.WithResource("controlplanes").GroupResource(), key.Name)
+	}
 	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
 		return err
 	}
@@ -86,6 +91,18 @@ func (r *reads) Get(ctx context.Context, key client.ObjectKey, obj client.Object
 		}
 	}
 	return nil
+}
+
+func (r *reads) leave(ns string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.left[ns] = true
+}
+
+func (r *reads) leaves(ns string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.left[ns]
 }
 
 func (r *reads) readyOf(key client.ObjectKey) *druidv1alpha1.Condition {
@@ -134,8 +151,9 @@ func TestMain(m *testing.M) {
 		env.Fatal("etcd-druid's Deployment", err)
 	}
 	mgr := env.Manager(asDatastore, false)
-	managerReads = &reads{Client: mgr.GetClient(), etcdReady: map[client.ObjectKey]druidv1alpha1.Condition{}, paused: map[client.ObjectKey]int64{}}
-	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}}).SetupWithManager(mgr, 10); err != nil {
+	managerReads = &reads{Client: mgr.GetClient(), etcdReady: map[client.ObjectKey]druidv1alpha1.Condition{}, paused: map[client.ObjectKey]int64{}, left: map[string]bool{}}
+	managerLatches = datastore.NewLatches()
+	if err := (&datastore.Reconciler{Client: managerReads, Reader: mgr.GetAPIReader(), Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, EtcdClient: dialRestored, Clock: clock.RealClock{}, Latches: managerLatches}).SetupWithManager(mgr, 10); err != nil {
 		env.Fatal("controller", err)
 	}
 	ctx := env.StartManager(mgr)
@@ -646,7 +664,7 @@ func TestConditionsFromState(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	}))
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "dev"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Etcd read fails returned %v, want the read's error", err)
 	}
@@ -713,11 +731,35 @@ func TestACredentialsCopyTheAPIServerRefusesIsThePasssError(t *testing.T) {
 	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}}, func() client.Object {
 		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
 	})
-	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apistatus.Refused(err) {
 		t.Fatalf("a pass whose credentials copy is refused returned %v, want the refusal, which the log then holds", err)
 	}
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "DatastoreClass refused-copy is held: the API server refuses "+cp+"-etcd-backup; the reason is in Lodia's log")
+}
+
+func TestARefusalWhoseStatusApplyMeetsAnotherWriteIsStillThePasssError(t *testing.T) {
+	t.Parallel()
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "copy-conflicted"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass("conflicted-copy", credentialsNamespace))
+	create(t, controlPlane(ns, cp, "conflicted-copy"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	readyOn(t, ns, cp, 1)
+	managerReads.leave(ns)
+	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}}, func() client.Object {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+	})
+	plane := getControlPlane(t, ns, cp)
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: afterRead(func() { rewrite(t, plane) }), Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
+	if result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose credentials copy is refused and whose status apply met another write returned %+v, %v, want the refusal", result, err)
+	}
+	if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Message != "another manager's" {
+		t.Errorf("DatastoreReady is %+v, want the other manager's write left as it is", c)
+	}
 }
 
 func refuseEtcds(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
@@ -1123,7 +1165,7 @@ func TestBackupPrefixHoldsNoName(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	}))
-	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
+	reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
 	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns.Name, Name: "v1"}}); !errors.Is(err, injected) {
 		t.Fatalf("a pass whose Namespace read fails returned %v, want the read's error", err)
 	}
@@ -1593,7 +1635,7 @@ func TestAPassFromAStaleCacheChangesNoEtcd(t *testing.T) {
 		},
 	})
 	pass := func(c client.WithWatch) error {
-		_, err := (&datastore.Reconciler{Client: c, Reader: c, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+		_, err := (&datastore.Reconciler{Client: c, Reader: c, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
 		return err
 	}
 
@@ -1668,14 +1710,14 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 	}
 	request := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}
 
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}).Reconcile(t.Context(), request); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose reads still return the deleted Etcd returned %v, want a conflict", err)
 	}
 	stands("a finalizing pass whose reads still return the deleted Etcd")
 
 	name := cp + "-etcd-" + cp + "-etcd-0"
 	create(t, claim(ns, name, nil))
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), request); err != nil {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}).Reconcile(t.Context(), request); err != nil {
 		t.Errorf("a finalizing pass from a cache that still holds the deleted Etcd returned %v", err)
 	}
 	stands("a finalizing pass from a cache that still holds the deleted Etcd")
@@ -1732,7 +1774,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 			return nil
 		},
 	})
-	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
+	if _, err := (&datastore.Reconciler{Client: stale, Reader: stale, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apierrors.IsConflict(err) {
 		t.Errorf("a finalizing pass whose list still returns the reclaimed claim returned %v, want a conflict", err)
 	}
 	if pvc := getClaim(t, ns, name); pvc.UID != successor.UID || !pvc.DeletionTimestamp.IsZero() {
@@ -2625,11 +2667,17 @@ func TestRecordedClass(t *testing.T) {
 
 func reconcileNow(t *testing.T, ns, name string) time.Duration {
 	t.Helper()
-	result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
-	if err != nil {
-		t.Fatal(err)
+	for range 10 {
+		result, err := (&datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}).Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.RequeueAfter != time.Second {
+			return result.RequeueAfter
+		}
 	}
-	return result.RequeueAfter
+	t.Fatal("ten passes in a row met another write")
+	return 0
 }
 
 func TestClassSurvivesTheEtcd(t *testing.T) {
@@ -3117,7 +3165,7 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			failing := noControlPlaneWrite(t, interceptor.NewClient(k8s, row.funcs))
-			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision}
+			reconciler := &datastore.Reconciler{Client: failing, Reader: failing, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
 			if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !errors.Is(err, row.err) {
 				t.Fatalf("the pass returned %v, want %v", err, row.err)
 			}

@@ -17,8 +17,8 @@ Every other tool runs through `go tool`, except ko, hydrophone, yq and crane, wh
 | `make e2e` | the end-to-end suite on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md)) |
 | `make conformance` | the Kubernetes conformance suite against a tenant with two nodes, on a kind cluster of its own ([`test/e2e/README.md`](test/e2e/README.md#nightly-conformance-and-the-idle-control-plane)) |
 
-The tests of Lodia's calls to etcd run etcd's release binary at `versions.EtcdVersion`, the etcd that etcd-wrapper runs in production, and no embedded etcd.
-`make test` and `make fleet` fetch it into `work/etcd` first (`make etcd`); a test run by hand needs `LODIA_ETCD_BINARY="$(go run ./test/etcdbinary work/etcd)"`.
+The tests of Lodia's calls to etcd run etcd's release binary at `versions.EtcdVersion`, the etcd that etcd-wrapper runs in production, and no embedded etcd, and restore a member with the release's `etcdutl` beside it.
+`make test` and `make fleet` fetch both into `work/etcd` first (`make etcd`); a test run by hand needs `LODIA_ETCD_BINARY="$(go run ./test/etcdbinary work/etcd)"`.
 A test binary that `go test`'s timeout or a SIGKILL ended skips its cleanup: on Linux the kernel ends its etcd with it.
 On macOS the etcd stays on its port and its `etcd-*` directory stays in `$TMPDIR`: `ps -eo pid,ppid,command | grep -- '--data-dir.*/etcd-'` lists them, a leftover's parent is process 1 and its directory is `lsof -a -p <pid> -d cwd`, `kill` it and remove the directory.
 

@@ -54,7 +54,7 @@ func passOver(t *testing.T, r *datastore.Reconciler, name string) error {
 }
 
 func TestASightingIsDroppedWithItsRunOrItsControlPlane(t *testing.T) {
-	r := &datastore.Reconciler{Client: withoutControlPlanes(t), Druid: &etcddruid.Engine{}, Clock: clocktesting.NewFakePassiveClock(time.Now())}
+	r := &datastore.Reconciler{Client: withoutControlPlanes(t), Druid: &etcddruid.Engine{}, Clock: clocktesting.NewFakePassiveClock(time.Now()), Latches: datastore.NewLatches()}
 	for _, name := range []string{"dev-etcd", "prod-etcd", "test-etcd"} {
 		if !r.Druid.InFlight(r.Clock, running(name, druidv1alpha1.LastOperationStateProcessing)) {
 			t.Fatalf("Etcd %s Processing under a run ID the record does not name is not in flight", name)
@@ -111,7 +111,7 @@ func TestTheWaitEndsAtTheBoundFromTheFirstSighting(t *testing.T) {
 }
 
 func TestTwoWorkersOnTheSameEtcdShareItsSighting(t *testing.T) {
-	r := &datastore.Reconciler{Client: withoutControlPlanes(t), Druid: &etcddruid.Engine{}, Clock: clocktesting.NewFakePassiveClock(time.Now())}
+	r := &datastore.Reconciler{Client: withoutControlPlanes(t), Druid: &etcddruid.Engine{}, Clock: clocktesting.NewFakePassiveClock(time.Now()), Latches: datastore.NewLatches()}
 	held := make([]bool, 2)
 	var workers sync.WaitGroup
 	for i := range held {

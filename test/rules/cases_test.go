@@ -12,6 +12,8 @@ func cases() []testCase {
 	return slices.Concat(
 		operatorDown(), controlPlaneNotReady(), controlPlaneDeletionStuck(), redundancyLost(), rolloutStuck(),
 		certificateExpiring(), caExpiring(), backupStale(), etcdSpaceNearQuota(), etcdNoLeader(), etcdAlarm(),
+		memberRestore("LodiaEtcdMemberRestored", "Snapshots", "LodiaEtcdMemberStartedEmpty", "Empty"),
+		memberRestore("LodiaEtcdMemberStartedEmpty", "Empty", "LodiaEtcdMemberRestored", "Snapshots"),
 		controllerManagerHeld(), controllerManagerHoldBlocked(), upgradeFailed(), upgradeStalled(),
 		maintenanceHalted(), maintenanceSlotHeldLong(), reconcileErrors(), healthSamplingLate(), kubernetesEndOfSupport(),
 	)
@@ -396,6 +398,60 @@ func etcdAlarm() []testCase {
 			checks: []check{{30, alert, nil}, {60, alert, []alertLabels{tenantAlert("two", "alarm", "NOSPACE")}}},
 		},
 		failover(alert, tenantAlert("a", "alarm", "NOSPACE"), 300, tenant(armed, "a", "1", "alarm", "NOSPACE")),
+	}
+}
+
+func memberRestore(alert, from, other, otherFrom string) []testCase {
+	const restore = "lodia_controlplane_datastore_member_restore_timestamp_seconds"
+	const day = 86400
+	record := func(cp, values, from string) batch { return tenant(restore, cp, values, "from", from) }
+	firing := func(from string, cps ...string) []alertLabels {
+		labels := make([]alertLabels, len(cps))
+		for i, cp := range cps {
+			labels[i] = tenantAlert(cp, "from", from)
+		}
+		return labels
+	}
+	return []testCase{
+		{
+			name: alert + " for 24 hours and 4 minutes after its record, also while paused, never while deleting or without a record",
+			series: join(
+				record("restored", "0x2900", from),
+				record("paused", "0x2900", from), reason("paused", "Progressing", "Paused", "1x2900"),
+				record("deleting", "0x2900", from), reason("deleting", "Ready", "Deleting", "1x2900"),
+				cond("unrestored", "Ready", "True", "1x2900"),
+				join(record("restored", "0x2900", from), reason("restored", "Ready", "Deleting", "1x2900")).in("tenants-b"),
+			),
+			checks: []check{
+				{0, alert, firing(from, "restored", "paused")},
+				{day - 30, alert, firing(from, "restored", "paused")},
+				{day + 210, alert, firing(from, "restored", "paused")},
+				{day + 240, alert, nil},
+			},
+		},
+		{
+			name:   alert + " for 24 hours after a second record of its source",
+			series: record("again", fmt.Sprintf("0x1440 %dx2900", day/2), from),
+			checks: []check{
+				{day + 240, alert, firing(from, "again")},
+				{day/2 + day + 210, alert, firing(from, "again")},
+				{day/2 + day + 240, alert, nil},
+			},
+		},
+		{
+			name: alert + " ends 4 minutes after a record of the other source, which fires " + other,
+			series: join(
+				record("changed", "0x120 stale", from),
+				record("changed", "_x121 3600x200", otherFrom),
+			),
+			checks: []check{
+				{3600, alert, firing(from, "changed")}, {3600, other, nil},
+				{3630, alert, firing(from, "changed")}, {3630, other, firing(otherFrom, "changed")},
+				{3840, alert, firing(from, "changed")},
+				{3870, alert, nil}, {3870, other, firing(otherFrom, "changed")},
+			},
+		},
+		failover(alert, tenantAlert("a", "from", from), 900, record("a", "0", from)),
 	}
 }
 
