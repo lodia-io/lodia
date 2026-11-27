@@ -1099,6 +1099,7 @@ Between them it waits until the operator has settled: for 5 s, no controller but
 The requests of a change, one update, every update, a restart and the wave at the default slots, are given also less what the tenants of the fleet send at rest in as long, by the rate of a tenant at rest times the tenants the fleet has then, one for one tenant's namespace, since the periodic reads of the window are not the change's; the subtraction is made for each kind of request, and a kind the window sent less of than its rest nets nothing, not less than nothing.
 The operator serves what it counts, its requests by verb and resource, its passes by controller, its heap and its CPU, and the test reads its resident set with `ps`.
 The runs below are on go1.26.11, one at a time: on Linux, a VM of 16 vCPUs and 64 GB, `n2-standard-16`, Ubuntu 24.04, with `GOMAXPROCS=8`, 1 run of 100 tenants and 2 of 1,000; on 16 cores of an Apple M4 Max with `GOMAXPROCS=8`, 2 runs of 300; and on the nightly runner, 2 runs of 300 at its 4 CPUs.
+The Datastore controller has since read its `ControlPlane` from the API server at the top of each pass and locked its status applies on that read ([independent-controllers](decisions/independent-controllers.md)): the table's last two rows are from a run of 300 on the runner after that, on go1.27.4, and the other rows' requests are from before it, one fewer for each pass of the Datastore controller.
 A window of a few seconds can hold more of the periodic reads of Secrets than their average at rest: the 18 to 20 requests of one update on the runner and at 1,000 tenants on Linux, and the runner's 5,400 to 5,760 of every update, hold 2 and 359 such reads more.
 Each nightly run writes its report into the summary of its workflow run.
 
@@ -1126,16 +1127,22 @@ Each nightly run writes its report into the summary of its workflow run.
 | a wave at the default 5 slots, from its second minute to its tenth: tenants granted a minute, requests a second besides those at rest | 5.0, 11.9 | 5.0, 12.8 to 13.5 | 5.0, 10.6 to 11.4 | 5.0, 11.0 to 11.1 |
 | a tenth of the tenants hanging: an honest tenant passed by `health`, by `health-nodes`, the median and the most | 11 of 105: 5.0 and 5.1 s; 5.0 s | 32 of 315: 5.0 s; 5.0 s | 32 of 315: 5.0 and 5.1 to 5.2 s; 5.0 and 5.1 s | 105 of 1,050: 5.0 and 5.5 to 5.6 s; 5.0 and 5.2 to 5.3 s |
 | a tenth of the tenants at Health's bounds: resident set, heap in use at the most | 385 MiB, 244 MiB | 804 to 877 MiB, 233 to 374 MiB | 533 to 548 MiB, 344 to 382 MiB | 1,590 to 1,596 MiB, 978 to 1,282 MiB |
+| with the Datastore controller's read at the top of its pass, the requests besides those at rest: of one update, of every update, of a restart, and a second in a wave at the default 5 slots | not measured | not measured | 19, 5,700, 7,978, 12.6 | not measured |
+| the Datastore controller's status applies that conflicted: at rest, on one update, on every update, on a restart; in a wave with a slot for every tenant; in a wave at the default 5 slots, from its second minute to its tenth | not measured | not measured | none; 13, of 1,685 passes of the Datastore controller; 74, of about 300 | not measured |
 
 What the numbers answer:
 - **Secret reads.**
   Tenant, `health`, `health-nodes` and `etcddruid.Engine.Dial` read the access Secrets from memory for as long as their `resourceVersion` stays ([decision](decisions/one-client-for-a-tenant.md)), so that a tenant at rest sends the API server no read of a Secret: the runner's 300 tenants sent it none over a minute at rest, in 0.0 to 0.1 requests a second in all, watches only.
   PKI's passes over each tenant every 10 minutes read: its two lists of the namespace's Secrets without the cache, the labelled ones whole and every one's metadata, about 3.3 a second at 1,000 tenants, none of which the minute at rest held.
 - **What a change costs.**
-  One `ControlPlane` updated costs one pass each of PKI, Lifecycle, Workloads and the Datastore controller, 18 requests to the API server besides the reads of its window at rest and PKI's three bindings in the tenant; `health` and `health-nodes` pass only on what they read, and Tenant only on its inputs.
-  Every `ControlPlane` updated at once costs the same 18 for each, 18,000 at 1,000 tenants, settled in 22 s.
+  One `ControlPlane` updated costs one pass each of PKI, Lifecycle, Workloads and the Datastore controller, 19 requests to the API server besides the reads of its window at rest and PKI's three bindings in the tenant, one of them the Datastore controller's read of the `ControlPlane`; `health` and `health-nodes` pass only on what they read, and Tenant only on its inputs.
+  Every `ControlPlane` updated at once costs the same 19 for each, 5,700 at 300 tenants on the runner; at 1,000 tenants the 18 of before that read cost 18,000, settled in 22 s.
   A restart costs each tenant a pass of every controller and of each periodic one as it starts, and 23 to 27 requests besides those of as long at rest, of which 4 to 8 reads of Secrets; it settled in 43 to 44 s at 1,000 tenants.
   A wave costs each tenant about 29 passes of PKI, Lifecycle, Workloads, the Datastore controller and Tenant, and 9.4 status writes; with a slot for every tenant the 1,050 were on the new revision in 2 min 26 s to 2 min 27 s and free of their slots 45 to 46 s later, the settling.
+- **The Datastore controller's lock.**
+  Its status applies carry the `resourceVersion` of its read at the top of the pass, so a status write of another controller between the two conflicts, and the pass runs again a second later, with no error unless it has another ([independent-controllers](decisions/independent-controllers.md)).
+  At 300 tenants on the runner none conflicted at rest, on one update, on every update or on a restart; 13 of the Datastore controller's 1,685 passes conflicted in a wave with a slot for every tenant, and 74 of its about 300 from the second minute to the tenth of a wave at the default 5 slots.
+  That wave granted 5 tenants a minute, as before the read, and sent 12.6 requests a second besides those at rest, against 10.6 to 11.4 in the runner's runs before it.
 - **A gateway tenant's pass.**
   Its list of every `ControlPlane` from the cache with copies took 8.9 to 9.7 ms and allocated 9.2 MiB at 1,050 tenants, 9 KiB a tenant; Workloads' mappers of route, Gateway and `ControlPlane` events take the same list for each event.
 - **Route writes.**
