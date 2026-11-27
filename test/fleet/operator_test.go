@@ -40,6 +40,7 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/etcddruid"
 	"go.lodia.io/lodia/internal/operator"
 	"go.lodia.io/lodia/internal/testenv"
@@ -157,10 +158,11 @@ func sampleEtcd(cache, reader client.Reader, endpoint string) func(context.Conte
 }
 
 type requests struct {
-	mu      sync.Mutex
-	all     map[string]int64
-	tracked map[string]int64
-	track   string
+	mu        sync.Mutex
+	all       map[string]int64
+	tracked   map[string]int64
+	track     string
+	conflicts int64
 }
 
 func (c *requests) wrap(next http.RoundTripper) http.RoundTripper {
@@ -172,7 +174,13 @@ func (c *requests) wrap(next http.RoundTripper) http.RoundTripper {
 			c.tracked[key]++
 		}
 		c.mu.Unlock()
-		return next.RoundTrip(req)
+		res, err := next.RoundTrip(req)
+		if err == nil && res.StatusCode == http.StatusConflict && key == statusWrites && req.URL.Query().Get("fieldManager") == datastore.FieldManager {
+			c.mu.Lock()
+			c.conflicts++
+			c.mu.Unlock()
+		}
+		return res, err
 	})
 }
 
@@ -205,6 +213,7 @@ func requestKey(req *http.Request) (string, string) {
 
 type operatorStats struct {
 	Requests   map[string]int64   `json:"requests"`
+	Conflicts  int64              `json:"conflicts"`
 	Tracked    map[string]int64   `json:"tracked"`
 	Reconciles map[string]float64 `json:"reconciles"`
 	Errors     map[string]float64 `json:"errors"`
@@ -236,7 +245,7 @@ func statsHandler(counted *requests) http.Handler {
 		}
 		s := operatorStats{Reconciles: map[string]float64{}, Errors: map[string]float64{}, Depth: map[string]float64{}, Workers: map[string]float64{}}
 		counted.mu.Lock()
-		s.Requests, s.Tracked = maps.Clone(counted.all), maps.Clone(counted.tracked)
+		s.Requests, s.Tracked, s.Conflicts = maps.Clone(counted.all), maps.Clone(counted.tracked), counted.conflicts
 		counted.mu.Unlock()
 		families, err := ctrlmetrics.Registry.Gather()
 		if err != nil {
