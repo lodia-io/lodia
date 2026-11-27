@@ -62,15 +62,11 @@ const (
 var components = []string{apiServer, controllerManager, scheduler}
 
 // restartOnly are the PKI Secrets whose renewal rolls a component: what it
-// reads once at start, and front-proxy-client, which kube-apiserver reloads
-// and which PKI renews in the pass and with the lifetime of
-// konnectivity-kubeconfig, so it rolls nothing more while the two stay in
-// phase (docs/decisions/staged-credential-rotation.md). The component reloads
-// the rest (docs/README.md, A tenant namespace).
+// reads once at start. The component reloads the rest (docs/README.md, A
+// tenant namespace).
 var restartOnly = map[string][]lodiav1alpha1.Secret{
 	apiServer: {
-		lodiav1alpha1.EtcdCASecret, lodiav1alpha1.FrontProxyClientSecret,
-		lodiav1alpha1.KonnectivityServerSecret, lodiav1alpha1.KonnectivityKubeconfigSecret,
+		lodiav1alpha1.EtcdCASecret, lodiav1alpha1.KonnectivityServerSecret, lodiav1alpha1.KonnectivityKubeconfigSecret,
 	},
 	controllerManager: {lodiav1alpha1.CABundleSecret},
 }

@@ -25,7 +25,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apiserver/pkg/apis/apiserver"
 	apiserverv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"k8s.io/apiserver/pkg/apis/apiserver/validation"
@@ -148,6 +151,10 @@ type tenant struct {
 	missingCAs []string
 	expiredCAs []string
 	unreadable []string
+	// etcdWithoutCA is the newest etcd generation of this ControlPlane that
+	// the pass found while neither the etcd CA's key Secret nor its bundle
+	// exists, 0 for none.
+	etcdWithoutCA int
 	// backupProviders are the providers a restore without an encryption
 	// configuration copies, from the Backup of backupUID; waitingForBackup
 	// says why there are none yet, or why the configuration is not the
@@ -510,11 +517,19 @@ func (r *Reconciler) issue(ctx context.Context, t *tenant) error {
 
 // ca creates a CA only for a tenant with neither its key Secret nor its
 // bundle: a new CA in place of a lost or expired one would cut every client
-// or node off at once.
+// or node off at once. An etcd generation of this ControlPlane proves the
+// etcd CA as well, since the members run on one: a new etcd CA would cut the
+// API server off from them, and the members that roll onto it from those
+// that have not.
 func (r *Reconciler) ca(ctx context.Context, t *tenant, name string, bundle lodiav1alpha1.Secret) error {
 	secret := t.name("cakey-" + name)
 	key, trusted := t.existing[secret], t.existing[t.secret(bundle)]
-	if key == nil && trusted == nil {
+	fresh := key == nil && trusted == nil
+	if fresh && name == etcdCA {
+		t.etcdWithoutCA = t.controlledEtcdGeneration()
+		fresh = t.etcdWithoutCA == 0
+	}
+	if fresh {
 		lifetime := r.CALifetime
 		if name == clusterCA {
 			lifetime = r.TrustAnchorLifetime
@@ -547,6 +562,19 @@ func (r *Reconciler) ca(ctx context.Context, t *tenant, name string, bundle lodi
 	r.notice(t, c.Cert)
 	r.applySecret(ctx, t, secret, corev1.SecretTypeTLS, map[string][]byte{lodiav1alpha1.TLSCertKey: key.Data[lodiav1alpha1.TLSCertKey], lodiav1alpha1.TLSPrivateKeyKey: key.Data[lodiav1alpha1.TLSPrivateKeyKey]}, nil, false)
 	return nil
+}
+
+// controlledEtcdGeneration is the newest etcd generation that a Secret this
+// ControlPlane controls names in its label, 0 for none. A Secret being deleted
+// counts: etcd-druid's finalizer holds those the Etcd names.
+func (t *tenant) controlledEtcdGeneration() int {
+	newest := 0
+	for _, s := range t.existing {
+		if g, err := strconv.Atoi(s.Labels[lodiav1alpha1.EtcdCertificatesLabel]); err == nil && g > newest && metav1.IsControlledBy(s, t.cp) {
+			newest = g
+		}
+	}
+	return newest
 }
 
 func readCA(s *corev1.Secret) *certs.Certificate {
@@ -1068,20 +1096,34 @@ func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	return nil
 }
 
-// readEncryptionConfig accepts what the API server's own validator accepts
-// and PKI writes: one resource entry, for secrets. Reload is on, as the API
-// server Lodia runs reloads the file.
+// encryptionScheme and encryptionCodecs are kube-apiserver's for its
+// encryption configuration (k8s.io/apiserver@v0.37.3
+// pkg/server/options/encryptionconfig/config.go#L141-L145).
+var encryptionScheme, encryptionCodecs = func() (*runtime.Scheme, serializer.CodecFactory) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(apiserver.AddToScheme(scheme))
+	utilruntime.Must(apiserverv1.AddToScheme(scheme))
+	return scheme, serializer.NewCodecFactory(scheme, serializer.EnableStrict)
+}()
+
+// readEncryptionConfig accepts a configuration of PKI's shape, one resource
+// entry, for secrets, that decodes and validates as kube-apiserver loads it,
+// with reload on, as the API server Lodia runs reloads the file
+// (k8s.io/apiserver@v0.37.3
+// pkg/server/options/encryptionconfig/config.go#L519-L535), and that holds no
+// KMS v1 provider, which kube-apiserver refuses unless its KMSv1 gate is on,
+// off by default since 1.29 (config.go#L743-L747,
+// pkg/features/kube_features.go#L404-L408).
 func readEncryptionConfig(content []byte) (*apiserverv1.EncryptionConfiguration, bool) {
+	decoded, err := runtime.Decode(encryptionCodecs.UniversalDecoder(), content)
+	internal, ok := decoded.(*apiserver.EncryptionConfiguration)
+	if err != nil || !ok || len(internal.Resources) != 1 || !slices.Equal(internal.Resources[0].Resources, []string{"secrets"}) ||
+		len(validation.ValidateEncryptionConfiguration(internal, true)) > 0 ||
+		slices.ContainsFunc(internal.Resources[0].Providers, func(p apiserver.ProviderConfiguration) bool { return p.KMS != nil && p.KMS.APIVersion == "v1" }) {
+		return nil, false
+	}
 	cfg := &apiserverv1.EncryptionConfiguration{}
-	if err := yaml.Unmarshal(content, cfg); err != nil || cfg.APIVersion != apiserverv1.SchemeGroupVersion.String() || cfg.Kind != "EncryptionConfiguration" ||
-		len(cfg.Resources) != 1 || !slices.Equal(cfg.Resources[0].Resources, []string{"secrets"}) {
-		return nil, false
-	}
-	internal := &apiserver.EncryptionConfiguration{}
-	if err := apiserverv1.Convert_v1_EncryptionConfiguration_To_apiserver_EncryptionConfiguration(cfg, internal, nil); err != nil {
-		return nil, false
-	}
-	return cfg, len(validation.ValidateEncryptionConfiguration(internal, true)) == 0
+	return cfg, encryptionScheme.Convert(internal, cfg, nil) == nil
 }
 
 func providerOf(p apiserverv1.ProviderConfiguration) lodiav1alpha1.EncryptionProvider {
@@ -1123,10 +1165,12 @@ func newProvider(provider lodiav1alpha1.EncryptionProvider, now time.Time) (apis
 	}
 }
 
-// etcd keeps the current generation and the newest complete one below it,
-// which the Etcd may still run on, and deletes every other. A new generation
-// is numbered above every one present, labelled or not, so it never takes a
-// name a leftover holds.
+// etcd keeps the current generation and the newest complete one below it
+// that chains to the etcd CA, expired or not, which the Etcd may still run
+// on, and deletes every other: a generation of another CA, a predecessor's or
+// one written by hand, is neither kept nor adopted. A new generation is
+// numbered above every one present, labelled or not, so it never takes a name
+// a leftover holds.
 func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 	ca := t.cas[etcdCA]
 	profiles := t.etcdProfiles()
@@ -1147,7 +1191,7 @@ func (r *Reconciler) etcd(ctx context.Context, t *tenant) error {
 	}
 	previous := 0
 	for _, g := range generations {
-		if g < current && t.etcdComplete(g) {
+		if g < current && t.etcdComplete(g) && t.chains(g, ca, profiles) {
 			previous = g
 		}
 	}
@@ -1225,8 +1269,7 @@ func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdPro
 	if g == 0 || !t.etcdComplete(g) {
 		return nil
 	}
-	s := t.existing[t.etcdName(contract.EtcdCARole, g)]
-	if bundle, err := certs.ParseCerts(s.Data[lodiav1alpha1.CACertKey]); !isImmutable(s) || err != nil || len(bundle) != 1 || !bundle[0].Equal(ca.Cert) {
+	if s := t.existing[t.etcdName(contract.EtcdCARole, g)]; !isImmutable(s) || !holdsOnly(s, ca) {
 		return nil
 	}
 	kept := make(map[contract.EtcdCertificateRole]*certs.Certificate, len(profiles))
@@ -1239,6 +1282,27 @@ func (t *tenant) etcdGeneration(g int, ca *certs.Certificate, profiles []etcdPro
 		kept[p.role] = c
 	}
 	return kept
+}
+
+// chains reports whether complete generation g's ca.crt holds ca alone and
+// each of its leaves is signed by ca, whatever their validity.
+func (t *tenant) chains(g int, ca *certs.Certificate, profiles []etcdProfile) bool {
+	if !holdsOnly(t.existing[t.etcdName(contract.EtcdCARole, g)], ca) {
+		return false
+	}
+	for _, p := range profiles {
+		s := t.existing[t.etcdName(p.role, g)]
+		c, err := certs.Parse(s.Data[lodiav1alpha1.TLSCertKey], s.Data[lodiav1alpha1.TLSPrivateKeyKey])
+		if err != nil || c.Cert.CheckSignatureFrom(ca.Cert) != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func holdsOnly(s *corev1.Secret, ca *certs.Certificate) bool {
+	bundle, err := certs.ParseCerts(s.Data[lodiav1alpha1.CACertKey])
+	return err == nil && len(bundle) == 1 && bundle[0].Equal(ca.Cert)
 }
 
 func (t *tenant) etcdName(role contract.EtcdCertificateRole, generation int) string {

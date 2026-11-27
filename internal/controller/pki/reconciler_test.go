@@ -663,7 +663,7 @@ func TestALostCAIsNeverReplaced(t *testing.T) {
 	}
 	reconcile(t, r, cp)
 	c := condition(t, cp, lodiav1alpha1.ConditionCertificatesReady)
-	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, etcd") {
+	if c.Reason != lodiav1alpha1.ReasonCAMissing || !strings.Contains(c.Message, "cluster, etcd") || strings.Contains(c.Message, "are gone while") {
 		t.Fatalf("CertificatesReady is %s: %s", c.Reason, c.Message)
 	}
 	after, _ := resourceVersions(t, cp)
