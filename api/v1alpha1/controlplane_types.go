@@ -59,8 +59,12 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) == 1",message="kube-controller-manager refuses node-cidr-mask-size with two pod ranges: use node-cidr-mask-size-ipv4 and node-cidr-mask-size-ipv6"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 4",message="kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 6",message="kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
+// +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size' in self.controllerManager.extraArgs) || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 6 || int(self.controllerManager.extraArgs['node-cidr-mask-size']) <= 32",message="node-cidr-mask-size beside an IPv4 pod range is at most 32, the length of an IPv4 address: kube-controller-manager allocates no node range from a longer mask, and says nothing"
 // +kubebuilder:validation:XValidation:rule="self.network.podCIDRs.all(c, !isCIDR(c) || (cidr(c).ip().family() == 4 ? cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv4']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 24) : cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) && (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) - cidr(c).prefixLength() <= 16))",message="kube-controller-manager refuses a pod range narrower than the node mask of its family, 24 for IPv4 and 64 for IPv6 unless controllerManager.extraArgs sets it, and an IPv6 range more than 16 bits wider than it"
 // +kubebuilder:validation:XValidation:rule="!has(self.serviceAccount) || !has(self.serviceAccount.issuer) || !has(self.apiServer) || !has(self.apiServer.authentication) || !has(self.apiServer.authentication.jwt) || !self.apiServer.authentication.jwt.exists(a, a.issuer.url == self.serviceAccount.issuer)",message="kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer"
+// +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.featureGates) || self.controllerManager.featureGates.all(g, has(self.apiServer) && has(self.apiServer.featureGates) && g in self.apiServer.featureGates && self.apiServer.featureGates[g] == self.controllerManager.featureGates[g])",message="controllerManager.featureGates sets a gate that apiServer.featureGates does not set to the same value: a feature needs its gate on every component it spans, and kube-apiserver serves the APIs the controller manager reads",messageExpression="'controllerManager.featureGates sets ' + self.controllerManager.featureGates.filter(g, (!has(self.apiServer) || !has(self.apiServer.featureGates) || !(g in self.apiServer.featureGates) || self.apiServer.featureGates[g] != self.controllerManager.featureGates[g]) && !self.controllerManager.featureGates.exists(h, h < g && (!has(self.apiServer) || !has(self.apiServer.featureGates) || !(h in self.apiServer.featureGates) || self.apiServer.featureGates[h] != self.controllerManager.featureGates[h])))[0] + ', which apiServer.featureGates must set to the same value: a feature needs its gate on every component it spans, and kube-apiserver serves the APIs the controller manager reads'"
+// +kubebuilder:validation:XValidation:rule="!(has(self.scheduler) && has(self.scheduler.featureGates) && 'CoordinatedLeaderElection' in self.scheduler.featureGates && self.scheduler.featureGates['CoordinatedLeaderElection']) || has(self.apiServer) && has(self.apiServer.featureGates) && 'CoordinatedLeaderElection' in self.apiServer.featureGates && self.apiServer.featureGates['CoordinatedLeaderElection']",message="CoordinatedLeaderElection on the scheduler needs it on kube-apiserver too: a component with the gate only renews a Lease that kube-apiserver's election gives it, which kube-apiserver without the gate never does, so the component never leads"
+// +kubebuilder:validation:XValidation:rule="!(has(self.apiServer) && has(self.apiServer.featureGates) && 'CoordinatedLeaderElection' in self.apiServer.featureGates && self.apiServer.featureGates['CoordinatedLeaderElection']) || has(self.apiServer.extraArgs) && 'runtime-config' in self.apiServer.extraArgs && self.apiServer.extraArgs['runtime-config'].matches('(^|,)coordination[.]k8s[.]io/v1beta1=true(,|$)') && !self.apiServer.extraArgs['runtime-config'].matches('(^|,)coordination[.]k8s[.]io/v1beta1(/leasecandidates)?=false(,|$)')",message="CoordinatedLeaderElection on kube-apiserver needs apiServer.extraArgs' runtime-config to hold coordination.k8s.io/v1beta1=true and to turn neither it nor its leasecandidates off: kube-apiserver waits for its informer of LeaseCandidates, which that group version serves, and is never ready without it"
 type ControlPlaneSpec struct {
 	// version is the Kubernetes version, vMAJOR.MINOR.PATCH, any patch of a
 	// minor Lodia runs. The minor never decreases; Lodia upgrades one minor
@@ -321,22 +325,26 @@ type APIServer struct {
 	Encryption *Encryption `json:"encryption,omitempty"`
 
 	// extraArgs are flags passed to kube-apiserver, each under its name as
-	// kube-apiserver spells it. The schema refuses the flags Lodia sets;
-	// bind-address, etcd-prefix, etcd-servers-overrides and
-	// shutdown-send-retry-after, whose defaults it relies on; the flags that
-	// conflict with one Lodia sets; help, which ends the process; and version,
-	// which ends it or, given as vX.Y.Z, sets the version it reports while it
-	// runs on. It checks the values of disable-admission-plugins,
-	// service-account-max-token-expiration and event-ttl. Every other flag and
-	// value is passed as written, and a flag or a value kube-apiserver refuses
-	// makes it exit. enable-admission-plugins merges: its entries follow
-	// Lodia's. featureGates sets feature-gates.
+	// kube-apiserver spells it. The schema refuses the flags Lodia sets; those
+	// whose defaults it relies on; the flags that conflict with one Lodia
+	// sets; those that name a file, which no tenant can put in the pod, or act
+	// only with one; the mixed-version proxy's, which would reach every
+	// replica at the one address Lodia advertises for all of them; help, which
+	// ends the process; and version, which ends it or, given as vX.Y.Z, sets
+	// the version it reports while it runs on. It checks the values of
+	// disable-admission-plugins, service-account-max-token-expiration,
+	// event-ttl and runtime-config. Every other flag and value is passed as
+	// written, and a flag or a value kube-apiserver refuses makes it exit.
+	// enable-admission-plugins merges: its entries follow Lodia's.
+	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'goaway-chance', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-jwks-uri', 'service-account-signing-endpoint', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['bind-address', 'etcd-prefix', 'etcd-servers-overrides', 'shutdown-send-retry-after'])",message="Lodia relies on this flag's default"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['admission-control', 'anonymous-auth', 'authorization-config', 'authorization-policy-file', 'authorization-webhook-cache-authorized-ttl', 'authorization-webhook-cache-unauthorized-ttl', 'authorization-webhook-config-file', 'authorization-webhook-version', 'cert-dir', 'service-account-key-file', 'service-account-signing-key-file'] || k.startsWith('oidc-'))",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['bind-address', 'emulated-version', 'emulation-forward-compatible', 'etcd-prefix', 'etcd-servers-overrides', 'min-compatibility-version', 'request-timeout', 'runtime-config-emulation-forward-compatible', 'shutdown-send-retry-after'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['admission-control', 'anonymous-auth', 'apiserver-count', 'authorization-config', 'authorization-policy-file', 'authorization-webhook-cache-authorized-ttl', 'authorization-webhook-cache-unauthorized-ttl', 'authorization-webhook-config-file', 'authorization-webhook-version', 'cert-dir', 'service-account-key-file', 'service-account-signing-key-file'] || k.startsWith('oidc-'))",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['admission-control-config-file', 'allow-metric-labels-manifest', 'kubelet-certificate-authority', 'tls-sni-cert-key', 'token-auth-file', 'tracing-config-file'] || k.startsWith('audit-') || k.startsWith('authentication-token-webhook-'))",message="this flag names a file, or acts only with one, and the pod holds no file a tenant chooses"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['peer-advertise-ip', 'peer-advertise-port', 'peer-ca-file'])",message="the mixed-version proxy would reach every replica of the API server at the one address Lodia advertises for all of them"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version'])",message="this flag makes the component exit, or report another version than the one it runs"
 	// +kubebuilder:validation:XValidation:rule="!('disable-admission-plugins' in self) || self['disable-admission-plugins'].matches('^[A-Za-z0-9]+(,[A-Za-z0-9]+)*$')",message="disable-admission-plugins is plugin names of letters and digits joined by commas, and nothing else, since kube-apiserver reads it as CSV"
 	// +kubebuilder:validation:XValidation:rule="!('disable-admission-plugins' in self) || !self['disable-admission-plugins'].matches('(^|,)NodeRestriction(,|$)')",message="disable-admission-plugins cannot name NodeRestriction, which Lodia enables"
@@ -344,13 +352,19 @@ type APIServer struct {
 	// +kubebuilder:validation:XValidation:rule="!('service-account-max-token-expiration' in self) || duration(self['service-account-max-token-expiration']) >= duration('1h') && duration(self['service-account-max-token-expiration']) <= duration('8760h')",message="kube-apiserver refuses a service-account-max-token-expiration other than 0 under 1h, and one above 8760h, the longest token lodia-signer signs; 0 means 8760h, so leave the flag out instead"
 	// +kubebuilder:validation:XValidation:rule="!('event-ttl' in self) || self['event-ttl'].matches('^[-+]?(0|(([0-9]+([.][0-9]*)?|[.][0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$')",message="event-ttl is a duration as Go's time.ParseDuration reads it, such as 1h30m0s or 3600s"
 	// +kubebuilder:validation:XValidation:rule="!('event-ttl' in self) || duration(self['event-ttl']) >= duration('1h')",message="event-ttl is at least 1h, kube-apiserver's default: with 0 Events never expire and fill the tenant's etcd to its quota, and an Event's lease that expires during a restore through deltas aborts it or drops a write (etcd-backup-restore#1045, #1046)"
-	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="!('runtime-config' in self) || self['runtime-config'].matches('^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?){0,2}=(true|false)(,[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?){0,2}=(true|false))*$')",message="runtime-config is pairs of an API or api/all, api/ga, api/beta or api/alpha and true or false, joined by commas, and nothing else, since kube-apiserver trims spaces and reads an empty value, 1 and t as true"
+	// +kubebuilder:validation:XValidation:rule="!('runtime-config' in self) || !self['runtime-config'].matches('(^|,)(api/(all|ga)|((api/)?v1|(apps|rbac[.]authorization[.]k8s[.]io|discovery[.]k8s[.]io|coordination[.]k8s[.]io|certificates[.]k8s[.]io|authentication[.]k8s[.]io|authorization[.]k8s[.]io|apiregistration[.]k8s[.]io)/v1)(/[^,=]+)?)=false(,|$)')",message="runtime-config cannot turn off api/all, api/ga, or a group version Lodia's controllers use or a resource of one: v1, apps/v1, rbac.authorization.k8s.io/v1, discovery.k8s.io/v1, coordination.k8s.io/v1, certificates.k8s.io/v1, authentication.k8s.io/v1, authorization.k8s.io/v1 and apiregistration.k8s.io/v1"
+	// +kubebuilder:validation:XValidation:rule="!('runtime-config' in self) || !self['runtime-config'].matches('(^|,)(admissionregistration[.]k8s[.]io|apiextensions[.]k8s[.]io|networking[.]k8s[.]io|node[.]k8s[.]io|resource[.]k8s[.]io|scheduling[.]k8s[.]io|storage[.]k8s[.]io)/v1(/[^,=]+)?=false(,|$)')",message="runtime-config cannot turn off a group version kube-apiserver needs to become ready, or a resource of one: admissionregistration.k8s.io/v1, apiextensions.k8s.io/v1, networking.k8s.io/v1, node.k8s.io/v1, resource.k8s.io/v1, scheduling.k8s.io/v1 and storage.k8s.io/v1"
+	ExtraArgs map[string]FlagValue `json:"extraArgs,omitempty"`
 
-	// featureGates are passed to kube-apiserver.
+	// featureGates are passed to kube-apiserver, each under its gate's bare
+	// name.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="!('ExternalServiceAccountTokenSigner' in self) || self['ExternalServiceAccountTokenSigner']",message="kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
 	// +kubebuilder:validation:XValidation:rule="!('StructuredAuthenticationConfigurationEgressSelector' in self) || self['StructuredAuthenticationConfigurationEgressSelector']",message="kube-apiserver refuses the egressSelectorType Lodia renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector"
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))",message="a key must be a gate's bare name, a capital letter then letters and digits, with no component prefix and no spaces: the component reads kube:<gate> and a name with spaces around it as the gate, which the rules that name a gate would miss"
+	// +kubebuilder:validation:XValidation:rule="!('AllAlpha' in self) && !('AllBeta' in self)",message="AllAlpha and AllBeta are refused, true or false: each sets every alpha or beta gate the map does not name, a set that changes with every minor, true turning on gates that need an API kube-apiserver does not serve by default and AllBeta: false turning off those on by default; name each gate instead"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// resources override the operator's defaults.
@@ -370,30 +384,43 @@ type Encryption struct {
 // +kubebuilder:validation:Enum=None;secretbox;aescbc
 type EncryptionProvider string
 
+// FlagValue is a flag's value as a component reads it.
+// +kubebuilder:validation:MaxLength=4096
+type FlagValue string
+
 // Component configures kube-controller-manager.
 type Component struct {
 	// extraArgs are flags passed to the component, each under its name as the
-	// component spells it. The schema refuses the flags Lodia sets;
-	// authorization-always-allow-paths and secure-port, whose defaults it
-	// relies on; the flags that conflict with one Lodia sets; help, which ends
-	// the process; and version, which ends it or, given as vX.Y.Z, sets the
-	// version it reports while it runs on. It checks the values of the node
-	// mask sizes. Every other flag and value is passed as written, and a flag
-	// or a value the component refuses makes it exit. controllers merges: its
-	// entries follow Lodia's. featureGates sets feature-gates.
+	// component spells it. The schema refuses the flags Lodia sets; those
+	// whose defaults it relies on; the flags that conflict with one Lodia
+	// sets; those that name a file, which no tenant can put in the pod; help,
+	// which ends the process; and version, which ends it or, given as vX.Y.Z,
+	// sets the version it reports while it runs on. It checks the values of
+	// the node mask sizes and of controllers. Every other flag and value is
+	// passed as written, and a flag or a value the component refuses makes it
+	// exit. controllers merges: its entries follow Lodia's. featureGates sets
+	// feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-duration', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-lease-duration', 'leader-elect-renew-deadline', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace', 'leader-elect-retry-period', 'node-monitor-grace-period', 'node-monitor-period', 'requestheader-client-ca-file', 'root-ca-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Lodia sets this flag"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'secure-port'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'cidr-allocator-type', 'emulated-version', 'min-compatibility-version', 'secure-port'])",message="Lodia relies on this flag's default"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['cluster-signing-cert-file', 'cluster-signing-key-file', 'master', 'service-account-private-key-file'])",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allow-metric-labels-manifest', 'cloud-config', 'cluster-signing-kube-apiserver-client-cert-file', 'cluster-signing-kube-apiserver-client-key-file', 'cluster-signing-kubelet-serving-cert-file', 'cluster-signing-kubelet-serving-key-file', 'cluster-signing-legacy-unknown-cert-file', 'cluster-signing-legacy-unknown-key-file', 'leader-migration-config', 'pv-recycler-pod-template-filepath-hostpath', 'pv-recycler-pod-template-filepath-nfs', 'tls-cert-file', 'tls-private-key-file', 'tls-sni-cert-key'])",message="this flag names a file, and the pod holds no file a tenant chooses"
 	// +kubebuilder:validation:XValidation:rule="['node-cidr-mask-size', 'node-cidr-mask-size-ipv4', 'node-cidr-mask-size-ipv6'].all(k, !(k in self) || self[k].matches('^[1-9][0-9]*$'))",message="a node mask size is a positive decimal number without a sign or a leading zero, since kube-controller-manager reads 024 as octal and 0 as unset"
+	// +kubebuilder:validation:XValidation:rule="!('node-cidr-mask-size-ipv4' in self) || int(self['node-cidr-mask-size-ipv4']) <= 32",message="node-cidr-mask-size-ipv4 is at most 32, the length of an IPv4 address: kube-controller-manager allocates no node range from a longer mask, and says nothing"
+	// +kubebuilder:validation:XValidation:rule="['node-cidr-mask-size', 'node-cidr-mask-size-ipv6'].all(k, !(k in self) || int(self[k]) <= 128)",message="a node mask size is at most 128, the length of an IPv6 address: kube-controller-manager allocates no node range from a longer mask, and says nothing"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version'])",message="this flag makes the component exit, or report another version than the one it runs"
-	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="!('controllers' in self) || self['controllers'].matches('^([*]|-?[a-z0-9]+(-[a-z0-9]+)*)(,([*]|-?[a-z0-9]+(-[a-z0-9]+)*))*$')",message="controllers is names of controllers, each perhaps after a dash, or *, joined by commas, and nothing else, since kube-controller-manager reads it as CSV"
+	// +kubebuilder:validation:XValidation:rule="!('controllers' in self) || !self['controllers'].matches('(^|,)-(certificatesigningrequest-signing-controller|csrsigning|certificatesigningrequest-approving-controller|csrapproving|bootstrap-signer-controller|bootstrapsigner|token-cleaner-controller|tokencleaner|root-ca-certificate-publisher-controller|root-ca-cert-publisher)(,|$)')",message="controllers cannot turn off a controller nodes join by: the CSR signer and approver, the bootstrap signer, the token cleaner and the root CA publisher"
+	ExtraArgs map[string]FlagValue `json:"extraArgs,omitempty"`
 
-	// featureGates are passed to the component.
+	// featureGates are passed to the component, each under its gate's bare
+	// name and set to the same value in apiServer.featureGates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))",message="a key must be a gate's bare name, a capital letter then letters and digits, with no component prefix and no spaces: the component reads kube:<gate> and a name with spaces around it as the gate, which the rules that name a gate would miss"
+	// +kubebuilder:validation:XValidation:rule="!('AllAlpha' in self) && !('AllBeta' in self)",message="AllAlpha and AllBeta are refused, true or false: each sets every alpha or beta gate the map does not name, a set that changes with every minor, true turning on gates that need an API kube-apiserver does not serve by default and AllBeta: false turning off those on by default; name each gate instead"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// resources override the operator's defaults.
@@ -404,25 +431,29 @@ type Component struct {
 // Scheduler configures kube-scheduler.
 type Scheduler struct {
 	// extraArgs are flags passed to kube-scheduler, each under its name as
-	// kube-scheduler spells it. The schema refuses the flags Lodia sets;
-	// authorization-always-allow-paths and secure-port, whose defaults it
-	// relies on; the flags that conflict with one Lodia sets; help and
-	// write-config-to, which end the process; and version, which ends it or,
-	// given as vX.Y.Z, sets the version it reports while it runs on. Every
+	// kube-scheduler spells it. The schema refuses the flags Lodia sets; those
+	// whose defaults it relies on; the flags that conflict with one Lodia
+	// sets; those that name a file, which no tenant can put in the pod; help
+	// and write-config-to, which end the process; and version, which ends it
+	// or, given as vX.Y.Z, sets the version it reports while it runs on. Every
 	// other flag and value is passed as written, and a flag or a value
 	// kube-scheduler refuses makes it exit. featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace'])",message="Lodia sets this flag"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'secure-port'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'emulated-version', 'min-compatibility-version', 'secure-port'])",message="Lodia relies on this flag's default"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['config', 'master'])",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allow-metric-labels-manifest', 'client-ca-file', 'requestheader-client-ca-file', 'tls-cert-file', 'tls-private-key-file', 'tls-sni-cert-key'])",message="this flag names a file, and the pod holds no file a tenant chooses"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version', 'write-config-to'])",message="this flag makes the component exit, or report another version than the one it runs"
-	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
+	ExtraArgs map[string]FlagValue `json:"extraArgs,omitempty"`
 
-	// featureGates are passed to kube-scheduler.
+	// featureGates are passed to kube-scheduler, each under its gate's bare
+	// name.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))",message="a key must be a gate's bare name, a capital letter then letters and digits, with no component prefix and no spaces: the component reads kube:<gate> and a name with spaces around it as the gate, which the rules that name a gate would miss"
+	// +kubebuilder:validation:XValidation:rule="!('AllAlpha' in self) && !('AllBeta' in self)",message="AllAlpha and AllBeta are refused, true or false: each sets every alpha or beta gate the map does not name, a set that changes with every minor, true turning on gates that need an API kube-apiserver does not serve by default and AllBeta: false turning off those on by default; name each gate instead"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// resources override the operator's defaults.

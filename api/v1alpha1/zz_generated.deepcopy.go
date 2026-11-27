@@ -33,7 +33,7 @@ func (in *APIServer) DeepCopyInto(out *APIServer) {
 	}
 	if in.ExtraArgs != nil {
 		in, out := &in.ExtraArgs, &out.ExtraArgs
-		*out = make(map[string]string, len(*in))
+		*out = make(map[string]FlagValue, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
 		}
@@ -399,7 +399,7 @@ func (in *Component) DeepCopyInto(out *Component) {
 	*out = *in
 	if in.ExtraArgs != nil {
 		in, out := &in.ExtraArgs, &out.ExtraArgs
-		*out = make(map[string]string, len(*in))
+		*out = make(map[string]FlagValue, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
 		}
@@ -1832,7 +1832,7 @@ func (in *Scheduler) DeepCopyInto(out *Scheduler) {
 	*out = *in
 	if in.ExtraArgs != nil {
 		in, out := &in.ExtraArgs, &out.ExtraArgs
-		*out = make(map[string]string, len(*in))
+		*out = make(map[string]FlagValue, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
 		}

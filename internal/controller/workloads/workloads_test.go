@@ -467,11 +467,11 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 func TestTheSpecIsRendered(t *testing.T) {
 	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.APIServer = &lodiav1alpha1.APIServer{
-			ExtraArgs:    map[string]string{"audit-log-maxage": "7", "enable-admission-plugins": "PodSecurity,NodeRestriction"},
+			ExtraArgs:    map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700", "enable-admission-plugins": "PodSecurity,NodeRestriction"},
 			FeatureGates: map[string]bool{"B": false, "A": true},
 			Resources:    &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}},
 		}
-		spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: map[string]string{"terminated-pod-gc-threshold": "100", "controllers": "-ttl-controller"}}
+		spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"terminated-pod-gc-threshold": "100", "controllers": "-ttl-controller"}}
 		spec.ServiceAccount = &lodiav1alpha1.ServiceAccount{Issuer: "https://issuer.example.com"}
 		spec.Addons = &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.37.2"}}
 		spec.Placement = &lodiav1alpha1.Placement{
@@ -484,7 +484,7 @@ func TestTheSpecIsRendered(t *testing.T) {
 	inputsReady(t, cp)
 	api := eventuallyDeployment(t, cp, "kube-apiserver")
 	pod := api.Spec.Template.Spec
-	expectFlags(t, pod.Containers[0].Command, "--audit-log-maxage=7", "--feature-gates=A=true,B=false", "--service-account-issuer=https://issuer.example.com",
+	expectFlags(t, pod.Containers[0].Command, "--max-requests-inflight=700", "--feature-gates=A=true,B=false", "--service-account-issuer=https://issuer.example.com",
 		"--service-account-jwks-uri=https://"+lbAddress+"/openid/v1/jwks", "--enable-admission-plugins=NodeRestriction,PodSecurity")
 	if pod.Containers[0].Resources.Requests.Memory().String() != "1Gi" || !strings.HasSuffix(pod.InitContainers[1].Image, ":v0.37.2") {
 		t.Errorf("the API server requests %v, konnectivity %s", pod.Containers[0].Resources.Requests, pod.InitContainers[1].Image)
@@ -509,20 +509,20 @@ func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 	)
 	components := map[string]struct {
 		alsoRefused map[string]string
-		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]string)
+		set         func(*lodiav1alpha1.ControlPlaneSpec, map[string]lodiav1alpha1.FlagValue)
 	}{
 		"kube-apiserver": {map[string]string{"anonymous-auth": conflict, "bind-address": defaults, "feature-gates": sets, "goaway-chance": sets,
 			"service-account-key-file": conflict, "service-account-signing-key-file": conflict, "shutdown-send-retry-after": defaults},
-			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
+			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]lodiav1alpha1.FlagValue) {
 				spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: args}
 			}},
 		"kube-controller-manager": {map[string]string{"cluster-signing-cert-file": conflict, "cluster-signing-key-file": conflict, "feature-gates": sets,
 			"service-account-private-key-file": conflict, "secure-port": defaults},
-			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
+			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]lodiav1alpha1.FlagValue) {
 				spec.ControllerManager = &lodiav1alpha1.Component{ExtraArgs: args}
 			}},
 		"kube-scheduler": {map[string]string{"config": conflict, "feature-gates": sets, "secure-port": defaults},
-			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]string) {
+			func(spec *lodiav1alpha1.ControlPlaneSpec, args map[string]lodiav1alpha1.FlagValue) {
 				spec.Scheduler = &lodiav1alpha1.Scheduler{ExtraArgs: args}
 			}},
 	}
@@ -535,7 +535,7 @@ func TestEveryFlagLodiaRendersIsRefusedOrMerged(t *testing.T) {
 		}
 		for flag, want := range flags {
 			spec := cp.Spec.DeepCopy()
-			c.set(spec, map[string]string{flag: "set by the tenant"})
+			c.set(spec, map[string]lodiav1alpha1.FlagValue{flag: "set by the tenant"})
 			tenant := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "flags", Namespace: cp.Namespace}, Spec: *spec}
 			if err := k8s.Create(t.Context(), tenant, client.DryRunAll); !apierrors.IsInvalid(err) || !strings.Contains(err.Error(), want) {
 				t.Errorf("the extra arguments of %s take --%s, want %q: %v", component, flag, want, err)
@@ -1179,7 +1179,7 @@ func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 
 func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 	auditArgs := func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700"}}
 	}
 	for name, input := range map[string]struct {
 		lag, catchUp func(*testing.T, *lodiav1alpha1.ControlPlane)
@@ -1323,7 +1323,7 @@ func TestWithoutADeploymentOfItsOwnAWaitKeepsItsGeneration(t *testing.T) {
 	})
 
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700"}}
 	})
 	for _, step := range []struct {
 		name   string
@@ -1356,9 +1356,9 @@ func TestWithoutADeploymentOfItsOwnAWaitKeepsItsGeneration(t *testing.T) {
 }
 
 func TestARefusalIsNotCountedAsAvailability(t *testing.T) {
-	audit := func(maxAge string) func(*lodiav1alpha1.ControlPlaneSpec) {
+	inflight := func(requests lodiav1alpha1.FlagValue) func(*lodiav1alpha1.ControlPlaneSpec) {
 		return func(spec *lodiav1alpha1.ControlPlaneSpec) {
-			spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": maxAge}}
+			spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": requests}}
 		}
 	}
 	refusal := "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log"
@@ -1373,14 +1373,14 @@ func TestARefusalIsNotCountedAsAvailability(t *testing.T) {
 			lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints", "the wait at its generation",
 		},
 		"another spec change": {
-			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { changeSpec(t, cp, audit("8")) },
+			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { changeSpec(t, cp, inflight("800")) },
 			lodiav1alpha1.ReasonRefused, refusal, "the refusal kept",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cp := running(t)
 			refuseScheduler(t, cp.Namespace)
-			update(t, cp, audit("7"))
+			update(t, cp, inflight("700"))
 			testenv.Eventually(t, func() error {
 				return expectAt(cp, 2, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, refusal)
 			})
@@ -1445,9 +1445,9 @@ func TestAWaitKeepsTheEndpointAndItsRequeue(t *testing.T) {
 			t.Errorf("%s: APIServerReady is %+v, want %s %s at generation %d", step, c, status, reason, generation)
 		}
 	}
-	audit := func(maxAge string) func(*lodiav1alpha1.ControlPlaneSpec) {
+	inflight := func(requests lodiav1alpha1.FlagValue) func(*lodiav1alpha1.ControlPlaneSpec) {
 		return func(spec *lodiav1alpha1.ControlPlaneSpec) {
-			spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": maxAge}}
+			spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": requests}}
 		}
 	}
 
@@ -1457,7 +1457,7 @@ func TestAWaitKeepsTheEndpointAndItsRequeue(t *testing.T) {
 	})
 	check("a wait at its generation", 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 
-	changeSpec(t, cp, audit("7"))
+	changeSpec(t, cp, inflight("700"))
 	check("a kept wait", 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 
 	inputsReady(t, cp)
@@ -1465,14 +1465,14 @@ func TestAWaitKeepsTheEndpointAndItsRequeue(t *testing.T) {
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
 	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
-	changeSpec(t, cp, audit("8"))
+	changeSpec(t, cp, inflight("800"))
 	check("a counted wait", 2, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
 }
 
 func TestAWaitThatCannotReadWritesNothing(t *testing.T) {
 	cp := running(t)
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700"}}
 	})
 	reconcileNow(t, cp)
 	if err := expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "every replica of kube-apiserver, kube-controller-manager and kube-scheduler is ready"); err != nil {

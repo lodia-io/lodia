@@ -144,13 +144,13 @@ func TestAnExtraArgumentNeverReplacesAFlagLodiaSets(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team"},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-			APIServer: &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{
+			APIServer: &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{
 				"endpoint-reconciler-type": "lease",
 				"shutdown-delay-duration":  "70s",
 				"enable-admission-plugins": "PodSecurity",
 				"event-ttl":                "2h",
 			}},
-			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]string{"leader-elect": "false", "node-monitor-grace-period": "40s", "controllers": "-ttl-controller"}},
+			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"leader-elect": "false", "node-monitor-grace-period": "40s", "controllers": "-ttl-controller"}},
 		},
 	}
 	r := rendering{cp: cp, endpoint: &lodiav1alpha1.EndpointStatus{}, etcd: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}}

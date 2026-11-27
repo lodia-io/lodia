@@ -282,7 +282,7 @@ func TestAWaitKeepsTheHeldMessage(t *testing.T) {
 		return expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+unmet+"1")
 	})
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700"}}
 	})
 	reconcileNow(t, cp)
 	if err := expectAt(cp, 1, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldUntil+unmet+"2"); err != nil {

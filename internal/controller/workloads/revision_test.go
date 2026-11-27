@@ -387,7 +387,7 @@ func TestAHeldPassAtANewGenerationKeepsTheGenerationItDescribes(t *testing.T) {
 	grant(t, cp, previous)
 	settle(t, cp)
 	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700"}}
 	})
 	if get(t, cp).Generation == ready.ObservedGeneration {
 		t.Fatal("the spec change did not move the generation")
@@ -404,7 +404,7 @@ func TestAHeldPassAtANewGenerationKeepsTheGenerationItDescribes(t *testing.T) {
 
 	grant(t, cp, next)
 	passOf(t, held, cp)
-	expectFlags(t, deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "--audit-log-maxage=7")
+	expectFlags(t, deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "--max-requests-inflight=700")
 	if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady); err != nil {
 		t.Error(err)
 	}
