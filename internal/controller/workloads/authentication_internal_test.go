@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	mainsAPIServerHash         = "1a5eb34f035a79b86091ff14015a75d9211769f278e4b6a808bd7cc3136675e6"
+	mainsAPIServerHash         = "2d4f0bddc7d6802981b06b6e1e3df9f8d3d6f936d8827b9ae95b1ac3c0934e14"
 	mainsControllerManagerHash = "bdb8f6f104f4b5818271c0ee79534da435cfcaef02014aa315c84852e998b182"
 	mainsAuthentication        = "anonymous:\n  conditions:\n  - path: /healthz\n  - path: /livez\n  - path: /readyz\n  - path: /api/v1/namespaces/kube-public/configmaps/cluster-info\n  enabled: true\napiVersion: apiserver.config.k8s.io/v1\njwt: []\nkind: AuthenticationConfiguration\n"
 )

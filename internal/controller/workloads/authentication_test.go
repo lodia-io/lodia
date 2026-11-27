@@ -576,7 +576,7 @@ func TestNoHeldPassOrWaitCountsARefusedConfigurationAsAvailable(t *testing.T) {
 			})
 		},
 		"a wait on a Secret's data hash": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-			setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "")
+			setSecret(t, cp, lodiav1alpha1.KonnectivityKubeconfigSecret, "")
 		},
 		"a wait on the datastore": func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			applyStatus(t, cp, "test/"+lodiav1alpha1.ConditionDatastoreReady, map[string]any{"conditions": []any{map[string]any{
@@ -732,7 +732,7 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 		"a held pass": {func(t *testing.T, cp *lodiav1alpha1.ControlPlane) { setTargetAt(t, cp, version, next) }, revision},
 		"a wait on a Secret's data hash": {
 			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "")
+				setSecret(t, cp, lodiav1alpha1.KonnectivityKubeconfigSecret, "")
 			}, next,
 		},
 	} {

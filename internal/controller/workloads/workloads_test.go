@@ -58,8 +58,7 @@ const (
 )
 
 var restartOnlySecrets = []lodiav1alpha1.Secret{
-	lodiav1alpha1.CABundleSecret, lodiav1alpha1.EtcdCASecret, lodiav1alpha1.FrontProxyClientSecret,
-	lodiav1alpha1.KonnectivityKubeconfigSecret, lodiav1alpha1.KonnectivityServerSecret,
+	lodiav1alpha1.CABundleSecret, lodiav1alpha1.EtcdCASecret, lodiav1alpha1.KonnectivityKubeconfigSecret, lodiav1alpha1.KonnectivityServerSecret,
 }
 
 var (
@@ -311,7 +310,7 @@ func TestAControlPlaneRollsOutOnceItsInputsAreReady(t *testing.T) {
 		return nil
 	})
 	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "etcd-0.dev.example", Port: 2379}, lodiav1alpha1.HostPort{Host: "2001:db8::5", Port: 12379})
-	unhashed := "dev-ca-bundle, dev-etcd-ca, dev-front-proxy-client, dev-konnectivity-kubeconfig, dev-konnectivity-server"
+	unhashed := "dev-ca-bundle, dev-etcd-ca, dev-konnectivity-kubeconfig, dev-konnectivity-server"
 	testenv.Eventually(t, func() error {
 		c := condition(t, cp)
 		if c == nil || c.Reason != lodiav1alpha1.ReasonWaitingForCertificates || !strings.HasSuffix(c.Message, ": "+unhashed) {
@@ -439,13 +438,15 @@ func TestOnlyARestartOnlyInputRollsItsComponent(t *testing.T) {
 	}
 	generations := generationsOf(t, cp)
 
-	setSecret(t, cp, lodiav1alpha1.APIServerServingSecret, "renewed")
-	reconcileNow(t, cp)
-	if after := generationsOf(t, cp); fmt.Sprint(after) != fmt.Sprint(generations) {
-		t.Errorf("a renewal of the reloaded apiserver-serving alone rolled: generations %v, then %v", generations, after)
+	for _, reloaded := range []lodiav1alpha1.Secret{lodiav1alpha1.APIServerServingSecret, lodiav1alpha1.FrontProxyClientSecret} {
+		setSecret(t, cp, reloaded, "renewed")
+		reconcileNow(t, cp)
+		if after := generationsOf(t, cp); fmt.Sprint(after) != fmt.Sprint(generations) {
+			t.Errorf("a renewal of the reloaded %s alone rolled: generations %v, then %v", reloaded, generations, after)
+		}
 	}
 
-	setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "renewed")
+	setSecret(t, cp, lodiav1alpha1.KonnectivityKubeconfigSecret, "renewed")
 	testenv.Eventually(t, func() error {
 		if after := hashes(t, cp); after["kube-apiserver"] == before["kube-apiserver"] || after["kube-controller-manager"] != before["kube-controller-manager"] {
 			return fmt.Errorf("restart hashes %v, then %v: want the API server's alone to change", before, after)
@@ -1211,10 +1212,10 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 		},
 		"a Secret read once without its data hash": {
 			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "")
+				setSecret(t, cp, lodiav1alpha1.KonnectivityKubeconfigSecret, "")
 			},
 			func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "two")
+				setSecret(t, cp, lodiav1alpha1.KonnectivityKubeconfigSecret, "two")
 			},
 		},
 	} {
@@ -1753,6 +1754,7 @@ func inputsReadyBesidesTheTarget(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	setDatastore(t, cp, lodiav1alpha1.HostPort{Host: "dev-etcd-client." + cp.Namespace + ".svc", Port: 2379})
 	createSecrets(t, cp, "one")
 	setSecret(t, cp, lodiav1alpha1.APIServerServingSecret, "one")
+	setSecret(t, cp, lodiav1alpha1.FrontProxyClientSecret, "one")
 }
 
 func reconcileNow(t *testing.T, cp *lodiav1alpha1.ControlPlane) ctrl.Result {
