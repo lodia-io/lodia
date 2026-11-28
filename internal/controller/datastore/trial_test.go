@@ -66,7 +66,7 @@ func TestAHeldPassTriesARenderTheEmptiedFieldsRefuse(t *testing.T) {
 		}
 	}
 	apply(map[string]any{"backup": map[string]any{"store": map[string]any{}}})
-	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Backup = nil })
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Backup = lodiav1alpha1.EtcdBackup{} })
 	grantClass(t, ns, cp, cp)
 	if _, err := passOf(t, granted, ns, cp); !apierrors.IsInvalid(err) {
 		t.Fatalf("the pass that drops a store another manager holds returned %v, want the API server's refusal", err)
@@ -163,7 +163,7 @@ func TestAHeldPassTriesNothingOfAClassThatWaitsForItsGrant(t *testing.T) {
 	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-other", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("other-access")}})
 	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "other-bucket", "s3-other"
-		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Defragmentation: &lodiav1alpha1.Defragmentation{Schedule: schedule}}
+		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Defragmentation: lodiav1alpha1.Defragmentation{Schedule: schedule}}
 	})
 	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}}, func() client.Object {
 		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}

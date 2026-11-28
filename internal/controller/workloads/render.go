@@ -4,6 +4,7 @@
 package workloads
 
 import (
+	"cmp"
 	"maps"
 	"net"
 	"slices"
@@ -113,7 +114,7 @@ func service(cp *lodiav1alpha1.ControlPlane) *corev1.Service {
 			svc.Spec.LoadBalancerSourceRanges = append(svc.Spec.LoadBalancerSourceRanges, string(cidr))
 		}
 	}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		svc.Spec.Type = corev1.ServiceTypeClusterIP
 		svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Name: "tunnel", Protocol: corev1.ProtocolTCP, Port: tunnelPort, TargetPort: intstr.FromString("tunnel")})
 	}
@@ -270,7 +271,7 @@ func (r rendering) deployments() []*appsv1.Deployment {
 func (r rendering) apiServer() *appsv1.Deployment {
 	cp := r.cp
 	settings := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{})
-	replicas := ptr.Deref(settings.Replicas, defaultReplicas(cp))
+	replicas := cmp.Or(settings.Replicas, defaultReplicas(cp))
 	etcd := make([]string, 0, len(r.etcd))
 	for _, e := range r.etcd {
 		etcd = append(etcd, "https://"+net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
@@ -315,13 +316,14 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		flags["goaway-chance"] = "0.001"
 	}
 	container := corev1.Container{
-		Name:           apiServer,
-		Image:          r.images.APIServer,
-		Command:        command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
-		Ports:          []corev1.ContainerPort{{Name: "https", ContainerPort: kubernetesPort, Protocol: corev1.ProtocolTCP}},
-		ReadinessProbe: readinessProbe(contract.APIServerReadyzPath, intstr.FromString("https")),
-		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
-		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),
+		Name:                     apiServer,
+		Image:                    r.images.APIServer,
+		Command:                  command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
+		Ports:                    []corev1.ContainerPort{{Name: "https", ContainerPort: kubernetesPort, Protocol: corev1.ProtocolTCP}},
+		ReadinessProbe:           readinessProbe(contract.APIServerReadyzPath, intstr.FromString("https")),
+		LivenessProbe:            livenessProbe("/livez", intstr.FromString("https")),
+		StartupProbe:             startupProbe("/livez", intstr.FromString("https")),
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		// @todo: kube-apiserver closes its signer connection on SIGTERM (kubernetes#142980), so the shutdown delay is a preStop sleep; undo with todo.md's signer item.
 		Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: int64(shutdownDelay / time.Second)}}},
 		Resources: resources(settings.Resources, "100m", "256Mi"),
@@ -330,7 +332,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			"etcd-ca", "etcd-client", "encryption", "authentication", "egress",
 		),
 	}
-	if cp.Spec.HighAvailability != nil {
+	if cp.Spec.HighAvailability != (lodiav1alpha1.HighAvailability{}) {
 		container.ReadinessProbe.PeriodSeconds, container.ReadinessProbe.FailureThreshold = 2, 5
 		container.LivenessProbe.HTTPGet.Path = "/livez?exclude=etcd"
 	}
@@ -409,7 +411,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"konnectivity-kubeconfig": lodiav1alpha1.KonnectivityKubeconfigSecret,
 		"sa-keys":                 lodiav1alpha1.ServiceAccountKeysSecret,
 	}
-	if gateway := cp.Spec.Endpoint.Gateway; gateway != nil {
+	if gateway := cp.Spec.Endpoint.Gateway; gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		sidecars = append(sidecars, r.tunnel(gateway))
 		secrets["tunnel-serving"], secrets["tunnel-ca"] = lodiav1alpha1.TunnelServingSecret, lodiav1alpha1.TunnelCASecret
 	}
@@ -433,7 +435,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 // in-cluster path, which splices each session to the API server on loopback.
 // It has no readiness probe: one pod-wide Ready would take the replica's API
 // and konnectivity out of the Service with it.
-func (r rendering) tunnel(gateway *lodiav1alpha1.GatewayEndpoint) corev1.Container {
+func (r rendering) tunnel(gateway lodiav1alpha1.GatewayEndpoint) corev1.Container {
 	health := corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(tunnelHealthPort)}}
 	return corev1.Container{
 		Name:          "lodia-tunnel",
@@ -496,13 +498,14 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		"use-service-account-credentials":          "true",
 	}
 	container := corev1.Container{
-		Name:          controllerManager,
-		Image:         r.images.ControllerManager,
-		Command:       command(controllerManager, flags, settings.ExtraArgs, settings.FeatureGates),
-		LivenessProbe: livenessProbe("/healthz", intstr.FromInt32(10257)),
-		StartupProbe:  startupProbe("/healthz", intstr.FromInt32(10257)),
-		Resources:     resources(settings.Resources, "50m", "64Mi"),
-		VolumeMounts:  mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
+		Name:                     controllerManager,
+		Image:                    r.images.ControllerManager,
+		Command:                  command(controllerManager, flags, settings.ExtraArgs, settings.FeatureGates),
+		LivenessProbe:            livenessProbe("/healthz", intstr.FromInt32(10257)),
+		StartupProbe:             startupProbe("/healthz", intstr.FromInt32(10257)),
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+		Resources:                resources(settings.Resources, "50m", "64Mi"),
+		VolumeMounts:             mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
 	}
 	d := r.deployment(controllerManager, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
@@ -535,14 +538,15 @@ func (r rendering) scheduler() *appsv1.Deployment {
 		"leader-elect-resource-namespace": contract.LeaderElectionNamespace,
 	}
 	container := corev1.Container{
-		Name:           scheduler,
-		Image:          r.images.Scheduler,
-		Command:        command(scheduler, flags, settings.ExtraArgs, settings.FeatureGates),
-		ReadinessProbe: readinessProbe("/readyz", intstr.FromInt32(10259)),
-		LivenessProbe:  livenessProbe("/livez", intstr.FromInt32(10259)),
-		StartupProbe:   startupProbe("/livez", intstr.FromInt32(10259)),
-		Resources:      resources(settings.Resources, "20m", "32Mi"),
-		VolumeMounts:   mounts("kubeconfig"),
+		Name:                     scheduler,
+		Image:                    r.images.Scheduler,
+		Command:                  command(scheduler, flags, settings.ExtraArgs, settings.FeatureGates),
+		ReadinessProbe:           readinessProbe("/readyz", intstr.FromInt32(10259)),
+		LivenessProbe:            livenessProbe("/livez", intstr.FromInt32(10259)),
+		StartupProbe:             startupProbe("/livez", intstr.FromInt32(10259)),
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+		Resources:                resources(settings.Resources, "20m", "32Mi"),
+		VolumeMounts:             mounts("kubeconfig"),
 	}
 	return r.deployment(scheduler, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
@@ -560,9 +564,9 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	pod.AutomountServiceAccountToken = new(false)
 	pod.EnableServiceLinks = new(false)
 	if p := cp.Spec.Placement; p != nil {
-		pod.NodeSelector, pod.Tolerations, pod.PriorityClassName = p.NodeSelector, p.Tolerations, p.PriorityClassName
+		pod.NodeSelector, pod.Tolerations, pod.PriorityClassName = p.PodNodeSelector(), p.PodTolerations(), p.PriorityClassName
 	}
-	if ha := cp.Spec.HighAvailability; ha != nil {
+	if ha := cp.Spec.HighAvailability; ha != (lodiav1alpha1.HighAvailability{}) {
 		pod.TopologySpreadConstraints = spread(ha.FailureTolerance, labels, replicas)
 	}
 	template := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: pod}
@@ -603,12 +607,12 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 // back and forth.
 func rollsFor(cp *lodiav1alpha1.ControlPlane, component string) *metav1.Time {
 	if component == apiServer {
-		if record := cp.Status.MemberRestore; record != nil {
+		if record := cp.Status.MemberRestore; record != (lodiav1alpha1.MemberRestoreStatus{}) {
 			return &record.DetectedAt
 		}
 		return nil
 	}
-	if c := cp.Status.Components; c != nil && c.APIServer != nil {
+	if c := cp.Status.Components; c != nil {
 		return c.APIServer.MemberRestoreDetectedAt
 	}
 	return nil
@@ -617,7 +621,7 @@ func rollsFor(cp *lodiav1alpha1.ControlPlane, component string) *metav1.Time {
 func annotated(t metav1.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func defaultReplicas(cp *lodiav1alpha1.ControlPlane) int32 {
-	if cp.Spec.HighAvailability != nil {
+	if cp.Spec.HighAvailability != (lodiav1alpha1.HighAvailability{}) {
 		return 2
 	}
 	return 1
@@ -647,7 +651,7 @@ func spread(tolerance lodiav1alpha1.FailureTolerance, labels map[string]string, 
 }
 
 func podDisruptionBudgets(cp *lodiav1alpha1.ControlPlane) []*policyv1.PodDisruptionBudget {
-	if cp.Spec.HighAvailability == nil {
+	if cp.Spec.HighAvailability == (lodiav1alpha1.HighAvailability{}) {
 		return nil
 	}
 	var out []*policyv1.PodDisruptionBudget
@@ -690,7 +694,7 @@ func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPoli
 		if component == apiServer {
 			var ports []networkingv1.NetworkPolicyPort
 			numbers := []intstr.IntOrString{intstr.FromString("https"), intstr.FromInt32(konnectivityPort)}
-			if cp.Spec.Endpoint.Gateway != nil {
+			if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 				numbers = append(numbers, intstr.FromInt32(tunnelPort))
 			}
 			for _, port := range numbers {
@@ -711,9 +715,10 @@ var merged = []string{"enable-admission-plugins", "controllers"}
 // order, so an unchanged ControlPlane renders the same pod template. An
 // extra entry under the name of a flag Lodia sets never replaces it: one the
 // schema refused only after it was stored stays valid until it changes.
-func command(binary string, flags, extra map[string]string, gates map[string]bool) []string {
+func command(binary string, flags map[string]string, extra map[string]lodiav1alpha1.FlagValue, gates map[string]bool) []string {
 	all := maps.Clone(flags)
-	for name, value := range extra {
+	for name, extraValue := range extra {
+		value := string(extraValue)
 		own, set := flags[name]
 		switch {
 		case set && slices.Contains(merged, name):
@@ -770,9 +775,9 @@ func httpsProbe(path string, port intstr.IntOrString, initialDelay, timeout, fai
 	}
 }
 
-func resources(override *corev1.ResourceRequirements, cpu, memory string) corev1.ResourceRequirements {
+func resources(override *lodiav1alpha1.Resources, cpu, memory string) corev1.ResourceRequirements {
 	if override != nil {
-		return *override
+		return override.Requirements()
 	}
 	return corev1.ResourceRequirements{Requests: corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse(cpu),

@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -171,12 +172,12 @@ func TestTheFirstPassAndTheFirstAfterAForgetObserveNothing(t *testing.T) {
 	h, lag := lagging(t)
 	h.at(0)
 	h.expectLag(lag, lagged{})
-	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) })
 	h.now.SetTime(h.start.Add(5 * time.Second))
 	if _, err := h.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(h.cp)}); err != nil {
 		t.Fatal(err)
 	}
-	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(false) })
 	h.at(5 + 12)
 	h.expectLag(lag, lagged{})
 	h.at(22)
@@ -201,7 +202,7 @@ func expectNoCounts(t *testing.T, r *health.NodesReconciler, cp *lodiav1alpha1.C
 func (h *holdRun) expectCountsOfTheHold() {
 	h.t.Helper()
 	hold := get(h.t, h.cp).Status.Health.ControllerManagerHold
-	expectCounts(h.t, h.r, h.cp, int(hold.SilentNodes), int(hold.CountedNodes))
+	expectCounts(h.t, h.r, h.cp, int(ptr.Deref(hold.SilentNodes, 0)), int(ptr.Deref(hold.CountedNodes, 0)))
 }
 
 func TestTheCountsWaitForTheClockAndFollowTheHold(t *testing.T) {
@@ -333,14 +334,14 @@ func TestAForgottenOrRecreatedControlPlaneHasNoCount(t *testing.T) {
 	h.at(0)
 	h.at(20)
 	h.expectCountsOfTheHold()
-	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) })
 	h.now.SetTime(h.start.Add(25 * time.Second))
 	if _, err := h.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(h.cp)}); err != nil {
 		t.Fatal(err)
 	}
 	expectNoCounts(t, h.r, h.cp)
 
-	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(false) })
 	h.at(30)
 	h.at(50)
 	h.expectCountsOfTheHold()

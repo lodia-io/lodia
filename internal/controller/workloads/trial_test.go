@@ -591,7 +591,9 @@ func TestAHeldPassOverAKeptWaitAppendsNothingUnderTheManager(t *testing.T) {
 		return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates)
 	})
 	kept := *condition(t, cp)
-	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+		s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
+	})
 	setTargetAt(t, cp, version, previous)
 	inputsReadyBesidesTheTarget(t, cp)
 	deadline := time.Now().Add(time.Minute)
@@ -721,7 +723,7 @@ func TestAHeldWaitOverAWaitAtTheObjectsGenerationReportsThatWait(t *testing.T) {
 
 func closedWindow(spec *lodiav1alpha1.ControlPlaneSpec) {
 	now := time.Now().UTC()
-	spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: now.Add(2 * time.Hour).Format("15:04"), End: now.Add(3 * time.Hour).Format("15:04")}}
+	spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: now.Add(2 * time.Hour).Format("15:04"), End: now.Add(3 * time.Hour).Format("15:04")}}
 }
 
 // A held nodePort pass without a Ready node at the endpoint waits as the other waits do, so over a tenant that serves it keeps the availability it reports and the next pass, with the node back, counts again: Lifecycle grants nothing at once outside the window, and the release is scheduled for its window at rest and waits for its cause under a refusal.
@@ -785,7 +787,7 @@ func TestANodePortPassWithoutAReadyNodeKeepsTheEndpointForItsNodeToComeBack(t *t
 	for name, rev := range map[string]string{"granted": revision, "held": next} {
 		t.Run(name, func(t *testing.T) {
 			cp := runningOnNodePort(t)
-			published := *get(t, cp).Status.Endpoint
+			published := get(t, cp).Status.Endpoint
 			pause(t, cp)
 			lost := operatorAt(unpaused(), rev)
 			lost.Reader = nodeless{apiReader}
@@ -796,7 +798,7 @@ func TestANodePortPassWithoutAReadyNodeKeepsTheEndpointForItsNodeToComeBack(t *t
 				r    *workloads.Reconciler
 			}{{"a pass without a Ready node", lost}, {"a pass with the node back and another Ready node sorting first", back}} {
 				passOf(t, step.r, cp)
-				if e := get(t, cp).Status.Endpoint; e == nil || *e != published {
+				if e := get(t, cp).Status.Endpoint; e != published {
 					t.Fatalf("%s: status.endpoint is %+v, want %+v", step.name, e, published)
 				}
 			}
@@ -825,7 +827,7 @@ func TestAGrantedNodePortPassWithoutAReadyNodeCountsWhatRuns(t *testing.T) {
 
 // A held pass that waits for the grant over a tenant that never served names a refusal its trial finds under the refusal's own reason, False, so Lifecycle holds the grant, and once the cause is gone it waits for the grant again, which Lifecycle gives at once.
 func TestAHeldPassOverTheGrantsWaitHoldsTheGrantUnderARefusalItsTrialFinds(t *testing.T) {
-	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = new(true) })
 	setTargetAt(t, cp, version, previous)
 	held := operatorAt(unpaused(), next)
 	passOf(t, held, cp)
@@ -863,7 +865,7 @@ func TestAHeldPassOverTheGrantsWaitHoldsTheGrantWhileTheAuthenticationConfigurat
 	jwt := oidc()
 	jwt[0].Issuer.URL = "https://" + lbAddress
 	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.Paused = true
+		spec.Paused = new(true)
 		withJWT(jwt)(spec)
 	}, closedWindow)
 	setTargetAt(t, cp, version, previous)
@@ -933,7 +935,7 @@ func TestAHeldWaitOverTheGrantsWaitUnderARefusalKeepsThatWait(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-				spec.Paused = true
+				spec.Paused = new(true)
 				c.spec(spec)
 			}, closedWindow)
 			setTargetAt(t, cp, version, previous)

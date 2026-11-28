@@ -127,7 +127,7 @@ func TestAJWTEditReloadsAndAnInvalidOneIsNeverWritten(t *testing.T) {
 
 	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
 		withJWT(oidc("user.nope == 'x'"))(s)
-		s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"}
+		s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
 	})
 	testenv.Eventually(t, func() error {
 		if err := expectAuthenticationInvalid(cp, taken, "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed"); err != nil {
@@ -228,7 +228,7 @@ func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns string, probe fun
 
 func reportedAPIServer(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
 	t.Helper()
-	if c := get(t, cp).Status.Components; c != nil && c.APIServer != nil {
+	if c := get(t, cp).Status.Components; c != nil && c.APIServer != (lodiav1alpha1.ComponentStatus{}) {
 		return c.APIServer.Version
 	}
 	return ""
@@ -699,7 +699,9 @@ func TestARefusalBehindAWaitIsNamedAgainByThePassThatValidates(t *testing.T) {
 		})
 		return g
 	}
-	edit := func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} }
+	edit := func(s *lodiav1alpha1.ControlPlaneSpec) {
+		s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
+	}
 	for name, c := range map[string]struct {
 		refuse func(*testing.T, *lodiav1alpha1.ControlPlane) int64
 		later  func(*testing.T, *lodiav1alpha1.ControlPlane)
@@ -788,7 +790,7 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 
 			setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
 			testenv.Eventually(t, func() error {
-				if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != moved {
+				if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != moved {
 					return fmt.Errorf("status.endpoint is %+v", e)
 				}
 				return nil
@@ -845,7 +847,7 @@ func TestAHeldPassValidatesTheFieldWithWhatTheFileItKeepsServes(t *testing.T) {
 			reconcileNow(t, cp)
 			setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
 			testenv.Eventually(t, func() error {
-				if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != moved {
+				if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != moved {
 					return fmt.Errorf("status.endpoint is %+v", e)
 				}
 				return nil
@@ -894,7 +896,9 @@ func TestAWaitAtALaterGenerationCountsUnderTheRefusalOfTheGenerationItNames(t *t
 	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, g, "Invalid value: \"user.nope == 'x'\"") })
 	refused := *condition(t, cp)
 
-	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+		s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
+	})
 	reconcileNow(t, cp)
 	if err := expectAt(cp, g, metav1.ConditionTrue, lodiav1alpha1.ReasonAuthenticationInvalid, refused.Message); err != nil {
 		t.Errorf("a wait at generation %d: %v", g+2, err)

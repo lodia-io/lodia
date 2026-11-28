@@ -69,7 +69,7 @@ func TestMinorUpgradeChain(t *testing.T) {
 					return err
 				}
 				c := cp.Status.Components
-				if c == nil || c.APIServer == nil || c.ControllerManager == nil || c.Scheduler == nil || cp.Status.Addons == nil ||
+				if c == nil || cp.Status.Addons == nil ||
 					c.APIServer.Version != through || c.ControllerManager.Version != through || c.Scheduler.Version != through || cp.Status.Addons.Version != through {
 					return fmt.Errorf("components %+v, addons %+v", c, cp.Status.Addons)
 				}
@@ -148,7 +148,7 @@ func TestHighAvailabilityUpgrade(t *testing.T) {
 			k8s = newClient(t, cfg)
 			startStore(ctx, t, k8s)
 			createStoreTenant(ctx, t, k8s, key, class, from, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-				spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+				spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 			})
 			image, err := build(ctx, cfg.KubeconfigFile(), "./test/"+apiLoop)
 			if err != nil {

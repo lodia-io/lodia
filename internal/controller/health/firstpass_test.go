@@ -40,7 +40,7 @@ func TestACacheWithoutHealthsConditionsLeavesTheServers(t *testing.T) {
 		t.Helper()
 		before := get(t, cp)
 		cached := before.DeepCopy()
-		cached.Spec.Paused = false
+		cached.Spec.Paused = new(false)
 		for _, conditionType := range healthConditions {
 			meta.RemoveStatusCondition(&cached.Status.Conditions, conditionType)
 		}

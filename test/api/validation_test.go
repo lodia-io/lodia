@@ -15,6 +15,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -145,6 +146,31 @@ func expect(t *testing.T, err error, want string) {
 	}
 }
 
+// TestEveryPrinterColumnReadsAFieldOfItsSchema finds each printer column's JSONPath, up to its first filter, in its CRD's schema.
+func TestEveryPrinterColumnReadsAFieldOfItsSchema(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "api", "crds", "*.yaml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no CRDs found: %v", err)
+	}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := yaml.Unmarshal(raw, crd); err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range crd.Spec.Versions {
+			for _, c := range v.AdditionalPrinterColumns {
+				if path, _, _ := strings.Cut(c.JSONPath, "["); path != ".metadata.creationTimestamp" {
+					at(t, *v.Schema.OpenAPIV3Schema, path)
+				}
+			}
+		}
+	}
+}
+
 func TestExamplesAreAccepted(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a", "team-b")
@@ -179,7 +205,10 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"a patch with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.01", "spec", "version") }, "spec.version"},
 		{"an empty datastore", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{}, "spec", "datastore")
-		}, ""},
+		}, "spec.datastore in body should have at least 1 properties"},
+		{"an empty class name", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "", "spec", "datastore", "className")
+		}, "spec.datastore.className in body should be at least 1 chars long"},
 		{"a class name of 253 characters", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, strings.Repeat("c", 253), "spec", "datastore", "className")
 		}, ""},
@@ -257,20 +286,29 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 		defaults = "Lodia relies on this flag's default"
 		conflict = "this flag conflicts with one Lodia sets"
 		exits    = "this flag makes the component exit, or report another version than the one it runs"
+		file     = "this flag names a file"
+		peer     = "the mixed-version proxy would reach every replica of the API server at the one address Lodia advertises for all of them"
 	)
 	for component, flags := range map[string]map[string]string{
 		"apiServer": {
 			"goaway-chance": sets, "service-account-jwks-uri": sets, "authentication-config": sets, "authorization-mode": sets,
 			"etcd-prefix": defaults, "etcd-servers-overrides": defaults, "shutdown-send-retry-after": defaults, "bind-address": defaults,
+			"request-timeout": defaults, "emulated-version": defaults, "emulation-forward-compatible": defaults,
+			"min-compatibility-version": defaults, "runtime-config-emulation-forward-compatible": defaults,
 			"oidc-issuer-url": conflict, "oidc-client-id": conflict, "oidc-ca-file": conflict, "oidc-username-claim": conflict,
 			"oidc-username-prefix": conflict, "oidc-groups-claim": conflict, "oidc-groups-prefix": conflict, "oidc-signing-algs": conflict,
 			"oidc-required-claim": conflict, "anonymous-auth": conflict, "authorization-config": conflict, "authorization-policy-file": conflict,
 			"authorization-webhook-config-file": conflict, "authorization-webhook-version": conflict,
 			"authorization-webhook-cache-authorized-ttl": conflict, "authorization-webhook-cache-unauthorized-ttl": conflict,
 			"admission-control": conflict, "cert-dir": conflict, "service-account-key-file": conflict, "service-account-signing-key-file": conflict,
+			"apiserver-count": conflict, "show-hidden-metrics-for-version": "",
+			"admission-control-config-file": file, "allow-metric-labels-manifest": file, "kubelet-certificate-authority": file,
+			"tls-sni-cert-key": file, "token-auth-file": file, "tracing-config-file": file,
+			"audit-policy-file": file, "audit-log-path": file, "audit-webhook-config-file": file, "audit-log-maxage": file,
+			"authentication-token-webhook-config-file": file, "authentication-token-webhook-cache-ttl": file, "authentication-token-webhook-version": file,
+			"peer-ca-file": peer, "peer-advertise-ip": peer, "peer-advertise-port": peer,
 			"help": exits, "version": exits,
-			"max-requests-inflight": "", "authentication-token-webhook-config-file": "",
-			"disable-admission-plugins": "", "tls-sni-cert-key": "",
+			"max-requests-inflight": "", "disable-admission-plugins": "", "tls-cipher-suites": "",
 		},
 		"controllerManager": {
 			"leader-elect-lease-duration": sets, "leader-elect-renew-deadline": sets, "leader-elect-retry-period": sets,
@@ -278,13 +316,23 @@ func TestExtraArgsRefuseTheFlagsLodiaSets(t *testing.T) {
 			"node-monitor-grace-period": sets, "node-monitor-period": sets, "cluster-signing-kubelet-client-cert-file": sets,
 			"secure-port": defaults, "cluster-signing-cert-file": conflict, "cluster-signing-key-file": conflict, "master": conflict,
 			"service-account-private-key-file": conflict, "help": exits, "version": exits, "authorization-always-allow-paths": defaults,
-			"terminated-pod-gc-threshold": "",
+			"cidr-allocator-type": defaults, "emulated-version": defaults, "min-compatibility-version": defaults,
+			"allow-metric-labels-manifest": file, "cloud-config": file,
+			"cluster-signing-kube-apiserver-client-cert-file": file, "cluster-signing-kube-apiserver-client-key-file": file,
+			"cluster-signing-kubelet-serving-cert-file": file, "cluster-signing-kubelet-serving-key-file": file,
+			"cluster-signing-legacy-unknown-cert-file": file, "cluster-signing-legacy-unknown-key-file": file,
+			"leader-migration-config": file, "pv-recycler-pod-template-filepath-hostpath": file, "pv-recycler-pod-template-filepath-nfs": file,
+			"tls-cert-file": file, "tls-private-key-file": file, "tls-sni-cert-key": file,
+			"terminated-pod-gc-threshold": "", "authentication-token-webhook-cache-ttl": "", "cert-dir": "",
 		},
 		"scheduler": {
 			"leader-elect-resource-lock": sets, "leader-elect-resource-name": sets, "leader-elect-resource-namespace": sets, "kubeconfig": sets,
 			"secure-port": defaults, "authorization-always-allow-paths": defaults, "config": conflict, "master": conflict,
+			"emulated-version": defaults, "min-compatibility-version": defaults,
+			"allow-metric-labels-manifest": file, "client-ca-file": file, "requestheader-client-ca-file": file,
+			"tls-cert-file": file, "tls-private-key-file": file, "tls-sni-cert-key": file,
 			"help": exits, "version": exits, "write-config-to": exits,
-			"leader-elect-lease-duration": "",
+			"leader-elect-lease-duration": "", "authentication-token-webhook-cache-ttl": "",
 		},
 	} {
 		for flag, want := range flags {
@@ -313,10 +361,26 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		masks    = "a node mask size is a positive decimal number without a sign or a leading zero"
 		grammar  = "event-ttl is a duration as Go's time.ParseDuration reads it"
 		floor    = "event-ttl is at least 1h, kube-apiserver's default"
+		bound4   = "node-cidr-mask-size-ipv4 is at most 32"
+		bound6   = "a node mask size is at most 128"
+		single4  = "node-cidr-mask-size beside an IPv4 pod range is at most 32"
+		pairs    = "runtime-config is pairs of an API or api/all, api/ga, api/beta or api/alpha and true or false"
+		relied   = "runtime-config cannot turn off api/all, api/ga, or a group version Lodia's controllers use or a resource of one"
+		named    = "controllers is names of controllers"
+		joining  = "controllers cannot turn off a controller nodes join by"
+		ready    = "runtime-config cannot turn off a group version kube-apiserver needs to become ready, or a resource of one"
+		leader   = "CoordinatedLeaderElection on the scheduler needs it on kube-apiserver too"
+		elects   = "controllerManager.featureGates sets CoordinatedLeaderElection, which apiServer.featureGates must set to the same value"
+		served   = "CoordinatedLeaderElection on kube-apiserver needs apiServer.extraArgs' runtime-config to hold coordination.k8s.io/v1beta1=true"
 	)
 	args := func(component string, flags map[string]any) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, flags, "spec", component, "extraArgs") }
 	}
+	gates := func(component string, gates map[string]any) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, gates, "spec", component, "featureGates") }
+	}
+	beta := args("apiServer", map[string]any{"runtime-config": "coordination.k8s.io/v1beta1=true"})
+	elected := gates("apiServer", map[string]any{"CoordinatedLeaderElection": true})
 	pods := func(cidrs ...any) func(*testing.T, *unstructured.Unstructured) {
 		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, cidrs, "spec", "network", "podCIDRs") }
 	}
@@ -439,6 +503,137 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 		{"the external signer's gate on", []func(*testing.T, *unstructured.Unstructured){func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{"ExternalServiceAccountTokenSigner": true}, "spec", "apiServer", "featureGates")
 		}}, ""},
+		{"an API server value of 4096 characters", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"max-requests-inflight": strings.Repeat("8", 4096)})}, ""},
+		{"an API server value of 4097 characters", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"max-requests-inflight": strings.Repeat("8", 4097)})}, "spec.apiServer.extraArgs.max-requests-inflight: Too long"},
+		{"a controller manager value of 4096 characters", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"terminated-pod-gc-threshold": strings.Repeat("8", 4096)})}, ""},
+		{"a controller manager value of 4097 characters", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"terminated-pod-gc-threshold": strings.Repeat("8", 4097)})}, "spec.controllerManager.extraArgs.terminated-pod-gc-threshold: Too long"},
+		{"a scheduler value of 4096 characters", []func(*testing.T, *unstructured.Unstructured){args("scheduler", map[string]any{"leader-elect-lease-duration": strings.Repeat("8", 4096)})}, ""},
+		{"a scheduler value of 4097 characters", []func(*testing.T, *unstructured.Unstructured){args("scheduler", map[string]any{"leader-elect-lease-duration": strings.Repeat("8", 4097)})}, "spec.scheduler.extraArgs.leader-elect-lease-duration: Too long"},
+		{"an IPv4 node mask of 32", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "32"})}, ""},
+		{"an IPv4 node mask of 33", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size-ipv4": "33"})}, bound4},
+		{"an IPv6 node mask of 128", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/113"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "128"})}, ""},
+		{"an IPv6 node mask of 129", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/113"), args("controllerManager", map[string]any{"node-cidr-mask-size-ipv6": "129"})}, bound6},
+		{"a node mask of 32 beside an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "32"})}, ""},
+		{"a node mask of 33 beside an IPv4 range", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"node-cidr-mask-size": "33"})}, single4},
+		{"a node mask of 128 beside an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/113"), args("controllerManager", map[string]any{"node-cidr-mask-size": "128"})}, ""},
+		{"a node mask of 129 beside an IPv6 range", []func(*testing.T, *unstructured.Unstructured){pods("fd00:10:244::/113"), args("controllerManager", map[string]any{"node-cidr-mask-size": "129"})}, bound6},
+		{"controllers turning off the TTL controller by its alias", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-ttl"})}, ""},
+		{"controllers turning off two others", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-ttl-controller,-cronjob-controller"})}, ""},
+		{"controllers turning on every default one", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "*"})}, ""},
+		{"controllers turning on the bootstrap signer by its alias", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "bootstrapsigner"})}, ""},
+		{"controllers ending in a comma", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-ttl,"})}, named},
+		{"controllers with a space", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-ttl, -cronjob-controller"})}, named},
+		{"controllers quoted", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": `"-csrsigning"`})}, named},
+		{"controllers with two dashes", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "--ttl"})}, named},
+		{"controllers in capitals", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-TTL"})}, named},
+		{"no controllers", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": ""})}, named},
+		{"controllers turning off the signer after another", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-ttl,-csrsigning"})}, joining},
+		{"controllers turning off the signer before another", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-certificatesigningrequest-signing-controller,-ttl"})}, joining},
+		{"controllers turning off certificatesigningrequest-signing-controller", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-certificatesigningrequest-signing-controller"})}, joining},
+		{"controllers turning off csrsigning", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-csrsigning"})}, joining},
+		{"controllers turning off certificatesigningrequest-approving-controller", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-certificatesigningrequest-approving-controller"})}, joining},
+		{"controllers turning off csrapproving", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-csrapproving"})}, joining},
+		{"controllers turning off bootstrap-signer-controller", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-bootstrap-signer-controller"})}, joining},
+		{"controllers turning off bootstrapsigner", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-bootstrapsigner"})}, joining},
+		{"controllers turning off token-cleaner-controller", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-token-cleaner-controller"})}, joining},
+		{"controllers turning off tokencleaner", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-tokencleaner"})}, joining},
+		{"controllers turning off root-ca-certificate-publisher-controller", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-root-ca-certificate-publisher-controller"})}, joining},
+		{"controllers turning off root-ca-cert-publisher", []func(*testing.T, *unstructured.Unstructured){args("controllerManager", map[string]any{"controllers": "-root-ca-cert-publisher"})}, joining},
+		{"runtime-config apps/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=true"})}, ""},
+		{"runtime-config batch/v1=false,api/beta=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "batch/v1=false,api/beta=true"})}, ""},
+		{"runtime-config api/alpha=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/alpha=false"})}, ""},
+		{"runtime-config storage.k8s.io/v1beta1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "storage.k8s.io/v1beta1=true"})}, ""},
+		{"runtime-config batch/v1/jobs=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "batch/v1/jobs=false"})}, ""},
+		{"runtime-config apps/v1beta1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1beta1=false"})}, ""},
+		{"runtime-config api/legacy=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/legacy=false"})}, ""},
+		{"runtime-config apps/v1/deployments=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1/deployments=true"})}, ""},
+		{"runtime-config apps/v1", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1"})}, pairs},
+		{"runtime-config apps/v1=", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1="})}, pairs},
+		{"runtime-config apps/v1=1", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=1"})}, pairs},
+		{"runtime-config apps/v1=t", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=t"})}, pairs},
+		{"runtime-config apps/v1= true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1= true"})}, pairs},
+		{"runtime-config apps/v1=true, batch/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=true, batch/v1=true"})}, pairs},
+		{"runtime-config apps/v1 =true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1 =true"})}, pairs},
+		{"runtime-config apps/v1=true,", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=true,"})}, pairs},
+		{"runtime-config ,apps/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": ",apps/v1=true"})}, pairs},
+		{"runtime-config Apps/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "Apps/v1=true"})}, pairs},
+		{"runtime-config apps/v1=True", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=True"})}, pairs},
+		{"runtime-config apps/v1=true,,batch/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=true,,batch/v1=true"})}, pairs},
+		{"runtime-config empty", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": ""})}, pairs},
+		{"runtime-config api/all=FALSE", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/all=FALSE"})}, pairs},
+		{"runtime-config with a line break", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=true\nbatch/v1=false"})}, pairs},
+		{"runtime-config api/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/v1=false"})}, relied},
+		{"runtime-config v1/pods=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "v1/pods=false"})}, relied},
+		{"runtime-config api/v1/pods=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/v1/pods=false"})}, relied},
+		{"runtime-config apps/v1/deployments=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1/deployments=false"})}, relied},
+		{"runtime-config batch/v1=true,apps/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "batch/v1=true,apps/v1=false"})}, relied},
+		{"runtime-config api/all=false,v1=true,apps/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/all=false,v1=true,apps/v1=true"})}, relied},
+		{"runtime-config v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "v1=false"})}, relied},
+		{"runtime-config v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "v1=0"})}, pairs},
+		{"runtime-config v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "v1=f"})}, pairs},
+		{"runtime-config apps/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=false"})}, relied},
+		{"runtime-config apps/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=0"})}, pairs},
+		{"runtime-config apps/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apps/v1=f"})}, pairs},
+		{"runtime-config rbac.authorization.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "rbac.authorization.k8s.io/v1=false"})}, relied},
+		{"runtime-config rbac.authorization.k8s.io/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "rbac.authorization.k8s.io/v1=0"})}, pairs},
+		{"runtime-config rbac.authorization.k8s.io/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "rbac.authorization.k8s.io/v1=f"})}, pairs},
+		{"runtime-config discovery.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "discovery.k8s.io/v1=false"})}, relied},
+		{"runtime-config discovery.k8s.io/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "discovery.k8s.io/v1=0"})}, pairs},
+		{"runtime-config discovery.k8s.io/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "discovery.k8s.io/v1=f"})}, pairs},
+		{"runtime-config coordination.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "coordination.k8s.io/v1=false"})}, relied},
+		{"runtime-config coordination.k8s.io/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "coordination.k8s.io/v1=0"})}, pairs},
+		{"runtime-config coordination.k8s.io/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "coordination.k8s.io/v1=f"})}, pairs},
+		{"runtime-config certificates.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "certificates.k8s.io/v1=false"})}, relied},
+		{"runtime-config certificates.k8s.io/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "certificates.k8s.io/v1=0"})}, pairs},
+		{"runtime-config certificates.k8s.io/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "certificates.k8s.io/v1=f"})}, pairs},
+		{"runtime-config authentication.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "authentication.k8s.io/v1=false"})}, relied},
+		{"runtime-config authentication.k8s.io/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "authentication.k8s.io/v1=0"})}, pairs},
+		{"runtime-config authentication.k8s.io/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "authentication.k8s.io/v1=f"})}, pairs},
+		{"runtime-config authorization.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "authorization.k8s.io/v1=false"})}, relied},
+		{"runtime-config authorization.k8s.io/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "authorization.k8s.io/v1=0"})}, pairs},
+		{"runtime-config authorization.k8s.io/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "authorization.k8s.io/v1=f"})}, pairs},
+		{"runtime-config apiregistration.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apiregistration.k8s.io/v1=false"})}, relied},
+		{"runtime-config apiregistration.k8s.io/v1=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apiregistration.k8s.io/v1=0"})}, pairs},
+		{"runtime-config apiregistration.k8s.io/v1=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apiregistration.k8s.io/v1=f"})}, pairs},
+		{"runtime-config api/all=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/all=false"})}, relied},
+		{"runtime-config api/all=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/all=0"})}, pairs},
+		{"runtime-config api/all=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/all=f"})}, pairs},
+		{"runtime-config api/ga=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/ga=false"})}, relied},
+		{"runtime-config api/ga=0", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/ga=0"})}, pairs},
+		{"runtime-config api/ga=f", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "api/ga=f"})}, pairs},
+		{"runtime-config admissionregistration.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "admissionregistration.k8s.io/v1=false"})}, ready},
+		{"runtime-config apiextensions.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "apiextensions.k8s.io/v1=false"})}, ready},
+		{"runtime-config networking.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "networking.k8s.io/v1=false"})}, ready},
+		{"runtime-config node.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "node.k8s.io/v1=false"})}, ready},
+		{"runtime-config resource.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "resource.k8s.io/v1=false"})}, ready},
+		{"runtime-config scheduling.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "scheduling.k8s.io/v1=false"})}, ready},
+		{"runtime-config storage.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "storage.k8s.io/v1=false"})}, ready},
+		{"runtime-config storage.k8s.io/v1/csistoragecapacities=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "storage.k8s.io/v1/csistoragecapacities=false"})}, ready},
+		{"runtime-config batch/v1=true,node.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "batch/v1=true,node.k8s.io/v1=false"})}, ready},
+		{"runtime-config node.k8s.io/v1=false,batch/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "node.k8s.io/v1=false,batch/v1=true"})}, ready},
+		{"runtime-config of a group whose name ends in node.k8s.io", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "examplenode.k8s.io/v1=false"})}, ""},
+		{"runtime-config networking.k8s.io/v1beta1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "networking.k8s.io/v1beta1=false"})}, ""},
+		{"runtime-config scheduling.k8s.io/v1=true", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "scheduling.k8s.io/v1=true"})}, ""},
+		{"runtime-config events.k8s.io/v1=false", []func(*testing.T, *unstructured.Unstructured){args("apiServer", map[string]any{"runtime-config": "events.k8s.io/v1=false"})}, ""},
+		{"coordinated election on the controller manager alone", []func(*testing.T, *unstructured.Unstructured){gates("controllerManager", map[string]any{"CoordinatedLeaderElection": true})}, elects},
+		{"coordinated election on the scheduler alone", []func(*testing.T, *unstructured.Unstructured){gates("scheduler", map[string]any{"CoordinatedLeaderElection": true})}, leader},
+		{"coordinated election off on the controller manager alone", []func(*testing.T, *unstructured.Unstructured){gates("controllerManager", map[string]any{"CoordinatedLeaderElection": false})}, elects},
+		{"coordinated election off on the controller manager and kube-apiserver", []func(*testing.T, *unstructured.Unstructured){gates("controllerManager", map[string]any{"CoordinatedLeaderElection": false}), gates("apiServer", map[string]any{"CoordinatedLeaderElection": false})}, ""},
+		{"coordinated election off on the scheduler", []func(*testing.T, *unstructured.Unstructured){gates("scheduler", map[string]any{"CoordinatedLeaderElection": false})}, ""},
+		{"coordinated election on the controller manager and kube-apiserver", []func(*testing.T, *unstructured.Unstructured){gates("controllerManager", map[string]any{"CoordinatedLeaderElection": true}), elected, beta}, ""},
+		{"coordinated election on the controller manager and kube-apiserver without runtime-config", []func(*testing.T, *unstructured.Unstructured){gates("controllerManager", map[string]any{"CoordinatedLeaderElection": true}), elected}, served},
+		{"coordinated election on the scheduler and kube-apiserver", []func(*testing.T, *unstructured.Unstructured){gates("scheduler", map[string]any{"CoordinatedLeaderElection": true}), elected, beta}, ""},
+		{"coordinated election on the controller manager beside it off on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){gates("controllerManager", map[string]any{"CoordinatedLeaderElection": true}), gates("apiServer", map[string]any{"CoordinatedLeaderElection": false})}, elects},
+		{"coordinated election on the scheduler beside it off on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){gates("scheduler", map[string]any{"CoordinatedLeaderElection": true}), gates("apiServer", map[string]any{"CoordinatedLeaderElection": false})}, leader},
+		{"coordinated election on kube-apiserver alone", []func(*testing.T, *unstructured.Unstructured){elected, beta}, ""},
+		{"coordinated election on kube-apiserver without runtime-config", []func(*testing.T, *unstructured.Unstructured){elected}, served},
+		{"coordinated election on kube-apiserver with runtime-config of other groups", []func(*testing.T, *unstructured.Unstructured){elected, args("apiServer", map[string]any{"runtime-config": "batch/v1=true"})}, served},
+		{"coordinated election on kube-apiserver with api/beta=true", []func(*testing.T, *unstructured.Unstructured){elected, args("apiServer", map[string]any{"runtime-config": "api/beta=true"})}, served},
+		{"coordinated election on kube-apiserver with its group version off", []func(*testing.T, *unstructured.Unstructured){elected, args("apiServer", map[string]any{"runtime-config": "coordination.k8s.io/v1beta1=false"})}, served},
+		{"coordinated election on kube-apiserver with its group version on, then off", []func(*testing.T, *unstructured.Unstructured){elected, args("apiServer", map[string]any{"runtime-config": "coordination.k8s.io/v1beta1=true,coordination.k8s.io/v1beta1=false"})}, served},
+		{"coordinated election on kube-apiserver with its LeaseCandidates off", []func(*testing.T, *unstructured.Unstructured){elected, args("apiServer", map[string]any{"runtime-config": "coordination.k8s.io/v1beta1=true,coordination.k8s.io/v1beta1/leasecandidates=false"})}, served},
+		{"coordinated election on kube-apiserver with its group version among others", []func(*testing.T, *unstructured.Unstructured){elected, args("apiServer", map[string]any{"runtime-config": "batch/v1=true,coordination.k8s.io/v1beta1=true,api/alpha=false"})}, ""},
+		{"coordinated election off on kube-apiserver without runtime-config", []func(*testing.T, *unstructured.Unstructured){gates("apiServer", map[string]any{"CoordinatedLeaderElection": false})}, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			obj := example(t, "controlplane-single.yaml", "values")
@@ -450,6 +645,138 @@ func TestExtraArgsRefuseWhatConflictsWithTheirValues(t *testing.T) {
 			if c.want == floor && strings.Contains(err.Error(), grammar) {
 				t.Fatalf("the format refused a value the floor refuses: %v", err)
 			}
+		})
+	}
+}
+
+// TestFeatureGatesRefuseAllAlphaAndAllBetaAndAdmitAGateByName refuses AllAlpha and AllBeta, true or false, on each component, and admits a gate set by name, the controller manager's with the same on kube-apiserver.
+func TestFeatureGatesRefuseAllAlphaAndAllBetaAndAdmitAGateByName(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const stages = "AllAlpha and AllBeta are refused, true or false"
+	for component, named := range map[string][]string{
+		"apiServer":         {"PodCertificateRequest", "MutatingAdmissionPolicy"},
+		"controllerManager": {"StorageVersionMigrator"},
+		"scheduler":         {"GenericWorkload", "DRADeviceTaintRules"},
+	} {
+		rows := map[string]string{"AllAlpha=true": stages, "AllAlpha=false": stages, "AllBeta=true": stages, "AllBeta=false": stages}
+		for _, gate := range named {
+			rows[gate+"=true"], rows[gate+"=false"] = "", ""
+		}
+		for row, want := range rows {
+			t.Run(component+"/"+row, func(t *testing.T) {
+				gate, value, _ := strings.Cut(row, "=")
+				obj := example(t, "controlplane-single.yaml", "gates")
+				set(t, obj, map[string]any{gate: value == "true"}, "spec", component, "featureGates")
+				if component == "controllerManager" && want == "" {
+					set(t, obj, map[string]any{gate: value == "true"}, "spec", "apiServer", "featureGates")
+				}
+				expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), want)
+			})
+		}
+	}
+}
+
+// TestAControllerManagerGateHasTheSameValueOnKubeAPIServer refuses a gate of the controller manager that kube-apiserver lacks or sets otherwise, naming the first such gate by name, and admits it at the same value.
+func TestAControllerManagerGateHasTheSameValueOnKubeAPIServer(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	sets := func(gate string) string {
+		return "controllerManager.featureGates sets " + gate + ", which apiServer.featureGates must set to the same value"
+	}
+	on := func(component string, gates map[string]any) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, gates, "spec", component, "featureGates") }
+	}
+	bare := func(t *testing.T, o *unstructured.Unstructured) {
+		set(t, o, map[string]any{"max-requests-inflight": "700"}, "spec", "apiServer", "extraArgs")
+	}
+	agreeing := map[string]any{}
+	for i := range 63 {
+		agreeing[fmt.Sprintf("Gate%02d", i)] = i%2 == 0
+	}
+	with := func(gate string, value bool) map[string]any {
+		out := maps.Clone(agreeing)
+		out[gate] = value
+		return out
+	}
+	otherwise := map[string]any{}
+	for gate, value := range agreeing {
+		otherwise[gate] = !value.(bool)
+	}
+	svm := func(value bool) map[string]any { return map[string]any{"StorageVersionMigrator": value} }
+	workloads := map[string]any{"GenericWorkload": true, "WorkloadWithJob": true}
+	for _, c := range []struct {
+		name   string
+		mutate []func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}{
+		{"on the controller manager alone", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(true))}, sets("StorageVersionMigrator")},
+		{"on the controller manager beside kube-apiserver without featureGates", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(true)), bare}, sets("StorageVersionMigrator")},
+		{"on the controller manager beside no gate on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(true)), on("apiServer", map[string]any{})}, sets("StorageVersionMigrator")},
+		{"on the controller manager beside another gate on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(true)), on("apiServer", map[string]any{"PodCertificateRequest": true})}, sets("StorageVersionMigrator")},
+		{"off on the controller manager alone", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(false))}, sets("StorageVersionMigrator")},
+		{"on both", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(true)), on("apiServer", svm(true))}, ""},
+		{"off on both", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(false)), on("apiServer", svm(false))}, ""},
+		{"on the controller manager and off on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(true)), on("apiServer", svm(false))}, sets("StorageVersionMigrator")},
+		{"off on the controller manager and on on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", svm(false)), on("apiServer", svm(true))}, sets("StorageVersionMigrator")},
+		{"on kube-apiserver alone", []func(*testing.T, *unstructured.Unstructured){on("apiServer", svm(true))}, ""},
+		{"none on the controller manager", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", map[string]any{})}, ""},
+		{"GenericWorkload and WorkloadWithJob on the controller manager alone", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", workloads)}, sets("GenericWorkload")},
+		{"GenericWorkload and WorkloadWithJob beside kube-apiserver without featureGates", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", workloads), bare}, sets("GenericWorkload")},
+		{"GenericWorkload and WorkloadWithJob beside another gate on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", workloads), on("apiServer", map[string]any{"PodCertificateRequest": true})}, sets("GenericWorkload")},
+		{"GenericWorkload and WorkloadWithJob beside GenericWorkload alone on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", workloads), on("apiServer", map[string]any{"GenericWorkload": true})}, sets("WorkloadWithJob")},
+		{"GenericWorkload and WorkloadWithJob on both", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", workloads), on("apiServer", workloads)}, ""},
+		{"one gate among many that agree", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", with("WorkloadWithJob", true)), on("apiServer", with("WorkloadWithJob", false))}, sets("WorkloadWithJob")},
+		{"many that agree", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", agreeing), on("apiServer", agreeing)}, ""},
+		{"many on the controller manager alone", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", agreeing)}, sets("Gate00")},
+		{"many set otherwise on kube-apiserver", []func(*testing.T, *unstructured.Unstructured){on("controllerManager", agreeing), on("apiServer", otherwise)}, sets("Gate00")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "gates")
+			for _, mutate := range c.mutate {
+				mutate(t, obj)
+			}
+			for range 8 {
+				expect(t, k8s.Create(context.Background(), obj.DeepCopy(), client.DryRunAll), c.want)
+			}
+		})
+	}
+}
+
+// TestAFeatureGateIsKeyedByItsBareName refuses, on each component, a key that is not a gate's bare name, the prefixed names of the gates other rules name among them, and admits a bare name with digits.
+func TestAFeatureGateIsKeyedByItsBareName(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	bare := func(component string) string {
+		return "spec." + component + ".featureGates: Invalid value: a key must be a gate's bare name"
+	}
+	on := func(component string, gates map[string]any) func(*testing.T, *unstructured.Unstructured) {
+		return func(t *testing.T, o *unstructured.Unstructured) { set(t, o, gates, "spec", component, "featureGates") }
+	}
+	type row struct {
+		name   string
+		mutate []func(*testing.T, *unstructured.Unstructured)
+		want   string
+	}
+	var rows []row
+	for _, component := range []string{"apiServer", "controllerManager", "scheduler"} {
+		for _, key := range []string{"kube:AllBeta", " AllBeta", "AllBeta ", "wardle:Foo", "allBeta", "AllBeta=true,GenericWorkload", "GenericWorkload=true"} {
+			rows = append(rows, row{component + " " + key, []func(*testing.T, *unstructured.Unstructured){on(component, map[string]any{key: true})}, bare(component)})
+		}
+		rows = append(rows, row{component + " a name with digits", []func(*testing.T, *unstructured.Unstructured){on(component, map[string]any{"UnauthenticatedHTTP2DOSMitigation": true}), on("apiServer", map[string]any{"UnauthenticatedHTTP2DOSMitigation": true})}, ""})
+	}
+	rows = append(rows,
+		row{"kube:CoordinatedLeaderElection on the scheduler alone", []func(*testing.T, *unstructured.Unstructured){on("scheduler", map[string]any{"kube:CoordinatedLeaderElection": true})}, bare("scheduler")},
+		row{"kube:CoordinatedLeaderElection on kube-apiserver without runtime-config", []func(*testing.T, *unstructured.Unstructured){on("apiServer", map[string]any{"kube:CoordinatedLeaderElection": true})}, bare("apiServer")},
+		row{"kube:ExternalServiceAccountTokenSigner off", []func(*testing.T, *unstructured.Unstructured){on("apiServer", map[string]any{"kube:ExternalServiceAccountTokenSigner": false})}, bare("apiServer")},
+	)
+	for _, c := range rows {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", "gates")
+			for _, mutate := range c.mutate {
+				mutate(t, obj)
+			}
+			expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), c.want)
 		})
 	}
 }
@@ -482,6 +809,49 @@ func TestExtraArgsRefuseBindAddressInEverySpellingAndMode(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestTheEncryptionProviderCannotChange holds the provider an object was created with, an absent one counting as secretbox.
+func TestTheEncryptionProviderCannotChange(t *testing.T) {
+	needsEnvtest(t)
+	ensureNamespaces(t, "team-a")
+	const immutable = "apiServer.encryption.provider is immutable, an absent one counting as secretbox"
+	encryption := func(provider string) map[string]any {
+		if provider == "" {
+			return map[string]any{"encryption": map[string]any{}}
+		}
+		return map[string]any{"encryption": map[string]any{"provider": provider}}
+	}
+	for i, c := range []struct {
+		name     string
+		from, to map[string]any
+		want     string
+	}{
+		{"absent, then secretbox", nil, encryption("secretbox"), ""},
+		{"absent, then an empty encryption", nil, encryption(""), ""},
+		{"absent, then aescbc", nil, encryption("aescbc"), immutable},
+		{"absent, then None", nil, encryption("None"), immutable},
+		{"aescbc, then encryption removed", encryption("aescbc"), map[string]any{}, immutable},
+		{"aescbc, then apiServer removed", encryption("aescbc"), nil, immutable},
+		{"aescbc, then an empty encryption", encryption("aescbc"), encryption(""), immutable},
+		{"aescbc kept beside another change", encryption("aescbc"), map[string]any{"replicas": int64(2), "encryption": map[string]any{"provider": "aescbc"}}, ""},
+		{"secretbox, then encryption removed", encryption("secretbox"), map[string]any{}, ""},
+		{"None, then secretbox", encryption("None"), encryption("secretbox"), immutable},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			obj := example(t, "controlplane-single.yaml", fmt.Sprintf("encryption-%d", i))
+			if c.from != nil {
+				set(t, obj, c.from, "spec", "apiServer")
+			}
+			update(t, obj, func(t *testing.T, o *unstructured.Unstructured) {
+				if c.to == nil {
+					unstructured.RemoveNestedField(o.Object, "spec", "apiServer")
+					return
+				}
+				set(t, o, c.to, "spec", "apiServer")
+			}, c.want)
+		})
 	}
 }
 
@@ -656,11 +1026,6 @@ func TestTheDatastoreClassCannotChange(t *testing.T) {
 		from, to map[string]any
 		want     string
 	}{
-		{"absent, then empty", nil, map[string]any{}, ""},
-		{"absent, then an empty class name", nil, map[string]any{"className": ""}, ""},
-		{"an empty class name, then absent", map[string]any{"className": ""}, nil, ""},
-		{"empty, then absent", map[string]any{}, nil, ""},
-		{"empty, then a class", map[string]any{}, map[string]any{"className": "fast-ssd"}, immutable},
 		{"absent, then a class", nil, map[string]any{"className": "fast-ssd"}, immutable},
 		{"a class, then absent", map[string]any{"className": "fast-ssd"}, nil, immutable},
 		{"a class, then another", map[string]any{"className": "fast-ssd"}, map[string]any{"className": "slow-hdd"}, immutable},
@@ -1445,8 +1810,8 @@ func TestRemovedFieldsAreUnknown(t *testing.T) {
 		{"controlplane-single.yaml", map[string]any{"configRef": map[string]any{"name": "admission"}}, []string{"spec", "apiServer", "admission"}},
 		{"controlplane-single.yaml", map[string]any{"name": "profiles"}, []string{"spec", "scheduler", "configRef"}},
 		{"controlplane-single.yaml", true, []string{"spec", "serviceAccount", "publicDiscovery"}},
-		{"controlplane-single.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
-		{"controlplane-single.yaml", map[string]any{"className": "fast-ssd"}, []string{"spec", "datastore", "dedicated"}},
+		{"controlplane-ha.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
+		{"controlplane-ha.yaml", map[string]any{"className": "fast-ssd"}, []string{"spec", "datastore", "dedicated"}},
 		{"datastoreclass.yaml", "720h", []string{"spec", "backup", "retention", "afterDelete"}},
 	} {
 		field := strings.Join(c.path, ".")
@@ -1613,6 +1978,17 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 	}
 }
 
+// TestDatastoreClassDefaults takes a delta snapshot every 300 seconds when a class names no period.
+func TestDatastoreClassDefaults(t *testing.T) {
+	needsEnvtest(t)
+	obj := example(t, "datastoreclass.yaml", "defaults")
+	unstructured.RemoveNestedField(obj.Object, "spec", "backup", "deltaSnapshotPeriodSeconds")
+	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+	if seconds, _, _ := unstructured.NestedInt64(obj.Object, "spec", "backup", "deltaSnapshotPeriodSeconds"); seconds != 300 {
+		t.Fatalf("deltaSnapshotPeriodSeconds = %d, want 300", seconds)
+	}
+}
+
 func TestKubeconfigRequestDefaults(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
@@ -1688,9 +2064,9 @@ func TestDatastoreClassValidation(t *testing.T) {
 		path  []string
 		want  string
 	}{
-		{"delta snapshots every 30 days", "30d", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
-		{"delta snapshots beyond a Go duration", "2562048h", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
-		{"delta snapshots every 90 seconds", "1m30s", []string{"spec", "backup", "deltaSnapshotPeriod"}, ""},
+		{"delta snapshots every 90 seconds", int64(90), []string{"spec", "backup", "deltaSnapshotPeriodSeconds"}, ""},
+		{"no delta snapshots", int64(0), []string{"spec", "backup", "deltaSnapshotPeriodSeconds"}, ""},
+		{"delta snapshots every -1 seconds", int64(-1), []string{"spec", "backup", "deltaSnapshotPeriodSeconds"}, "spec.backup.deltaSnapshotPeriodSeconds in body should be greater than or equal to 0"},
 		{"a two-letter bucket", "ab", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a bucket with a slash", "backups/prod", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a 64-letter bucket", strings.Repeat("b", 64), []string{"spec", "backup", "store", "bucket"}, "spec.backup.store.bucket"},
@@ -1703,7 +2079,7 @@ func TestDatastoreClassValidation(t *testing.T) {
 		{"a prefix v1/", "v1/", []string{"spec", "backup", "store", "prefix"}, "etcd-backup-restore's snapshot parser"},
 		{"a prefix v10", "v10", []string{"spec", "backup", "store", "prefix"}, ""},
 		{"a prefix team-v2", "team-v2", []string{"spec", "backup", "store", "prefix"}, ""},
-		{"an empty prefix", "", []string{"spec", "backup", "store", "prefix"}, ""},
+		{"an empty prefix", "", []string{"spec", "backup", "store", "prefix"}, "spec.backup.store.prefix in body should be at least 1 chars long"},
 		{"a prefix /lodia", "/lodia", []string{"spec", "backup", "store", "prefix"}, ""},
 		{"a prefix lodia/", "lodia/", []string{"spec", "backup", "store", "prefix"}, ""},
 		{"a prefix of 253 characters", strings.Repeat("a/v", 84) + "1", []string{"spec", "backup", "store", "prefix"}, "etcd-backup-restore's snapshot parser"},

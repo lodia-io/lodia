@@ -53,7 +53,7 @@ func TestAGatewayControlPlaneRunsBehindItsListener(t *testing.T) {
 		APIServer:    lodiav1alpha1.HostPort{Host: "api.dev." + zone, Port: 443},
 		Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev." + zone, Port: 443},
 		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-		Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 443},
+		Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 443},
 	})
 	if c := routesReady(t, cp); c.Message != "every route is applied and Accepted by Gateway "+ns+"/shared" {
 		t.Errorf("RoutesReady says %q", c.Message)
@@ -178,7 +178,7 @@ func TestTheAdvertiseAddressAndTheListenersPortArePublished(t *testing.T) {
 			APIServer:    lodiav1alpha1.HostPort{Host: "api.dev." + zone, Port: 8443},
 			Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev." + zone, Port: 8443},
 			InCluster:    lodiav1alpha1.HostPort{Host: "198.51.100.7", Port: 6443},
-			Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 8443},
+			Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev." + zone, Port: 8443},
 		})
 	})
 	expectFlags(t, eventuallyDeployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command, "--advertise-address=198.51.100.7",
@@ -231,7 +231,7 @@ func TestEveryListenerCheckIsGatewayUnsupported(t *testing.T) {
 			if got, want := condition(t, cp).Message, "no endpoint until listener tls of Gateway "+ns+"/shared can take the routes, which RoutesReady says"; got != want {
 				t.Errorf("APIServerReady says %q, want %q", got, want)
 			}
-			if e := get(t, cp).Status.Endpoint; e != nil {
+			if e := get(t, cp).Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 				t.Errorf("status.endpoint is %+v", e)
 			}
 			expectNoRoutes(t, cp)
@@ -252,7 +252,7 @@ func TestAListenersStatusAloneBringsAPass(t *testing.T) {
 	if c := routesReady(t, cp); !strings.HasSuffix(c.Message, "is not Programmed: Pending") {
 		t.Errorf("RoutesReady says %q", c.Message)
 	}
-	expectEndpoint(t, cp, *published)
+	expectEndpoint(t, cp, published)
 	setListenerStatus(t, gw, listenerStatus([]gatewayv1.RouteGroupKind{tlsRouteKind}, metav1.ConditionTrue, metav1.ConditionTrue, "Programmed"))
 	testenv.Eventually(t, func() error { return expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted) })
 }
@@ -278,7 +278,7 @@ func TestAGatewayCreatedLaterBringsThePass(t *testing.T) {
 		if err := expectRoutes(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRouteNotAccepted); err != nil {
 			return err
 		}
-		if e := get(t, cp).Status.Endpoint; e == nil || e.Tunnel == nil {
+		if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.Tunnel == (lodiav1alpha1.HostPort{}) {
 			return fmt.Errorf("status.endpoint is %+v", e)
 		}
 		return nil
@@ -429,7 +429,7 @@ func TestWithoutTheGatewayAPIServedAGatewayControlPlaneIsUnsupported(t *testing.
 		if c := meta.FindStatusCondition(applied.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c == nil || c.Reason != lodiav1alpha1.ReasonWaitingForEndpoint {
 			t.Errorf("APIServerReady is %+v", c)
 		}
-		if applied.Status.Endpoint != nil {
+		if applied.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}) {
 			t.Errorf("status.endpoint is %+v", applied.Status.Endpoint)
 		}
 	})
@@ -495,7 +495,7 @@ func TestAStaleCacheNeverDropsThePublishedEndpoint(t *testing.T) {
 func TestAPublishedEndpointStays(t *testing.T) {
 	cp := gatewayRunning(t)
 	ns := cp.Namespace
-	published := *get(t, cp).Status.Endpoint
+	published := get(t, cp).Status.Endpoint
 	written := resourceVersions(t, ns, &gatewayv1.TLSRouteList{})
 	kept := func(t *testing.T, routes, apiServerReady string, message string) {
 		t.Helper()
@@ -1174,7 +1174,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 	prod := sourceOnGateway(t, ns)
 	leftover := handmade(t, ns, "prod-kube-apiserver", "api.prod."+zone, ns, "tls", controllerOf(prod))
 	cp := createNamed(t, ns, "restored", onGateway(ns, "prod"), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: lodiav1alpha1.RestorePending}
+		spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: lodiav1alpha1.RestorePending}
 	})
 	inputsReady(t, cp)
 	setRestore(t, cp, lodiav1alpha1.UIDReference{Name: prod.Name, UID: prod.UID})
@@ -1191,7 +1191,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 	if c := routesReady(t, cp); !strings.Contains(c.Message, "api.prod."+zone+" by ControlPlane "+ns+"/prod (UID "+string(prod.UID)+")") {
 		t.Errorf("RoutesReady says %q", c.Message)
 	}
-	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != "api.prod."+zone {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != "api.prod."+zone {
 		t.Errorf("status.endpoint is %+v", e)
 	}
 	expectNoRoutes(t, cp)
@@ -1223,7 +1223,7 @@ func TestASameHostnameRestoreWaitsForItsSource(t *testing.T) {
 
 func TestAGatewayPassThatChangesNothingWritesNothing(t *testing.T) {
 	cp := gatewayRunning(t)
-	if e := get(t, cp).Status.Endpoint; e == nil || e.Tunnel == nil {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.Tunnel == (lodiav1alpha1.HostPort{}) {
 		t.Fatalf("status.endpoint is %+v", e)
 	}
 	before := resourceVersions(t, cp.Namespace, &corev1.ServiceList{}, &gatewayv1.TLSRouteList{})
@@ -1400,7 +1400,7 @@ func TestAPredecessorsRoutesWaitForTheGarbageCollector(t *testing.T) {
 }
 
 func onGateway(gatewayNamespace, prefix string) lodiav1alpha1.Endpoint {
-	return lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+	return lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 		ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: gatewayNamespace, SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{
 			APIServer:    lodiav1alpha1.Hostname("api." + prefix + "." + zone),
@@ -1497,7 +1497,7 @@ func createNamed(t *testing.T, ns, name string, endpoint lodiav1alpha1.Endpoint,
 
 func sourceOnGateway(t *testing.T, ns string) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	return createNamed(t, ns, "prod", onGateway(ns, "prod"), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	return createNamed(t, ns, "prod", onGateway(ns, "prod"), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = new(true) })
 }
 
 func gatewayRunning(t *testing.T, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
@@ -1665,7 +1665,7 @@ func expectEndpointIs(cp *lodiav1alpha1.ControlPlane, want lodiav1alpha1.Endpoin
 	if err := k8s.Get(context.Background(), client.ObjectKeyFromObject(cp), fresh); err != nil {
 		return err
 	}
-	if e := fresh.Status.Endpoint; e == nil || !equality.Semantic.DeepEqual(*e, want) {
+	if e := fresh.Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || !equality.Semantic.DeepEqual(e, want) {
 		return fmt.Errorf("status.endpoint is %+v, want %+v", e, want)
 	}
 	return nil

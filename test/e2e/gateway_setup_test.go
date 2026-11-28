@@ -105,7 +105,7 @@ func hostnamesOf(namespace string) lodiav1alpha1.GatewayHostnames {
 
 func behindTheGateway(namespace string) func(*lodiav1alpha1.ControlPlaneSpec) {
 	return func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.Endpoint = lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		spec.Endpoint = lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 			ParentRef: lodiav1alpha1.ParentReference{Name: gatewayName, Namespace: gatewayNamespace, SectionName: gatewayListener},
 			Hostnames: hostnamesOf(namespace),
 		}}

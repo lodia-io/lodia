@@ -32,7 +32,7 @@ func TestStatusNodesFollowsTheKubeletsVersions(t *testing.T) {
 		return nodes
 	}
 	status := func(total, ready, outdated int32, oldest string) *lodiav1alpha1.NodesStatus {
-		return &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: total, Ready: ready}, OutdatedKubelets: outdated, OldestKubelet: oldest}
+		return &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(total), Ready: new(ready)}, OutdatedKubelets: new(outdated), OldestKubelet: oldest}
 	}
 	for _, c := range []struct {
 		name    string
@@ -66,7 +66,7 @@ func TestOnlyAChangeOfWhetherAccessReadyIsTrueBringsAPassOfTheNodes(t *testing.T
 	access := func(status metav1.ConditionStatus, host string) *lodiav1alpha1.ControlPlane {
 		return &lodiav1alpha1.ControlPlane{Status: lodiav1alpha1.ControlPlaneStatus{
 			Conditions: []metav1.Condition{{Type: lodiav1alpha1.ConditionAccessReady, Status: status}},
-			Endpoint:   &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: host, Port: 443}},
+			Endpoint:   lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: host, Port: 443}},
 		}}
 	}
 	for _, c := range []struct {

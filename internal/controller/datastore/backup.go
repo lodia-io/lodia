@@ -105,7 +105,7 @@ func (r *BackupReconciler) backupsOf(ctx context.Context, obj client.Object) []r
 	for i := range backups.Items {
 		backup := &backups.Items[i]
 		source := backup.Spec.ControlPlaneRef.Name == cp.Name && !meta.IsStatusConditionTrue(backup.Status.Conditions, lodiav1alpha1.ConditionReady)
-		if source || cp.Spec.RestoreFrom != nil && cp.Spec.RestoreFrom.BackupRef.Name == backup.Name {
+		if source || cp.Spec.RestoreFrom != (lodiav1alpha1.RestoreFrom{}) && cp.Spec.RestoreFrom.BackupRef.Name == backup.Name {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(backup)})
 		}
 	}
@@ -120,7 +120,7 @@ func (r *BackupReconciler) restoredKeys(ctx context.Context, secret client.Objec
 		}
 		return nil
 	}
-	if cp.Spec.RestoreFrom == nil {
+	if cp.Spec.RestoreFrom == (lodiav1alpha1.RestoreFrom{}) {
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: cp.Namespace, Name: cp.Spec.RestoreFrom.BackupRef.Name}}}
@@ -185,7 +185,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound, "no ControlPlane "+name, 0)
 	case err != nil:
 		return ctrl.Result{}, err
-	case status.Source != nil && status.Source.UID != source.UID:
+	case status.Source != (lodiav1alpha1.UIDReference{}) && status.Source.UID != source.UID:
 		return report(metav1.ConditionFalse, lodiav1alpha1.ReasonControlPlaneNotFound, fmt.Sprintf("ControlPlane %s has UID %s, not %s, which this Backup started from", name, source.UID, status.Source.UID), 0)
 	}
 	etcd, err := r.sourceEtcd(ctx, source)
@@ -216,7 +216,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// waits for the datastore compares too, since a move restarts a single
 		// member.
 		if status.StartedAt != nil && !noCredentials {
-			if key, from, to := storeMoved(*status.Snapshots, location); from != "" {
+			if key, from, to := storeMoved(status.Snapshots, location); from != "" {
 				if key != "" {
 					from = fmt.Sprintf("Secret %s's %s %s", credentials, key, from)
 				}
@@ -238,18 +238,18 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if why := unrecordable(location.SnapshotLocation); why != "" {
 			return report(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, fmt.Sprintf("the location of the Backup's copy in the store of Etcd %s is one status.snapshots cannot hold: %s", etcd.Name(), why), 10*time.Second)
 		}
-		status.Source = &lodiav1alpha1.UIDReference{Name: source.Name, UID: source.UID}
+		status.Source = lodiav1alpha1.UIDReference{Name: source.Name, UID: source.UID}
 		if source.Status.Kubernetes != nil && source.Status.Kubernetes.Version != "" {
 			status.KubernetesVersion = source.Status.Kubernetes.Version
 		} else if source.Status.Target != nil {
 			status.KubernetesVersion = source.Status.Target.Version
 		}
-		status.Network = source.Spec.Network.DeepCopy()
-		status.Snapshots = &location
+		status.Network = *source.Spec.Network.DeepCopy()
+		status.Snapshots = location
 		status.StartedAt = new(metav1.Now())
 		return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, "sealing", 0)
 	}
-	if status.Seal == nil {
+	if status.Seal == (lodiav1alpha1.BackupSeal{}) {
 		revision, err := r.seal(ctx, etcd, backup.UID)
 		if errors.Is(err, rpctypes.ErrNoSpace) {
 			return report(metav1.ConditionUnknown, lodiav1alpha1.ReasonSnapshotting, fmt.Sprintf(`etcd of %s refuses the seal: %v; see "etcd space quota" in docs/operations.md`, name, err), time.Minute)
@@ -257,7 +257,7 @@ func (r *BackupReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		if err != nil {
 			return ctrl.Result{}, err
 		}
-		status.Seal = &lodiav1alpha1.BackupSeal{Revision: revision}
+		status.Seal = lodiav1alpha1.BackupSeal{Revision: revision}
 		if quota := etcd.Quota(); quota != nil {
 			status.Seal.QuotaBackendBytes = new(quota.DeepCopy())
 		}
@@ -666,8 +666,8 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 	}
 	for i := range controlPlanes.Items {
 		cp := &controlPlanes.Items[i]
-		if !cp.DeletionTimestamp.IsZero() || cp.Spec.RestoreFrom == nil || cp.Spec.RestoreFrom.BackupRef.Name != backup.Name ||
-			cp.Status.Restore != nil && cp.Status.Restore.Backup.UID != backup.UID {
+		if !cp.DeletionTimestamp.IsZero() || cp.Spec.RestoreFrom == (lodiav1alpha1.RestoreFrom{}) || cp.Spec.RestoreFrom.BackupRef.Name != backup.Name ||
+			cp.Status.Restore != (lodiav1alpha1.RestoreStatus{}) && cp.Status.Restore.Backup.UID != backup.UID {
 			continue
 		}
 		keys := &metav1.PartialObjectMetadata{}
@@ -680,7 +680,7 @@ func (r *BackupReconciler) restoring(ctx context.Context, backup *lodiav1alpha1.
 		if !ownKeys && !backupKeys {
 			continue
 		}
-		if !ownKeys || cp.Status.Restore == nil {
+		if !ownKeys || cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 			logf.FromContext(ctx).Info("keeping the Backup until the ControlPlane restoring from it has its own encryption configuration and a completed restore", "controlPlane", cp.Name)
 			return true, nil
 		}

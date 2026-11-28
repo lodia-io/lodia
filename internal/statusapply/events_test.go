@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -179,11 +180,11 @@ func TestAPassOnACacheHoldingThePreviousConditionIsNoEvent(t *testing.T) {
 	if err := w.Apply(t.Context(), cached, conditions(ready), false); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{ready}, ObservedGeneration: 1}, true); err != nil {
+	if err := w.Apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{ready}, ObservedGeneration: new(int64(1))}, true); err != nil {
 		t.Fatal(err)
 	}
-	if got := stored(t, cp); got.Status.ObservedGeneration != 1 {
-		t.Fatalf("observedGeneration %d, want the pass on the cache written", got.Status.ObservedGeneration)
+	if got := stored(t, cp); ptr.Deref(got.Status.ObservedGeneration, 0) != 1 {
+		t.Fatalf("observedGeneration %d, want the pass on the cache written", ptr.Deref(got.Status.ObservedGeneration, 0))
 	}
 	if len(r.events) != 2 || r.events[1].reason != lodiav1alpha1.ReasonReady {
 		t.Errorf("recorded %+v, want Unavailable, then Ready", r.events)
@@ -210,12 +211,12 @@ func TestAKeptFirstPassIsNoEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	w, r := recording()
-	if err := w.Apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)}, ObservedGeneration: 1}, true); err != nil {
+	if err := w.Apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)}, ObservedGeneration: new(int64(1))}, true); err != nil {
 		t.Fatal(err)
 	}
 	got := stored(t, cp)
-	if got.Status.ObservedGeneration != 1 {
-		t.Fatalf("observedGeneration %d, want the apply made", got.Status.ObservedGeneration)
+	if ptr.Deref(got.Status.ObservedGeneration, 0) != 1 {
+		t.Fatalf("observedGeneration %d, want the apply made", ptr.Deref(got.Status.ObservedGeneration, 0))
 	}
 	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady); c == nil || c.Reason != lodiav1alpha1.ReasonUnavailable {
 		t.Fatalf("APIServerReady is %+v, want Unavailable kept", c)

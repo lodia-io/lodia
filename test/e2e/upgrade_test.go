@@ -32,6 +32,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	watchtools "k8s.io/client-go/tools/watch"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
@@ -89,7 +90,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 				if err := k8s.Get(ctx, key, cp); err != nil {
 					return err
 				}
-				if k := cp.Status.Kubernetes; k == nil || k.Version != upgradeFrom || k.Upgrade != nil {
+				if k := cp.Status.Kubernetes; k == nil || k.Version != upgradeFrom || k.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
 					return fmt.Errorf("status.kubernetes is %+v", k)
 				}
 				return nil
@@ -126,7 +127,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 				switch {
 				case c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonFailed || !strings.Contains(c.Message, "Rehearsed: APIServerFailed: "):
 					return fmt.Errorf("Progressing is %+v", c)
-				case cp.Status.Kubernetes == nil || cp.Status.Kubernetes.Upgrade == nil || cp.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal:
+				case cp.Status.Kubernetes == nil || cp.Status.Kubernetes.Upgrade == (lodiav1alpha1.UpgradeStatus{}) || cp.Status.Kubernetes.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal:
 					return fmt.Errorf("status.kubernetes is %+v", cp.Status.Kubernetes)
 				case cp.Status.Target == nil || cp.Status.Target.Version != upgradeFrom:
 					return fmt.Errorf("status.target is %+v", cp.Status.Target)
@@ -176,7 +177,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 				if err := k8s.Get(ctx, key, cp); err != nil {
 					return err
 				}
-				if c := cp.Status.Components; c == nil || c.APIServer == nil || c.APIServer.Version != upgradeTo {
+				if c := cp.Status.Components; c == nil || c.APIServer == (lodiav1alpha1.ComponentStatus{}) || c.APIServer.Version != upgradeTo {
 					return fmt.Errorf("status.components is %+v", cp.Status.Components)
 				}
 				if a := cp.Status.Addons; a == nil || a.Version == upgradeTo {
@@ -223,7 +224,7 @@ func TestMinorUpgradeGate(t *testing.T) {
 				if err := k8s.Get(ctx, key, cp); err != nil {
 					return err
 				}
-				if n := cp.Status.Nodes; n == nil || n.OutdatedKubelets != 1 || n.OldestKubelet != upgradeFrom {
+				if n := cp.Status.Nodes; ptr.Deref(n.OutdatedKubelets, 0) != 1 || n.OldestKubelet != upgradeFrom {
 					return fmt.Errorf("status.nodes is %+v", n)
 				}
 				return nil
@@ -253,12 +254,12 @@ func createStoreTenant(ctx context.Context, t *testing.T, k8s client.Client, key
 		ObjectMeta: metav1.ObjectMeta{Name: class},
 		Spec: lodiav1alpha1.DatastoreClassSpec{
 			Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: "Retain"},
-			Backup: &lodiav1alpha1.EtcdBackup{
+			Backup: lodiav1alpha1.EtcdBackup{
 				Store: lodiav1alpha1.BackupStore{
 					Provider: "S3", Bucket: s3Bucket, Prefix: "e2e", Endpoint: s3Endpoint,
 					SecretRef: lodiav1alpha1.SecretReference{Name: s3Secret, Namespace: operatorNamespace},
 				},
-				DeltaSnapshotPeriod: &metav1.Duration{Duration: 10 * time.Second},
+				DeltaSnapshotPeriodSeconds: new(int32(10)),
 			},
 		},
 	})
@@ -445,7 +446,7 @@ func upgradeEnded(ctx context.Context, k8s client.Client, key client.ObjectKey, 
 	if err := k8s.Get(ctx, key, cp); err != nil {
 		return err
 	}
-	if k := cp.Status.Kubernetes; k == nil || k.Version != version || k.Upgrade != nil {
+	if k := cp.Status.Kubernetes; k == nil || k.Version != version || k.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
 		return fmt.Errorf("status.kubernetes is %+v", k)
 	}
 	if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionProgressing); c == nil || c.Status != metav1.ConditionFalse || c.Reason != lodiav1alpha1.ReasonIdle {
@@ -503,8 +504,8 @@ func (u *watchedUpgrade) observe(cp *lodiav1alpha1.ControlPlane) {
 		return
 	}
 	reports := map[string]string{}
-	for name, status := range map[string]*lodiav1alpha1.ComponentStatus{"kube-apiserver": c.APIServer, "kube-controller-manager": c.ControllerManager, "kube-scheduler": c.Scheduler} {
-		if status != nil && status.Version != "" {
+	for name, status := range map[string]lodiav1alpha1.ComponentStatus{"kube-apiserver": c.APIServer, "kube-controller-manager": c.ControllerManager, "kube-scheduler": c.Scheduler} {
+		if status.Version != "" {
 			reports[name] = status.Version
 		}
 	}
@@ -543,7 +544,7 @@ func (u *watchedUpgrade) observeImage(ctx context.Context, k8s client.Client, ke
 			u.broke(err)
 			return
 		}
-		if c := cp.Status.Components; c != nil && c.APIServer != nil {
+		if c := cp.Status.Components; c != nil && c.APIServer != (lodiav1alpha1.ComponentStatus{}) {
 			api = c.APIServer.Version
 		}
 	}

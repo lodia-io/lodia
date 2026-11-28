@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -71,9 +72,22 @@ const (
 	maxVersion = 16
 	// maxRevision is the MaxLength of status.components.*.operatorRevision.
 	maxRevision = 128
+
+	// componentPods bounds the read of the pods of a component's current
+	// template: its ReplicaSet runs at most five replicas, and as many may
+	// still be deleted after a scale-down.
+	componentPods = 16
+	// exitsAgain and exitsAtMost bound how soon a pass follows one while a
+	// component has a new replica not available, so that its exit is named
+	// once it exits.
+	exitsAgain  = 15 * time.Second
+	exitsAtMost = 5 * time.Minute
 )
 
-var releaseTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+var (
+	releaseTag = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	fatalLine  = regexp.MustCompile(`^F[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6} +[0-9]+ [^ ]+:[0-9]+\] `)
+)
 
 // Messages are built from the state alone, never from an error, so a pass
 // that changes nothing writes nothing.
@@ -151,7 +165,7 @@ func (r *Reconciler) replacements(ctx context.Context, source client.Object) []r
 	}
 	var out []reconcile.Request
 	for i := range list.Items {
-		if restore := list.Items[i].Status.Restore; restore != nil && restore.Source.UID == source.GetUID() {
+		if list.Items[i].Status.Restore.Source.UID == source.GetUID() {
 			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 		}
 	}
@@ -176,11 +190,13 @@ func restartOnlyNames(cp string) []string {
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/status,verbs=patch
 // +kubebuilder:rbac:groups=lodia.io,resources=controlplanes/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=list
 // +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=list
+// +kubebuilder:rbac:groups="",resources=pods,verbs=list
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=tlsroutes,verbs=get;list;watch;create;patch;delete
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
@@ -195,11 +211,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
+	if !cp.DeletionTimestamp.IsZero() || ptr.Deref(cp.Spec.Paused, false) {
 		return ctrl.Result{}, nil
 	}
 	read := []string{lodiav1alpha1.ConditionAPIServerReady}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		read = append(read, lodiav1alpha1.ConditionRoutesReady)
 	}
 	if cp.Spec.Endpoint.LoadBalancer != nil {
@@ -211,7 +227,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
 		first := statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)
 		var routes *metav1.Condition
-		if cp.Spec.Endpoint.Gateway != nil {
+		if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 			routes = as(lodiav1alpha1.ConditionRoutesReady, first)
 		}
 		if err := r.applyStatus(ctx, cp, published(cp), cp.Status.Components, first, routes, balancerOf(cp, first)); err != nil {
@@ -222,7 +238,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if out == nil {
 		return ctrl.Result{}, err
 	}
-	components, readErr := r.components(ctx, cp)
+	controlled, readErr := r.controlled(ctx, cp)
+	if readErr != nil {
+		return ctrl.Result{}, errors.Join(err, readErr)
+	}
+	components, readErr := r.components(ctx, cp, controlled)
 	if readErr != nil {
 		return ctrl.Result{}, errors.Join(err, readErr)
 	}
@@ -230,6 +250,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, errors.Join(err, statusErr)
 	}
 	requeueAfter := out.requeueAfter
+	if again := exitsAfter(slices.Collect(maps.Values(controlled)), time.Now()); again > 0 && (requeueAfter == 0 || requeueAfter > again) {
+		requeueAfter = again
+	}
 	if out.routes != nil && out.routes.Status != metav1.ConditionTrue && (requeueAfter == 0 || requeueAfter > time.Minute) {
 		requeueAfter = time.Minute
 	}
@@ -343,7 +366,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	}
 	if r.held(cp) {
 		count := func() (metav1.Condition, error) {
-			return availability(deployments, in.note, controllerManagerHeld(cp)), nil
+			return r.availability(ctx, cp, deployments, in.note), nil
 		}
 		if in.unknownReport != "" || in.waited {
 			count = func() (metav1.Condition, error) { return r.count(ctx, cp) }
@@ -360,7 +383,7 @@ func (r *Reconciler) rollout(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if in.unknownReport != "" {
 		return report(newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, in.unknownReport)), nil
 	}
-	c := authenticated(availability(deployments, in.note, controllerManagerHeld(cp)), in.refused+in.served)
+	c := authenticated(r.availability(ctx, cp, deployments, in.note), in.refused+in.served)
 	if in.refused != "" {
 		c.ObservedGeneration = statusapply.Described(cp, c.Type)
 	}
@@ -435,7 +458,7 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		}
 		waited = true
 	}
-	if cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
+	if len(cp.Status.Datastore.Endpoints) == 0 {
 		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"), r.held(cp), tried)
 		return nil, waiting, err
 	}
@@ -595,7 +618,7 @@ func imagesOf(cp *lodiav1alpha1.ControlPlane) (versions.Images, string, string) 
 		return versions.Images{}, "status.target.version " + target + " is not a version Lodia runs", ""
 	}
 	running := target
-	if c := cp.Status.Components; c != nil && c.APIServer != nil && c.APIServer.Version != "" {
+	if c := cp.Status.Components; c != nil && c.APIServer.Version != "" {
 		running = c.APIServer.Version
 	}
 	followed, ok := versions.For(running)
@@ -689,7 +712,7 @@ func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.Control
 		}
 		return &outcome{endpoint: endpoint, condition: condition}, refusals
 	}
-	if write && cp.Spec.HighAvailability == nil {
+	if write && cp.Spec.HighAvailability == (lodiav1alpha1.HighAvailability{}) {
 		if err := r.deletePodDisruptionBudgets(ctx, cp); err != nil {
 			return nil, err
 		}
@@ -714,14 +737,14 @@ func mountsAny(obj client.Object, refused []client.Object) bool {
 // at 0 replicas; both are empty for a ControlPlane that restores nothing.
 func (r *Reconciler) release(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]string, string, error) {
 	restoring := cp.Spec.RestoreFrom
-	if restoring == nil {
+	if restoring == (lodiav1alpha1.RestoreFrom{}) {
 		return nil, "", nil
 	}
 	var unmet []string
 	if restoring.Release != lodiav1alpha1.RestoreReleased {
 		unmet = append(unmet, "spec.restoreFrom.release is Pending")
 	}
-	if cp.Status.Restore == nil {
+	if cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 		unmet = append(unmet, "the restore is not complete")
 	} else if source, err := restore.Source(ctx, r.Client, cp); err != nil {
 		return nil, "", err
@@ -903,7 +926,176 @@ func (r *Reconciler) count(ctx context.Context, cp *lodiav1alpha1.ControlPlane) 
 	if err != nil {
 		return metav1.Condition{}, err
 	}
-	return availability(slices.Collect(maps.Values(controlled)), note, controllerManagerHeld(cp)), nil
+	return r.availability(ctx, cp, slices.Collect(maps.Values(controlled)), note), nil
+}
+
+// availability is availability's condition over deployments, with the exits
+// of their new replicas.
+func (r *Reconciler) availability(ctx context.Context, cp *lodiav1alpha1.ControlPlane, deployments []*appsv1.Deployment, note string) metav1.Condition {
+	return availability(deployments, note, controllerManagerHeld(cp), r.exits(ctx, cp, deployments))
+}
+
+// newReplicaUnavailable says whether d has a replica of its current template
+// that is not available: one of the updated replicas, as rolloutCount counts
+// them, once the Deployment controller has observed the template.
+func newReplicaUnavailable(d *appsv1.Deployment) bool {
+	count := rolloutCount(d)
+	return count.Updated != nil && *count.Updated < d.Status.UpdatedReplicas
+}
+
+// exitsAfter is how soon a pass follows one at now while a component has a
+// new replica not available, zero while none has: exitsAgain after its
+// rollout last progressed, which the Deployment controller records as its
+// Progressing condition's lastUpdateTime
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.3/pkg/controller/deployment/progress.go#L63-L84),
+// then twice as long each time, up to exitsAtMost, as the kubelet backs off
+// that replica's restarts from 10 seconds to five minutes
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.3/pkg/kubelet/kubelet.go#L172-L173,
+// https://github.com/kubernetes/kubernetes/blob/v1.37.3/pkg/kubelet/apis/config/v1beta1/defaults.go#L45).
+// A rollout past its progress deadline, which Lodia leaves at the default ten
+// minutes
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.3/pkg/apis/apps/v1/defaults.go#L69-L72),
+// has not progressed for longer than the doubling takes to reach exitsAtMost.
+func exitsAfter(deployments []*appsv1.Deployment, now time.Time) time.Duration {
+	var again time.Duration
+	for _, d := range deployments {
+		if !newReplicaUnavailable(d) {
+			continue
+		}
+		next := exitsAgain
+		if i := slices.IndexFunc(d.Status.Conditions, func(c appsv1.DeploymentCondition) bool { return c.Type == appsv1.DeploymentProgressing }); i >= 0 {
+			next = exitsAtMost
+			if c := d.Status.Conditions[i]; c.Reason != timedOutReason {
+				next = min(exitsAtMost, max(exitsAgain, now.Sub(c.LastUpdateTime.Time)+exitsAgain))
+			}
+		}
+		if again == 0 || next < again {
+			again = next
+		}
+	}
+	return again
+}
+
+// exits says, by component, how the newest of the pods of its current
+// template that is not ready and has exited last exited, for a component with
+// a new replica not available, with the line of its termination message, the
+// tail of the component's logs since it runs with FallbackToLogsOnError, that
+// exitLine reads: kube-apiserver's fatal line, a klog line at level F, when
+// the message holds one, else its last line.
+// A read that fails names no exit, and its error goes to the log: the next
+// pass comes as exitsAfter says while the replica stays.
+func (r *Reconciler) exits(ctx context.Context, cp *lodiav1alpha1.ControlPlane, deployments []*appsv1.Deployment) map[string]string {
+	out := map[string]string{}
+	for _, d := range deployments {
+		component := d.Labels[lodiav1alpha1.ComponentLabel]
+		if !newReplicaUnavailable(d) || !slices.Contains(components, component) {
+			continue
+		}
+		pods, err := r.currentPods(ctx, cp, d, component)
+		if err != nil {
+			logf.FromContext(ctx).Error(err, "read the pods of a new replica not available", "component", component)
+			continue
+		}
+		if exit := newestExit(pods, component); exit != "" {
+			out[component] = exit
+		}
+	}
+	return out
+}
+
+// currentPods are the pods of d's current template that are not Failed, an
+// evicted one among them, at most componentPods, read from the API server only
+// while such a replica exists, since the cache holds no pod of a component:
+// those of the oldest ReplicaSet d controls whose template is d's, by creation
+// time and then by name, which the Deployment controller keeps of two such
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.3/pkg/controller/deployment/util/deployment_util.go#L624-L638,
+// https://github.com/kubernetes/kubernetes/blob/v1.37.3/pkg/controller/controller_utils.go#L1228-L1237),
+// by the pod-template-hash label it gives them.
+func (r *Reconciler) currentPods(ctx context.Context, cp *lodiav1alpha1.ControlPlane, d *appsv1.Deployment, component string) ([]corev1.Pod, error) {
+	sets := &appsv1.ReplicaSetList{}
+	if err := r.Reader.List(ctx, sets, client.InNamespace(cp.Namespace), client.MatchingLabels(podLabels(cp.Name, component))); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(sets.Items, func(a, b appsv1.ReplicaSet) int {
+		return cmp.Or(a.CreationTimestamp.Compare(b.CreationTimestamp.Time), strings.Compare(a.Name, b.Name))
+	})
+	i := slices.IndexFunc(sets.Items, func(rs appsv1.ReplicaSet) bool {
+		return metav1.IsControlledBy(&rs, d) && sameTemplate(rs.Spec.Template, d.Spec.Template)
+	})
+	if i < 0 {
+		return nil, nil
+	}
+	labels := podLabels(cp.Name, component)
+	labels[appsv1.DefaultDeploymentUniqueLabelKey] = sets.Items[i].Labels[appsv1.DefaultDeploymentUniqueLabelKey]
+	pods := &corev1.PodList{}
+	if err := r.Reader.List(ctx, pods, client.InNamespace(cp.Namespace), client.MatchingLabels(labels),
+		client.MatchingFieldsSelector{Selector: fields.OneTermNotEqualSelector("status.phase", string(corev1.PodFailed))}, client.Limit(componentPods)); err != nil {
+		return nil, err
+	}
+	return pods.Items, nil
+}
+
+// sameTemplate says whether two templates are equal but for the
+// pod-template-hash label.
+func sameTemplate(a, b corev1.PodTemplateSpec) bool {
+	a.Labels, b.Labels = maps.Clone(a.Labels), maps.Clone(b.Labels)
+	delete(a.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	delete(b.Labels, appsv1.DefaultDeploymentUniqueLabelKey)
+	return equality.Semantic.DeepEqual(a, b)
+}
+
+// newestExit says how the component's container last exited in the newest of
+// pods that has exited and is neither ready nor being deleted, empty while
+// none has.
+func newestExit(pods []corev1.Pod, component string) string {
+	var newest *corev1.Pod
+	var ended *corev1.ContainerStateTerminated
+	for i := range pods {
+		pod := &pods[i]
+		t := terminated(containerStatus(pod.Status.ContainerStatuses, component))
+		if t == nil || !pod.DeletionTimestamp.IsZero() || podReady(pod) || newest != nil && !newer(pod, newest) {
+			continue
+		}
+		newest, ended = pod, t
+	}
+	if newest == nil {
+		return ""
+	}
+	exit := fmt.Sprintf("pod %s last exited %d (%s)", newest.Name, ended.ExitCode, ended.Reason)
+	if line := exitLine(ended.Message); line != "" {
+		exit += ": " + quoted(line)
+	}
+	return exit
+}
+
+func podReady(pod *corev1.Pod) bool {
+	return slices.ContainsFunc(pod.Status.Conditions, func(c corev1.PodCondition) bool {
+		return c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue
+	})
+}
+
+func newer(a, b *corev1.Pod) bool {
+	if !a.CreationTimestamp.Equal(&b.CreationTimestamp) {
+		return b.CreationTimestamp.Before(&a.CreationTimestamp)
+	}
+	return a.Name > b.Name
+}
+
+// exitLine is the line of a termination message a component exited on: its
+// fatal line, a klog line at level F
+// (https://github.com/kubernetes/klog/blob/v2.140.0/internal/buffer/buffer.go#L132-L153),
+// which kube-apiserver prints when a post-start hook fails
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.3/staging/src/k8s.io/apiserver/pkg/server/hooks.go#L201-L204)
+// and after which another goroutine may still log, when the message holds
+// one, else its last line, where the components print the error they exit
+// on, after any usage
+// (https://github.com/kubernetes/kubernetes/blob/v1.37.3/staging/src/k8s.io/component-base/cli/run.go#L96-L111).
+func exitLine(message string) string {
+	lines := strings.Split(strings.TrimRight(message, " \t\r\n"), "\n")
+	if i := slices.IndexFunc(lines, fatalLine.MatchString); i >= 0 {
+		return strings.TrimSpace(lines[i])
+	}
+	return strings.TrimSpace(lines[len(lines)-1])
 }
 
 // held says whether cp's writes wait for Lifecycle to grant the running
@@ -992,11 +1184,13 @@ func cached(obj client.Object) client.Object {
 func published(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.EndpointStatus {
 	lb := cp.Spec.Endpoint.LoadBalancer
 	switch {
+	case lb == nil && cp.Status.Endpoint == (lodiav1alpha1.EndpointStatus{}):
+		return nil
 	case lb == nil:
-		return cp.Status.Endpoint
+		return new(cp.Status.Endpoint)
 	case lb.Host != "":
 		return atHost(cp, string(lb.Host))
-	case cp.Status.Endpoint != nil:
+	case cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}):
 		return atHost(cp, cp.Status.Endpoint.APIServer.Host)
 	}
 	return nil
@@ -1093,7 +1287,7 @@ func listed(addresses []string) string {
 // event reports a node, so the caller checks again every minute.
 func (r *Reconciler) nodePortEndpoint(ctx context.Context, cp *lodiav1alpha1.ControlPlane, svc *corev1.Service, tried *trial) (*lodiav1alpha1.EndpointStatus, *metav1.Condition, error) {
 	published := ""
-	if e := cp.Status.Endpoint; e != nil {
+	if e := cp.Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		published = e.APIServer.Host
 	}
 	range0, err := netip.ParsePrefix(string(cp.Spec.Network.ServiceCIDRs[0]))
@@ -1112,7 +1306,7 @@ func (r *Reconciler) nodePortEndpoint(ctx context.Context, cp *lodiav1alpha1.Con
 		}
 		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint,
 			"no Ready node of the management cluster has an "+family+" InternalIP, the family of network.serviceCIDRs[0]"), r.held(cp), tried)
-		return cp.Status.Endpoint, waiting, err
+		return new(cp.Status.Endpoint), waiting, err
 	}
 	return &lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: host, Port: nodePort(svc, lodiav1alpha1.APIServerServicePort)},
@@ -1226,7 +1420,7 @@ func controllerManagerHeld(cp *lodiav1alpha1.ControlPlane) bool {
 // one with no ready replica while Health holds its leader Lease. A rollout past
 // its deadline is reported whether or not a replica is ready, False when none
 // is, since it is what Lifecycle fails a change on.
-func availability(deployments []*appsv1.Deployment, held string, leaseHeld bool) metav1.Condition {
+func availability(deployments []*appsv1.Deployment, held string, leaseHeld bool, exits map[string]string) metav1.Condition {
 	var short, stalled []string
 	unavailable := false
 	for _, component := range components {
@@ -1242,12 +1436,19 @@ func availability(deployments []*appsv1.Deployment, held string, leaseHeld bool)
 			short = append(short, held)
 			continue
 		}
+		exit, exited := exits[component]
 		if leaseHeld && component == controllerManager && d.Status.ReadyReplicas == 0 {
 			short = append(short, fmt.Sprintf("%s has 0 of %d replicas ready while Health holds its leader Lease", component, want))
+			if exited {
+				short = append(short, component+"'s "+exit)
+			}
 			continue
 		}
 		if d.Status.ReadyReplicas < want {
 			short = append(short, fmt.Sprintf("%s has %d of %d replicas ready", component, d.Status.ReadyReplicas, want))
+		}
+		if exited {
+			short = append(short, component+"'s "+exit)
 		}
 		unavailable = unavailable || d.Status.ReadyReplicas == 0
 		if d.Status.ObservedGeneration == d.Generation && slices.ContainsFunc(d.Status.Conditions, func(c appsv1.DeploymentCondition) bool {
@@ -1290,19 +1491,16 @@ func (r *Reconciler) controlled(ctx context.Context, cp *lodiav1alpha1.ControlPl
 	return out, nil
 }
 
-// components counts the replicas of the Deployments this ControlPlane controls
-// and reports the version each runs, and the memberRestore.detectedAt each
-// rolled for. A component starts from its previous report, which cp holds as
-// the API server does, and a Deployment that is gone keeps it: an apply that
-// leaves a field out removes it. A report that would move its version or
-// revision comes from the Deployment the API server holds: a new leader's
-// cache can lag the last roll, and a report moved back renders the controller
-// manager, the scheduler and the addons back.
-func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ComponentsStatus, error) {
-	controlled, err := r.controlled(ctx, cp)
-	if err != nil {
-		return nil, err
-	}
+// components counts the replicas of the Deployments this ControlPlane
+// controls, by component, and reports the version each runs, and the
+// memberRestore.detectedAt each rolled for. A component starts from its
+// previous report, which cp holds as the API server does, and a Deployment
+// that is gone keeps it: an apply that leaves a field out removes it. A
+// report that would move its version or revision comes from the Deployment
+// the API server holds: a new leader's cache can lag the last roll, and a
+// report moved back renders the controller manager, the scheduler and the
+// addons back.
+func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPlane, controlled map[string]*appsv1.Deployment) (*lodiav1alpha1.ComponentsStatus, error) {
 	var previous lodiav1alpha1.ComponentsStatus
 	if cp.Status.Components != nil {
 		previous = *cp.Status.Components
@@ -1311,7 +1509,7 @@ func (r *Reconciler) components(ctx context.Context, cp *lodiav1alpha1.ControlPl
 	for _, component := range components {
 		before := *slot(&previous, component)
 		report := rolledOut(controlled[component], component, before, rollsFor(cp, component))
-		if before != nil && report != nil && report.Rendered != before.Rendered {
+		if before != (lodiav1alpha1.ComponentStatus{}) && report.Rendered != before.Rendered {
 			d, err := r.confirmed(ctx, cp, component)
 			if err != nil {
 				return nil, err
@@ -1341,7 +1539,7 @@ func (r *Reconciler) confirmed(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	return d, nil
 }
 
-func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.ComponentStatus {
+func slot(c *lodiav1alpha1.ComponentsStatus, component string) *lodiav1alpha1.ComponentStatus {
 	switch component {
 	case apiServer:
 		return &c.APIServer
@@ -1360,20 +1558,16 @@ func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.C
 // rolled out, which moves no report back. A component with neither a
 // Deployment nor a report is absent. A stamp longer than the field is not
 // reported, as a hand-edited image is not.
-func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.ComponentStatus, rendered *metav1.Time) *lodiav1alpha1.ComponentStatus {
-	var report lodiav1alpha1.Rendered
-	var detectedAt *metav1.Time
-	if previous != nil {
-		report, detectedAt = previous.Rendered, previous.MemberRestoreDetectedAt
-	}
+func rolledOut(d *appsv1.Deployment, component string, previous lodiav1alpha1.ComponentStatus, rendered *metav1.Time) lodiav1alpha1.ComponentStatus {
 	if d == nil {
-		if report == (lodiav1alpha1.Rendered{}) && detectedAt == nil {
-			return nil
+		if previous.Rendered == (lodiav1alpha1.Rendered{}) && previous.MemberRestoreDetectedAt == nil {
+			return lodiav1alpha1.ComponentStatus{}
 		}
-		return &lodiav1alpha1.ComponentStatus{Rendered: report, MemberRestoreDetectedAt: detectedAt}
+		none := lodiav1alpha1.Count{Total: new(int32(0)), Ready: new(int32(0))}
+		return lodiav1alpha1.ComponentStatus{RolloutCount: lodiav1alpha1.RolloutCount{Count: none}, Rendered: previous.Rendered, MemberRestoreDetectedAt: previous.MemberRestoreDetectedAt}
 	}
-	status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d), Rendered: report, MemberRestoreDetectedAt: detectedAt}
-	if status.Updated != nil && *status.Updated == status.Total {
+	status := lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d), Rendered: previous.Rendered, MemberRestoreDetectedAt: previous.MemberRestoreDetectedAt}
+	if status.Updated != nil && *status.Updated == *status.Total {
 		if version := imageVersion(d, component); version != "" {
 			status.Version = version
 		}
@@ -1412,7 +1606,7 @@ func imageVersion(d *appsv1.Deployment, component string) string {
 // ones are.
 func rolloutCount(d *appsv1.Deployment) lodiav1alpha1.RolloutCount {
 	s, total := d.Status, ptr.Deref(d.Spec.Replicas, 1)
-	count := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: total, Ready: min(s.ReadyReplicas, total)}}
+	count := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(total), Ready: new(min(s.ReadyReplicas, total))}}
 	if s.ObservedGeneration == d.Generation {
 		count.Updated = new(max(0, min(s.UpdatedReplicas, s.AvailableReplicas-(s.Replicas-s.UpdatedReplicas))))
 	}
@@ -1565,8 +1759,9 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 			conditions[i].ObservedGeneration = cp.Generation
 		}
 	}
-	changed := !equality.Semantic.DeepEqual(cp.Status.Endpoint, endpoint) || !equality.Semantic.DeepEqual(cp.Status.Components, components)
-	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Endpoint: endpoint, Components: components}, changed)
+	published := ptr.Deref(endpoint, lodiav1alpha1.EndpointStatus{})
+	changed := cp.Status.Endpoint != published || !equality.Semantic.DeepEqual(cp.Status.Components, components)
+	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Endpoint: published, Components: components}, changed)
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
@@ -1601,7 +1796,7 @@ func balancerOf(cp *lodiav1alpha1.ControlPlane, service metav1.Condition) *metav
 // pass's, False with the Service's reason and message, since Reconciling would
 // come first in Ready and hide a Service held until a person acts.
 func keptRoutes(cp *lodiav1alpha1.ControlPlane, service metav1.Condition) *metav1.Condition {
-	if cp.Spec.Endpoint.Gateway == nil {
+	if cp.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) {
 		return nil
 	}
 	if kept := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRoutesReady); kept != nil && kept.Reason != lodiav1alpha1.ReasonReconciling {

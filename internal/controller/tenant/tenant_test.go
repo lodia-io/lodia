@@ -39,6 +39,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -85,7 +86,7 @@ func (r *pausedReads) Get(ctx context.Context, key client.ObjectKey, obj client.
 	if err := r.Client.Get(ctx, key, obj, opts...); err != nil {
 		return err
 	}
-	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && cp.Spec.Paused {
+	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok && ptr.Deref(cp.Spec.Paused, false) {
 		r.mu.Lock()
 		r.paused[key] = max(r.paused[key], cp.Generation)
 		r.mu.Unlock()
@@ -622,7 +623,7 @@ type snapshot struct {
 func (c snapshot) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
 		c.cp.DeepCopyInto(cp)
-		cp.Spec.Paused = false
+		cp.Spec.Paused = new(false)
 		return nil
 	}
 	return c.Client.Get(ctx, key, obj, opts...)
@@ -787,7 +788,7 @@ func setInventory(t *testing.T, c client.Client, objects string) {
 
 func TestAHeldControllerManagerLeavesTheAddonsToTheRelease(t *testing.T) {
 	cp := controlPlane(t, "tenant-restored", func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}}
+		cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}}
 	})
 	publish(t, cp)
 	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}
@@ -1725,7 +1726,7 @@ func setReplicas(t *testing.T, cp *lodiav1alpha1.ControlPlane, replicas int32) {
 		if cp.Spec.Addons.CoreDNS == nil {
 			cp.Spec.Addons.CoreDNS = &lodiav1alpha1.CoreDNS{}
 		}
-		cp.Spec.Addons.CoreDNS.Replicas = &replicas
+		cp.Spec.Addons.CoreDNS.Replicas = replicas
 	})
 }
 

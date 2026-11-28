@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -128,7 +129,7 @@ func TestEveryConnectionToATenantGoesThroughTheDial(t *testing.T) {
 	f.op = startOperator(t, dir, f.cfg, f.settings)
 	f.createOnly(1, 2)
 	f.waitFor("every ControlPlane Ready, its nodes counted", time.Now(), 2*time.Minute, func(cp *lodiav1alpha1.ControlPlane) bool {
-		return readyAt(cp) && cp.Status.Nodes != nil && cp.Status.Nodes.Total == nodesPerTenant
+		return readyAt(cp) && cp.Status.Nodes != (lodiav1alpha1.NodesStatus{}) && ptr.Deref(cp.Status.Nodes.Total, 0) == nodesPerTenant
 	})
 }
 
@@ -649,11 +650,11 @@ func (f *fleet) wave() {
 
 func rolled(cp *lodiav1alpha1.ControlPlane, revision string) bool {
 	s := cp.Status
-	if s.Target == nil || s.Target.OperatorRevision != revision || s.Addons == nil || s.Addons.OperatorRevision != revision || s.Datastore == nil || s.Datastore.OperatorRevision != revision || s.Components == nil {
+	if s.Target == nil || s.Target.OperatorRevision != revision || s.Addons == nil || s.Addons.OperatorRevision != revision || s.Datastore.OperatorRevision != revision || s.Components == nil {
 		return false
 	}
-	for _, c := range []*lodiav1alpha1.ComponentStatus{s.Components.APIServer, s.Components.ControllerManager, s.Components.Scheduler} {
-		if c == nil || c.OperatorRevision != revision {
+	for _, c := range []lodiav1alpha1.ComponentStatus{s.Components.APIServer, s.Components.ControllerManager, s.Components.Scheduler} {
+		if c.OperatorRevision != revision {
 			return false
 		}
 	}

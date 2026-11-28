@@ -303,7 +303,7 @@ func controlPlane(i int) *lodiav1alpha1.ControlPlane {
 		ObjectMeta: metav1.ObjectMeta{Name: controlPlaneName, Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version: kubernetesVersion,
-			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+			Endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: gatewayName, Namespace: gatewayNamespace, SectionName: gatewayListener},
 				Hostnames: lodiav1alpha1.GatewayHostnames{
 					APIServer:    lodiav1alpha1.Hostname(pathAPI + "." + ns + "." + hostSuffix),

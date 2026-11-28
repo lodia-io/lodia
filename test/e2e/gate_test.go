@@ -383,7 +383,7 @@ func rollAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key cli
 	}
 	old := apiServerPod(ctx, t, k8s, key)
 	patch := client.MergeFrom(cp.DeepCopy())
-	cp.Spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"event-ttl": "1h0m0s"}}
+	cp.Spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"event-ttl": "1h0m0s"}}
 	if err := k8s.Patch(ctx, cp, patch); err != nil {
 		t.Fatal(err)
 	}

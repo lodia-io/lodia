@@ -66,7 +66,7 @@ func TestAHeldControllerManagerWithNoReadyReplicaLeavesAPIServerReadyThroughAWai
 	expectAPIServerReady(t, cp, generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldByHealth)
 
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{"audit-log-maxage": "7"}}
+		spec.APIServer = &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"max-requests-inflight": "700"}}
 	})
 	reconcileNow(t, cp)
 	if err := expectAt(cp, generation, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, heldByHealth); err != nil {

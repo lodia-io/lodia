@@ -48,7 +48,7 @@ func copyName(cp string) string { return cp + "-rehearsal" }
 // docs/decisions/rehearse-a-minor-step.md lists, on an etcd of its own that an
 // init container restores from a fresh snapshot of the tenant's, with quota
 // and resources the DatastoreClass's.
-func (r rendering) rehearsalCopy(version string, generation int64, quota resource.Quantity, etcdResources *corev1.ResourceRequirements) *corev1.Pod {
+func (r rendering) rehearsalCopy(version string, generation int64, quota resource.Quantity, etcdResources *lodiav1alpha1.Resources) *corev1.Pod {
 	cp := r.cp
 	pod := r.apiServer().Spec.Template.Spec
 	api := pod.Containers[0]
@@ -56,7 +56,6 @@ func (r rendering) rehearsalCopy(version string, generation int64, quota resourc
 	api.VolumeMounts = slices.DeleteFunc(api.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == "etcd-ca" || m.Name == "etcd-client" })
 	api.ReadinessProbe = readinessProbe(contract.APIServerReadyzPath, intstr.FromString("https"))
 	api.LivenessProbe, api.StartupProbe, api.Lifecycle = nil, nil, nil
-	api.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 	pod.Containers = []corev1.Container{api}
 
 	signer := pod.InitContainers[slices.IndexFunc(pod.InitContainers, func(c corev1.Container) bool { return c.Name == "lodia-signer" })]
@@ -80,18 +79,14 @@ func (r rendering) rehearsalCopy(version string, generation int64, quota resourc
 
 // copyCommand is the API server's command on the copy's own etcd, with the
 // webhook plugins disabled and no compaction, so that a sweep's continue
-// tokens hold across its passes, and without the peer flags a tenant may set:
-// with --peer-ca-file the mixed-version proxy dials every API server whose
-// identity Lease the snapshot holds, the tenant's own, directly, since the
-// egress selector names no controlplane network
-// (https://github.com/kubernetes/kubernetes/blob/v1.37.2/pkg/controlplane/apiserver/peer.go#L66-L86).
+// tokens hold across its passes.
 func copyCommand(command []string) []string {
 	flags := map[string]string{}
 	for _, arg := range command[1:] {
 		name, value, _ := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
 		flags[name] = value
 	}
-	for _, name := range []string{"etcd-cafile", "etcd-certfile", "etcd-keyfile", "peer-ca-file", "peer-advertise-ip", "peer-advertise-port"} {
+	for _, name := range []string{"etcd-cafile", "etcd-certfile", "etcd-keyfile"} {
 		delete(flags, name)
 	}
 	flags["etcd-servers"] = copyEtcd
@@ -169,7 +164,7 @@ func copyRestore() corev1.Container {
 	}
 }
 
-func copyEtcdServer(quota resource.Quantity, resources *corev1.ResourceRequirements) corev1.Container {
+func copyEtcdServer(quota resource.Quantity, resources *lodiav1alpha1.Resources) corev1.Container {
 	health := corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"etcdctl", "--endpoints=" + copyEtcd, "endpoint", "health"}}}
 	c := corev1.Container{
 		Name:          "etcd",
@@ -193,7 +188,7 @@ func copyEtcdServer(quota resource.Quantity, resources *corev1.ResourceRequireme
 		VolumeMounts:             []corev1.VolumeMount{{Name: "rehearsal", MountPath: copyDir}},
 	}
 	if resources != nil {
-		c.Resources = *resources
+		c.Resources = resources.Requirements()
 	}
 	return c
 }

@@ -213,7 +213,7 @@ func TestAStaleCacheCannotUndoLifecyclesOwnWrite(t *testing.T) {
 				seedQuiet(t, cp, "v1.36.6", lodiav1alpha1.UpgradeStepBackup, all("v1.36.6"), "")
 				createBackup(t, cp, preUpgrade(cp), metav1.ConditionUnknown, lodiav1alpha1.ReasonCopying)
 			},
-			behind: func(cp *lodiav1alpha1.ControlPlane) { cp.Status.Kubernetes.Upgrade = nil },
+			behind: func(cp *lodiav1alpha1.ControlPlane) { cp.Status.Kubernetes.Upgrade = lodiav1alpha1.UpgradeStatus{} },
 		},
 		{
 			name: "an older target restored by the cache",
@@ -222,7 +222,7 @@ func TestAStaleCacheCannotUndoLifecyclesOwnWrite(t *testing.T) {
 			},
 			behind: func(cp *lodiav1alpha1.ControlPlane) {
 				cp.Status.Target.Version = "v1.36.5"
-				cp.Status.Kubernetes.Upgrade = nil
+				cp.Status.Kubernetes.Upgrade = lodiav1alpha1.UpgradeStatus{}
 			},
 		},
 	} {
@@ -375,7 +375,7 @@ func TestStepAndStartedAtSurviveARestartAndThePreflightIsNotRerun(t *testing.T) 
 	}
 	fresh := getQuiet(t, cp)
 	u := fresh.Status.Kubernetes.Upgrade
-	if u == nil || u.Step != lodiav1alpha1.UpgradeStepBackup || !u.StartedAt.Time.Equal(startedAt) {
+	if u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepBackup || !u.StartedAt.Time.Equal(startedAt) {
 		t.Errorf("after a restart upgrade is %+v, want step Backup at %s", u, startedAt)
 	}
 	if fresh.Status.Target.Version != "v1.36.6" {
@@ -405,7 +405,7 @@ func TestTheBackupIsCreatedOnceWithTheMinorsNameAndNoOwner(t *testing.T) {
 	seedQuiet(t, cp, "v1.36.6", "", all("v1.36.6"), "v1.36.6")
 	quietPass(t, cp)
 	fresh := getQuiet(t, cp)
-	if u := fresh.Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepBackup {
+	if u := fresh.Status.Kubernetes.Upgrade; u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepBackup {
 		t.Fatalf("upgrade is %+v, want step Backup", u)
 	}
 	want := preUpgrade(cp)
@@ -463,7 +463,7 @@ func TestTheBackupWaitsForTheRehearsalAndComesInThePassItPasses(t *testing.T) {
 		return len(list.Items)
 	}
 	rehearse()
-	if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepRehearsal || backups() != 0 {
+	if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepRehearsal || backups() != 0 {
 		t.Fatalf("after the preflight the upgrade is %+v with %d Backups, want step Rehearsal and none", u, backups())
 	}
 	applyQuiet(t, cp, "test/rehearsal", map[string]any{
@@ -471,7 +471,7 @@ func TestTheBackupWaitsForTheRehearsalAndComesInThePassItPasses(t *testing.T) {
 		"conditions": []any{map[string]any{"type": lodiav1alpha1.ConditionRehearsed, "status": "True", "reason": lodiav1alpha1.ReasonPassed, "message": "listed", "observedGeneration": getQuiet(t, cp).Generation, "lastTransitionTime": startedAt.Format(time.RFC3339)}},
 	})
 	rehearse()
-	if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepBackup || backups() != 1 {
+	if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepBackup || backups() != 1 {
 		t.Errorf("after the rehearsal passed the upgrade is %+v with %d Backups, want step Backup and its Backup", u, backups())
 	}
 	if err := quiet.Get(t.Context(), client.ObjectKey{Namespace: cp.Namespace, Name: preUpgrade(cp)}, &lodiav1alpha1.Backup{}); err != nil {
@@ -508,12 +508,12 @@ func TestASpecEditedAtTheBackupIsRehearsedBeforeTheTargetMoves(t *testing.T) {
 	applyQuiet(t, cp, "test/seed", map[string]any{"conditions": quietConditions(edited)})
 
 	fresh := pass()
-	if u := fresh.Status.Kubernetes.Upgrade; fresh.Status.Target.Version != "v1.36.6" || u == nil || u.Step != lodiav1alpha1.UpgradeStepRehearsal || !u.StartedAt.Time.Equal(startedAt) {
+	if u := fresh.Status.Kubernetes.Upgrade; fresh.Status.Target.Version != "v1.36.6" || u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepRehearsal || !u.StartedAt.Time.Equal(startedAt) {
 		t.Fatalf("after an edit at the Backup the target is %s and the upgrade %+v, want v1.36.6 at step Rehearsal since %s", fresh.Status.Target.Version, u, startedAt)
 	}
 	passed()
 	fresh = pass()
-	if u := fresh.Status.Kubernetes.Upgrade; fresh.Status.Target.Version != "v1.37.1" || u == nil || u.Step != lodiav1alpha1.UpgradeStepAPIServer {
+	if u := fresh.Status.Kubernetes.Upgrade; fresh.Status.Target.Version != "v1.37.1" || u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepAPIServer {
 		t.Errorf("after the edit's rehearsal passed the target is %s and the upgrade %+v, want v1.37.1 at step APIServer", fresh.Status.Target.Version, u)
 	}
 	list := &lodiav1alpha1.BackupList{}
@@ -650,7 +650,7 @@ func TestAFailureMidPassLosesNothing(t *testing.T) {
 		if backupExists(cp) {
 			t.Error("a Backup was created though the upgrade was not recorded")
 		}
-		if u := getQuiet(t, cp).Status.Kubernetes; u != nil && u.Upgrade != nil {
+		if u := getQuiet(t, cp).Status.Kubernetes; u != nil && u.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
 			t.Errorf("upgrade is %+v", u.Upgrade)
 		}
 		quietPass(t, cp)
@@ -707,7 +707,7 @@ func TestAFailureMidPassLosesNothing(t *testing.T) {
 		if err := reconcileAt(expired, cached, quiet, later, cp); err == nil {
 			t.Fatal("the create on a spent deadline returned no error")
 		}
-		if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepBackup {
+		if u := getQuiet(t, cp).Status.Kubernetes.Upgrade; u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepBackup {
 			t.Fatalf("upgrade is %+v after a pass past its deadline", u)
 		}
 		quietPass(t, cp)
@@ -739,7 +739,7 @@ func TestAMinorStepFromEditToEndThroughTheManager(t *testing.T) {
 			return fmt.Errorf("target is %s before the Backup", fresh.Status.Target.Version)
 		}
 		k := fresh.Status.Kubernetes
-		if k == nil || k.Upgrade == nil || k.Upgrade.Step != lodiav1alpha1.UpgradeStepBackup {
+		if k == nil || k.Upgrade == (lodiav1alpha1.UpgradeStatus{}) || k.Upgrade.Step != lodiav1alpha1.UpgradeStepBackup {
 			return fmt.Errorf("status.kubernetes is %+v", k)
 		}
 		upgradeStarted = k.Upgrade.StartedAt
@@ -804,14 +804,14 @@ func TestAMinorStepFromEditToEndThroughTheManager(t *testing.T) {
 			return fmt.Errorf("target is %s", fresh.Status.Target.Version)
 		}
 		k := fresh.Status.Kubernetes
-		if k == nil || k.Upgrade == nil || k.Upgrade.Step != lodiav1alpha1.UpgradeStepAPIServer || !k.Upgrade.StartedAt.Equal(&upgradeStarted) {
+		if k == nil || k.Upgrade == (lodiav1alpha1.UpgradeStatus{}) || k.Upgrade.Step != lodiav1alpha1.UpgradeStepAPIServer || !k.Upgrade.StartedAt.Equal(&upgradeStarted) {
 			return fmt.Errorf("status.kubernetes is %+v, want step APIServer started at %s", k, upgradeStarted)
 		}
 		return nil
 	})
 	reportAll(t, cp, "v1.37.1")
 	testenv.Eventually(t, func() error {
-		if k := get(t, cp).Status.Kubernetes; k == nil || k.Upgrade != nil || k.Version != "v1.37.1" {
+		if k := get(t, cp).Status.Kubernetes; k == nil || k.Upgrade != (lodiav1alpha1.UpgradeStatus{}) || k.Version != "v1.37.1" {
 			return fmt.Errorf("status.kubernetes is %+v", k)
 		}
 		return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonIdle)

@@ -50,7 +50,7 @@ func TestTheEndOfSupportEndsProgressingsMessageOnEveryReason(t *testing.T) {
 		f            facts
 	}{
 		{"Idle", lodiav1alpha1.ReasonIdle, held(running(revisionA), sixtyBefore)},
-		{"Paused", lodiav1alpha1.ReasonPaused, held(sixtyBefore, func(f *facts) { f.cp.Spec.Paused = true })},
+		{"Paused", lodiav1alpha1.ReasonPaused, held(sixtyBefore, func(f *facts) { f.cp.Spec.Paused = new(true) })},
 		{"WaitingForWindow, after the token's note", lodiav1alpha1.ReasonWaitingForWindow, held(sixtyBefore, inWindow("20:00", "21:00", ""), requested(strings.Repeat("x", 257)))},
 		{"Maintaining", lodiav1alpha1.ReasonMaintaining, held(sixtyBefore)},
 		{"Upgrading", lodiav1alpha1.ReasonUpgrading, held(running(revisionA), sixtyBefore, specAt("v1.37.2"))},

@@ -41,7 +41,7 @@ func scheme(t *testing.T) *runtime.Scheme {
 func ranked(namespace, name string, created time.Duration, gateway, api, konnectivity, tunnel string) *lodiav1alpha1.ControlPlane {
 	return &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name, UID: types.UID(namespace + "/" + name), CreationTimestamp: metav1.NewTime(at.Add(created))},
-		Spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		Spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 			ParentRef: lodiav1alpha1.ParentReference{Namespace: "gateways", Name: gateway, SectionName: "tls"},
 			Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: lodiav1alpha1.Hostname(api), Konnectivity: lodiav1alpha1.Hostname(konnectivity), Tunnel: lodiav1alpha1.Hostname(tunnel)},
 		}}},

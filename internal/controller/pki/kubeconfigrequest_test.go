@@ -89,8 +89,8 @@ func TestAKubeconfigRequestIsAnsweredWithACertificateForItsKey(t *testing.T) {
 	if !cert.NotAfter.Equal(deadline) {
 		t.Errorf("valid until %s, want the deadline %s", cert.NotAfter, deadline)
 	}
-	if kr.Status.ExpirationTimestamp == nil || !kr.Status.ExpirationTimestamp.Time.Equal(cert.NotAfter) {
-		t.Errorf("status.expirationTimestamp is %v, want %s", kr.Status.ExpirationTimestamp, cert.NotAfter)
+	if kr.Status.ExpirationTime == nil || !kr.Status.ExpirationTime.Time.Equal(cert.NotAfter) {
+		t.Errorf("status.expirationTime is %v, want %s", kr.Status.ExpirationTime, cert.NotAfter)
 	}
 	if !key.Public().(*ecdsa.PublicKey).Equal(cert.PublicKey) {
 		t.Error("the certificate is not for the request's key")
@@ -273,7 +273,7 @@ func TestARequestThatIsNoSignedCertificateRequestIsInvalidForGood(t *testing.T) 
 			if got := meta.FindStatusCondition(kr.Status.Conditions, lodiav1alpha1.ConditionReady).Message; !strings.HasPrefix(got, c.message) {
 				t.Errorf("Ready says %q, want %q", got, c.message)
 			}
-			if kr.Status.Kubeconfig != nil || kr.Status.ExpirationTimestamp != nil {
+			if kr.Status.Kubeconfig != nil || kr.Status.ExpirationTime != nil {
 				t.Error("an invalid request holds a kubeconfig")
 			}
 			if want := kr.CreationTimestamp.Add(time.Hour).Sub(now.Now()); result.RequeueAfter != want {
@@ -423,7 +423,7 @@ func TestAPausedOrDeletingControlPlaneIsAnsweredAndNotWritten(t *testing.T) {
 	ctx := t.Context()
 	cp := issuable(t, "kcr-paused")
 	cp = freshControlPlane(t, cp)
-	cp.Spec.Paused = true
+	cp.Spec.Paused = new(true)
 	cp.Finalizers = append(cp.Finalizers, "test.lodia.io/hold")
 	if err := k8s.Update(ctx, cp); err != nil {
 		t.Fatal(err)
@@ -1097,8 +1097,8 @@ func TestACertificateEndsWithItsRequestCA(t *testing.T) {
 	reconcileRequest(t, requestReconciler(clocktesting.NewFakePassiveClock(kr.CreationTimestamp.Time)), kr)
 	kr = freshRequest(t, kr)
 	cert, _ := issued(t, kr)
-	if !cert.NotAfter.Equal(requestCA.NotAfter) || !kr.Status.ExpirationTimestamp.Time.Equal(requestCA.NotAfter) {
-		t.Errorf("the certificate ends at %s, status says %s, want the request CA's %s", cert.NotAfter, kr.Status.ExpirationTimestamp, requestCA.NotAfter)
+	if !cert.NotAfter.Equal(requestCA.NotAfter) || !kr.Status.ExpirationTime.Time.Equal(requestCA.NotAfter) {
+		t.Errorf("the certificate ends at %s, status says %s, want the request CA's %s", cert.NotAfter, kr.Status.ExpirationTime, requestCA.NotAfter)
 	}
 
 	late := kubeconfigRequest(t, cp, p256(t), func(s *lodiav1alpha1.KubeconfigRequestSpec) { s.ExpirationSeconds = 7200 })

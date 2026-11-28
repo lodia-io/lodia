@@ -119,19 +119,19 @@ func TestRestoreGate(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: restoreClass},
 				Spec: lodiav1alpha1.DatastoreClassSpec{
 					Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: "Retain"},
-					Backup: &lodiav1alpha1.EtcdBackup{
+					Backup: lodiav1alpha1.EtcdBackup{
 						Store: lodiav1alpha1.BackupStore{
 							Provider: "S3", Bucket: s3Bucket, Prefix: "e2e", Endpoint: s3Endpoint,
 							SecretRef: lodiav1alpha1.SecretReference{Name: s3Secret, Namespace: operatorNamespace},
 						},
-						DeltaSnapshotPeriod: &metav1.Duration{Duration: 10 * time.Second},
+						DeltaSnapshotPeriodSeconds: new(int32(10)),
 					},
 				},
 			})
 			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: key.Namespace}})
 			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
-				Spec:       restoreSpec(t, nil),
+				Spec:       restoreSpec(t, lodiav1alpha1.RestoreFrom{}),
 			})
 			return ctx
 		}).
@@ -199,13 +199,13 @@ func TestRestoreGate(t *testing.T) {
 				t.Fatal(err)
 			}
 			status := backup.Status
-			if status.Source == nil || status.Source.UID != source.UID {
+			if status.Source == (lodiav1alpha1.UIDReference{}) || status.Source.UID != source.UID {
 				t.Errorf("status.source is %+v, want the source's UID %s", status.Source, source.UID)
 			}
-			if want := path.Join("e2e", string(ns.UID), "backups", string(backup.UID)); status.Snapshots == nil || status.Snapshots.Prefix != want {
+			if want := path.Join("e2e", string(ns.UID), "backups", string(backup.UID)); status.Snapshots == (lodiav1alpha1.BackupSnapshotLocation{}) || status.Snapshots.Prefix != want {
 				t.Errorf("status.snapshots is %+v, want the prefix %s", status.Snapshots, want)
 			}
-			if status.Seal == nil || status.Seal.Revision <= 0 {
+			if status.Seal == (lodiav1alpha1.BackupSeal{}) || status.Seal.Revision <= 0 {
 				t.Errorf("status.seal is %+v, want a revision", status.Seal)
 			}
 			until(ctx, t, time.Minute, "the Backup carries its UID in "+lodiav1alpha1.SealedUIDAnnotation+" and the finalizer "+lodiav1alpha1.RestoreSourceFinalizer, func(ctx context.Context) error {
@@ -233,7 +233,7 @@ func TestRestoreGate(t *testing.T) {
 				}
 				return nil
 			})
-			if status.Snapshots != nil && status.Seal != nil {
+			if status.Snapshots != (lodiav1alpha1.BackupSnapshotLocation{}) && status.Seal != (lodiav1alpha1.BackupSeal{}) {
 				logs := kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig())
 				keys := strings.Fields(string(awsOutput(ctx, t, k8s, logs, "list-"+backup.Name, "s3api", "list-objects-v2", "--bucket", s3Bucket, "--prefix", status.Snapshots.Prefix+"/", "--query", "Contents[].Key", "--output", "text")))
 				var last int64
@@ -262,7 +262,7 @@ func TestRestoreGate(t *testing.T) {
 		Assess("5. b, restored from the Backup, serves with its controller manager held", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: restoredKey.Name, Namespace: restoredKey.Namespace},
-				Spec:       restoreSpec(t, &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}),
+				Spec:       restoreSpec(t, lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}),
 			})
 			until(ctx, t, 5*time.Minute, "b's DatastoreReady=True, its status.restore naming the Backup and its source", func(ctx context.Context) error {
 				cp, _, err := conditionOf(ctx, k8s, restoredKey, lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady)
@@ -551,7 +551,7 @@ func TestRestoreGate(t *testing.T) {
 			}
 			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace},
-				Spec:       restoreSpec(t, &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}, Release: lodiav1alpha1.RestoreReleased}),
+				Spec:       restoreSpec(t, lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}, Release: lodiav1alpha1.RestoreReleased}),
 			})
 			until(ctx, t, 5*time.Minute, "the new a's DatastoreReady=False, VolumesExist, naming the old a's claims", func(ctx context.Context) error {
 				_, c, err := conditionOf(ctx, k8s, key, lodiav1alpha1.ConditionDatastoreReady, metav1.ConditionFalse, lodiav1alpha1.ReasonVolumesExist)
@@ -655,7 +655,7 @@ func TestRestoreGate(t *testing.T) {
 				}
 				return nil
 			})
-			if backup.Status.Snapshots == nil {
+			if backup.Status.Snapshots == (lodiav1alpha1.BackupSnapshotLocation{}) {
 				t.Fatalf("Backup %s recorded no status.snapshots", backup.Name)
 			}
 			prefix := backup.Status.Snapshots.Prefix + "/"
@@ -684,7 +684,7 @@ func TestRestoreGate(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-func restoreSpec(t *testing.T, from *lodiav1alpha1.RestoreFrom) lodiav1alpha1.ControlPlaneSpec {
+func restoreSpec(t *testing.T, from lodiav1alpha1.RestoreFrom) lodiav1alpha1.ControlPlaneSpec {
 	t.Helper()
 	return lodiav1alpha1.ControlPlaneSpec{
 		Version:     kindNodeVersion(t),
@@ -710,7 +710,7 @@ func conditionOf(ctx context.Context, k8s client.Client, key client.ObjectKey, c
 
 func restoredFrom(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup, source types.UID) error {
 	restore := cp.Status.Restore
-	if restore == nil || restore.Backup.Name != backup.Name || restore.Backup.UID != backup.UID || restore.Source.Name != restoreSource || restore.Source.UID != source || restore.CompletedAt.IsZero() {
+	if restore == (lodiav1alpha1.RestoreStatus{}) || restore.Backup.Name != backup.Name || restore.Backup.UID != backup.UID || restore.Source.Name != restoreSource || restore.Source.UID != source || restore.CompletedAt.IsZero() {
 		return fmt.Errorf("status.restore of %s is %+v, want Backup %s (UID %s) of ControlPlane %s (UID %s)", cp.Name, restore, backup.Name, backup.UID, restoreSource, source)
 	}
 	return nil

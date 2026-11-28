@@ -28,6 +28,7 @@ import (
 	metav1ac "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -174,7 +175,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if cp.Spec.Paused {
+	if ptr.Deref(cp.Spec.Paused, false) {
 		return ctrl.Result{}, nil
 	}
 	l, err := r.lock(ctx, cp)
@@ -260,7 +261,7 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 type lock struct {
 	key     types.NamespacedName
 	version string
-	record  *lodiav1alpha1.MemberRestoreStatus
+	record  lodiav1alpha1.MemberRestoreStatus
 	// writes is the latch whose record the pass writes, dropped once that
 	// lands.
 	writes *latch
@@ -309,15 +310,15 @@ func (r *Reconciler) lock(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (
 func (r *Reconciler) memberRestored(cp *lodiav1alpha1.ControlPlane, l *lock, ready metav1.Condition) metav1.Condition {
 	record := l.record
 	// @todo: end MemberRestored at its first report for a member restored from snapshots once etcd-backup-restore restores with RevisionBump and MarkCompacted; one that starts empty still waits for the roll (todo.md).
-	if record == nil || ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonReady || record.ReportedAt != nil && rolled(cp, record.DetectedAt) {
+	if record == (lodiav1alpha1.MemberRestoreStatus{}) || ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonReady || record.ReportedAt != nil && rolled(cp, record.DetectedAt) {
 		return ready
 	}
 	if record.ReportedAt == nil {
-		reported := *record
+		reported := record
 		reported.ReportedAt = new(metav1.NewTime(r.Clock.Now()).Rfc3339Copy())
-		l.record = &reported
+		l.record = reported
 	}
-	ready.Reason, ready.Message = lodiav1alpha1.ReasonMemberRestored, restoredMessage(*record)
+	ready.Reason, ready.Message = lodiav1alpha1.ReasonMemberRestored, restoredMessage(record)
 	return ready
 }
 
@@ -326,8 +327,8 @@ func rolled(cp *lodiav1alpha1.ControlPlane, detectedAt metav1.Time) bool {
 	if c == nil {
 		return false
 	}
-	for _, component := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
-		if component == nil || component.MemberRestoreDetectedAt == nil || !component.MemberRestoreDetectedAt.Equal(&detectedAt) {
+	for _, component := range []lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+		if component.MemberRestoreDetectedAt == nil || !component.MemberRestoreDetectedAt.Equal(&detectedAt) {
 			return false
 		}
 	}
@@ -379,7 +380,7 @@ type outcome struct {
 	tried *trial
 	// restore is carried into every apply: what this pass found complete, or
 	// what it read.
-	restore      *lodiav1alpha1.RestoreStatus
+	restore      lodiav1alpha1.RestoreStatus
 	condition    metav1.Condition
 	requeueAfter time.Duration
 }
@@ -532,7 +533,7 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 			p.held = fmt.Sprintf("DatastoreClass %s generation %s waits for status.target.datastoreClass", class.Name, generation)
 		}
 	}
-	if class.Spec.Backup == nil {
+	if class.Spec.Backup == (lodiav1alpha1.EtcdBackup{}) {
 		return nil, nil
 	}
 	moved, err := r.storeMoved(ctx, p, class, waits)
@@ -565,10 +566,10 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 
 // grantedClass is status.target.datastoreClass, the zero value while absent.
 func grantedClass(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
-	if cp.Status.Target == nil || cp.Status.Target.DatastoreClass == nil {
+	if cp.Status.Target == nil {
 		return lodiav1alpha1.DatastoreClassGeneration{}
 	}
-	return *cp.Status.Target.DatastoreClass
+	return cp.Status.Target.DatastoreClass
 }
 
 func generationOf(class *lodiav1alpha1.DatastoreClass) lodiav1alpha1.DatastoreClassGeneration {
@@ -614,7 +615,7 @@ func (r *Reconciler) renderEtcd(ctx context.Context, p *pass) error {
 		class = nil
 	}
 	var err error
-	if !p.copied && class != nil && class.Spec.Backup != nil {
+	if !p.copied && class != nil && class.Spec.Backup != (lodiav1alpha1.EtcdBackup{}) {
 		if p.namespaceUID, err = r.namespaceUID(ctx, cp); err != nil {
 			return err
 		}
@@ -914,7 +915,7 @@ func (r *Reconciler) claims(ctx context.Context, cp *lodiav1alpha1.ControlPlane)
 }
 
 func memberCount(cp *lodiav1alpha1.ControlPlane) int32 {
-	if cp.Spec.HighAvailability != nil {
+	if cp.Spec.HighAvailability != (lodiav1alpha1.HighAvailability{}) {
 		return 3
 	}
 	return 1
@@ -1135,25 +1136,26 @@ func (r *Reconciler) setFinalizer(ctx context.Context, cp *lodiav1alpha1.Control
 // Only a person changes the name an Etcd records, and the report follows it
 // at once, since the Etcd takes the class of that name; a UID or generation
 // that moves under one name waits for RolledOut.
-func datastoreStatus(cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, rollout *etcddruid.Rollout, applied bool) *lodiav1alpha1.DatastoreStatus {
+func datastoreStatus(cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, rollout *etcddruid.Rollout, applied bool) lodiav1alpha1.DatastoreStatus {
 	if etcd == nil {
-		return nil
+		return lodiav1alpha1.DatastoreStatus{}
 	}
 	host, port := etcd.Endpoint()
-	status := &lodiav1alpha1.DatastoreStatus{
+	status := lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: host, Port: port}},
-		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: etcd.Members(), Ready: etcd.ReadyMembers()}, Updated: etcd.UpdatedMembers(rollout)},
+		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(etcd.Members()), Ready: new(etcd.ReadyMembers())}, Updated: etcd.UpdatedMembers(rollout)},
 	}
-	status.Snapshots, _ = snapshots(etcd)
+	if location, _ := snapshots(etcd); location != nil {
+		status.Snapshots = *location
+	}
+	class := ptr.Deref(etcd.ClassStatus(), lodiav1alpha1.DatastoreClassStatus{})
 	if stamp := etcd.Revision(); etcd.RolledOut(rollout) && len(stamp) <= maxRevision {
-		status.Class, status.OperatorRevision = etcd.ClassStatus(), stamp
+		status.Class, status.OperatorRevision = class, stamp
 		return status
 	}
-	if previous := cp.Status.Datastore; previous != nil {
-		status.Class, status.OperatorRevision = previous.Class, previous.OperatorRevision
-	}
-	if c := etcd.ClassStatus(); applied && (status.OperatorRevision == "" || c != nil && (status.Class == nil || status.Class.Name != c.Name)) {
-		status.Class = c
+	status.Class, status.OperatorRevision = cp.Status.Datastore.Class, cp.Status.Datastore.OperatorRevision
+	if applied && (status.OperatorRevision == "" || class != (lodiav1alpha1.DatastoreClassStatus{}) && status.Class.Name != class.Name) {
+		status.Class = class
 	}
 	return status
 }
@@ -1208,7 +1210,7 @@ func (r *Reconciler) backupReady(etcd *etcddruid.Store) metav1.Condition {
 // ownership. The restore and the member restore are carried into every apply
 // for the same reason, under l. Each condition is at cp's generation unless
 // it names one.
-func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, l *lock, datastore *lodiav1alpha1.DatastoreStatus, restore *lodiav1alpha1.RestoreStatus, ready, backup metav1.Condition) error {
+func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlPlane, l *lock, datastore lodiav1alpha1.DatastoreStatus, restore lodiav1alpha1.RestoreStatus, ready, backup metav1.Condition) error {
 	for _, c := range []*metav1.Condition{&ready, &backup} {
 		if c.ObservedGeneration == 0 {
 			c.ObservedGeneration = cp.Generation

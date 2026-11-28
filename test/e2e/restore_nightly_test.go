@@ -80,17 +80,17 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: deltasClass},
 				Spec: lodiav1alpha1.DatastoreClassSpec{
 					Storage: lodiav1alpha1.EtcdStorage{Size: resource.MustParse("8Gi"), ReclaimPolicy: "Retain"},
-					Backup: &lodiav1alpha1.EtcdBackup{
+					Backup: lodiav1alpha1.EtcdBackup{
 						Store: lodiav1alpha1.BackupStore{
 							Provider: "S3", Bucket: s3Bucket, Prefix: "e2e-deltas", Endpoint: s3Endpoint,
 							SecretRef: lodiav1alpha1.SecretReference{Name: s3Secret, Namespace: operatorNamespace},
 						},
-						DeltaSnapshotPeriod: &metav1.Duration{Duration: 10 * time.Second},
+						DeltaSnapshotPeriodSeconds: new(int32(10)),
 					},
 				},
 			})
 			create(ctx, t, k8s, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: key.Namespace}})
-			spec := restoreSpec(t, nil)
+			spec := restoreSpec(t, lodiav1alpha1.RestoreFrom{})
 			spec.Datastore.ClassName = deltasClass
 			create(ctx, t, k8s, &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}, Spec: spec})
 			return ctx
@@ -328,13 +328,13 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 			if err := access.client.Get(ctx, client.ObjectKeyFromObject(lost), &corev1.ConfigMap{}); !apierrors.IsNotFound(err) {
 				t.Fatalf("a get of e2e-lost, which etcd answers, returned %v, want NotFound: the write was not lost", err)
 			}
-			var record *lodiav1alpha1.MemberRestoreStatus
+			var record lodiav1alpha1.MemberRestoreStatus
 			until(ctx, t, 5*time.Minute, "status.memberRestore from Snapshots, reported", func(ctx context.Context) error {
 				cp := &lodiav1alpha1.ControlPlane{}
 				if err := k8s.Get(ctx, key, cp); err != nil {
 					return err
 				}
-				if record = cp.Status.MemberRestore; record == nil || record.From != lodiav1alpha1.MemberRestoreFromSnapshots || record.ReportedAt == nil {
+				if record = cp.Status.MemberRestore; record.From != lodiav1alpha1.MemberRestoreFromSnapshots || record.ReportedAt == nil {
 					return fmt.Errorf("status.memberRestore is %+v", record)
 				}
 				return nil
@@ -386,8 +386,8 @@ func TestOneMemberRestoredThroughDeltas(t *testing.T) {
 				if c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady {
 					return fmt.Errorf("DatastoreReady is %+v", c)
 				}
-				for _, c := range []*lodiav1alpha1.ComponentStatus{cp.Status.Components.APIServer, cp.Status.Components.ControllerManager, cp.Status.Components.Scheduler} {
-					if c == nil || c.MemberRestoreDetectedAt == nil || !c.MemberRestoreDetectedAt.Equal(&record.DetectedAt) {
+				for _, c := range []lodiav1alpha1.ComponentStatus{cp.Status.Components.APIServer, cp.Status.Components.ControllerManager, cp.Status.Components.Scheduler} {
+					if c == (lodiav1alpha1.ComponentStatus{}) || c.MemberRestoreDetectedAt == nil || !c.MemberRestoreDetectedAt.Equal(&record.DetectedAt) {
 						return fmt.Errorf("status.components reports %+v", cp.Status.Components)
 					}
 				}
@@ -549,7 +549,7 @@ func guardAPIServer(ctx context.Context, t *testing.T, k8s client.Client, key cl
 		defer close(g.done)
 		recorded := func() bool {
 			cp := &lodiav1alpha1.ControlPlane{}
-			return k8s.Get(ctx, key, cp) == nil && cp.Status.MemberRestore != nil
+			return k8s.Get(ctx, key, cp) == nil && cp.Status.MemberRestore != (lodiav1alpha1.MemberRestoreStatus{})
 		}
 		for len(pending) > 0 {
 			select {

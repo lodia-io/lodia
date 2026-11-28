@@ -23,7 +23,7 @@ func balancerPlane(host lodiav1alpha1.EndpointHost, published string, serviceCID
 		Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{serviceCIDR}},
 	}}
 	if published != "" {
-		cp.Status.Endpoint = atHost(cp, published)
+		cp.Status.Endpoint = *atHost(cp, published)
 	}
 	return cp
 }

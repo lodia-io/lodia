@@ -18,7 +18,7 @@ import (
 // +kubebuilder:printcolumn:name="User",type=string,JSONPath=".spec.user"
 // +kubebuilder:printcolumn:name="Access",type=string,JSONPath=".spec.access"
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=".status.conditions[?(@.type=='Ready')].status"
-// +kubebuilder:printcolumn:name="Expires",type=string,JSONPath=".status.expirationTimestamp"
+// +kubebuilder:printcolumn:name="Expires",type=string,JSONPath=".status.expirationTime"
 type KubeconfigRequest struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -28,7 +28,7 @@ type KubeconfigRequest struct {
 
 	// spec is what the requester asks for.
 	// +required
-	Spec KubeconfigRequestSpec `json:"spec"`
+	Spec KubeconfigRequestSpec `json:"spec,omitzero"`
 
 	// status is Lodia's answer.
 	// +optional
@@ -49,7 +49,7 @@ type KubeconfigRequestList struct {
 type KubeconfigRequestSpec struct {
 	// controlPlaneRef names a ControlPlane in this namespace.
 	// +required
-	ControlPlaneRef LocalReference `json:"controlPlaneRef"`
+	ControlPlaneRef LocalReference `json:"controlPlaneRef,omitzero"`
 
 	// user is the requester's own username, which the admission policy
 	// kubeconfigrequests.lodia.io requires; the certificate's user is
@@ -58,7 +58,7 @@ type KubeconfigRequestSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="!self.matches(r'[\\p{Cc}\\x{FFFE}\\x{FFFF}]')",message="must hold no control character"
-	User string `json:"user"`
+	User string `json:"user,omitempty"`
 
 	// access ClusterAdmin puts the certificate in lodia:cluster-admins, for
 	// which the admission policy requires create on
@@ -72,7 +72,7 @@ type KubeconfigRequestSpec struct {
 	// +required
 	// +kubebuilder:validation:MaxLength=5120
 	// +kubebuilder:validation:XValidation:rule="string(self).matches(r'^-----BEGIN CERTIFICATE REQUEST-----\\r?\\n[A-Za-z0-9+/=\\r\\n]+-----END CERTIFICATE REQUEST-----[\\r\\n]*$')",message="must be one PEM certificate request"
-	Request []byte `json:"request"`
+	Request []byte `json:"request,omitempty"`
 
 	// expirationSeconds counts from the request's creation.
 	// +optional
@@ -91,6 +91,7 @@ const KubeconfigAccessClusterAdmin KubeconfigAccess = "ClusterAdmin"
 
 // KubeconfigRequestStatus is the issued kubeconfig. The kubeconfig request
 // reconciler of the PKI controller writes it.
+// +kubebuilder:validation:MinProperties=1
 type KubeconfigRequestStatus struct {
 	// conditions include Ready.
 	// +optional
@@ -105,9 +106,9 @@ type KubeconfigRequestStatus struct {
 	// +kubebuilder:validation:MaxLength=40960
 	Kubeconfig []byte `json:"kubeconfig,omitempty"`
 
-	// expirationTimestamp is the certificate's NotAfter.
+	// expirationTime is the certificate's NotAfter.
 	// +optional
-	ExpirationTimestamp *metav1.Time `json:"expirationTimestamp,omitempty"`
+	ExpirationTime *metav1.Time `json:"expirationTime,omitempty"`
 }
 
 // Backup is a sealed copy of a ControlPlane's etcd, kept in the
@@ -130,7 +131,7 @@ type Backup struct {
 
 	// spec names the ControlPlane to snapshot.
 	// +required
-	Spec BackupSpec `json:"spec"`
+	Spec BackupSpec `json:"spec,omitzero"`
 
 	// status is the copy's progress and where it is.
 	// +optional
@@ -150,11 +151,12 @@ type BackupList struct {
 type BackupSpec struct {
 	// controlPlaneRef names a ControlPlane in this namespace.
 	// +required
-	ControlPlaneRef LocalReference `json:"controlPlaneRef"`
+	ControlPlaneRef LocalReference `json:"controlPlaneRef,omitzero"`
 }
 
 // BackupStatus is the copy's progress, what it was taken of, and where it
 // is. The backup reconciler of the Datastore controller writes it.
+// +kubebuilder:validation:MinProperties=1
 type BackupStatus struct {
 	// conditions include Ready.
 	// +optional
@@ -165,29 +167,30 @@ type BackupStatus struct {
 
 	// source is the ControlPlane the Backup was taken of.
 	// +optional
-	Source *UIDReference `json:"source,omitempty"`
+	Source UIDReference `json:"source,omitzero"`
 
 	// kubernetesVersion is the version the source ran when the Backup was
 	// sealed: its status.kubernetes.version, or its status.target.version
 	// until Lifecycle writes the former. A ControlPlane restored from the
 	// Backup runs the same minor.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
 	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 
 	// network is the source's network, which a ControlPlane restored from the
 	// Backup must have too.
 	// +optional
-	Network *Network `json:"network,omitempty"`
+	Network Network `json:"network,omitzero"`
 
 	// snapshots is where the copy is: the store it was sealed in and the
 	// Backup's own prefix there.
 	// +optional
-	Snapshots *BackupSnapshotLocation `json:"snapshots,omitempty"`
+	Snapshots BackupSnapshotLocation `json:"snapshots,omitzero"`
 
 	// seal is the key the copy is checked by.
 	// +optional
-	Seal *BackupSeal `json:"seal,omitempty"`
+	Seal BackupSeal `json:"seal,omitzero"`
 
 	// startedAt is when the Backup started.
 	// +optional
@@ -254,7 +257,7 @@ type BackupSeal struct {
 	// revision of the seal key in the source's etcd.
 	// +required
 	// +kubebuilder:validation:Minimum=1
-	Revision int64 `json:"revision"`
+	Revision int64 `json:"revision,omitempty"`
 
 	// quotaBackendBytes is the source etcd's quota when it was sealed, the
 	// one bound Lodia has on the size of the copy: a ControlPlane restored

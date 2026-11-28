@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/yaml"
 
@@ -62,8 +63,8 @@ func TestTheRenderIsPinned(t *testing.T) {
 		"agents-as-a-deployment.yaml": {
 			addons: &lodiav1alpha1.Addons{
 				KubeProxy:    &lodiav1alpha1.KubeProxy{Mode: "ipvs", HealthzBindAddress: "::", Conntrack: &lodiav1alpha1.KubeProxyConntrack{MaxPerCore: new(int32(0))}},
-				CoreDNS:      &lodiav1alpha1.CoreDNS{Replicas: new(int32(3))},
-				Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.34.0", Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment", Replicas: new(int32(2))}},
+				CoreDNS:      &lodiav1alpha1.CoreDNS{Replicas: 3},
+				Konnectivity: &lodiav1alpha1.Konnectivity{Version: "v0.34.0", Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment", Replicas: 2}},
 			},
 			status:    lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "2001:db8::10", Port: 31443}},
 			endpoints: direct,
@@ -73,9 +74,9 @@ func TestTheRenderIsPinned(t *testing.T) {
 				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
 				InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
+				Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
 			},
-			endpoints: map[string]lodiav1alpha1.Endpoint{"gateway": {Gateway: &lodiav1alpha1.GatewayEndpoint{
+			endpoints: map[string]lodiav1alpha1.Endpoint{"gateway": {Gateway: lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 			}}},
@@ -85,7 +86,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 			cp := &lodiav1alpha1.ControlPlane{
 				ObjectMeta: metav1.ObjectMeta{Name: "dev"},
 				Spec:       lodiav1alpha1.ControlPlaneSpec{Endpoint: endpoint, Network: network, Addons: c.addons},
-				Status:     lodiav1alpha1.ControlPlaneStatus{Target: &lodiav1alpha1.Target{Version: "v1.35.8"}, Endpoint: &c.status},
+				Status:     lodiav1alpha1.ControlPlaneStatus{Target: &lodiav1alpha1.Target{Version: "v1.35.8"}, Endpoint: c.status},
 			}
 			v, waiting, err := newValues(cp, []byte("the cluster CA"))
 			if err != nil || waiting != "" {
@@ -134,7 +135,7 @@ func TestKubeProxyServesItsHealthOnTheAddressGiven(t *testing.T) {
 			},
 			Status: lodiav1alpha1.ControlPlaneStatus{
 				Target:   &lodiav1alpha1.Target{Version: "v1.35.8"},
-				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
+				Endpoint: lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
 			},
 		}
 		v, waiting, err := newValues(cp, nil)
@@ -154,7 +155,7 @@ func TestTheKubernetesEndpointsAreRenderedFromInCluster(t *testing.T) {
 			Spec:       lodiav1alpha1.ControlPlaneSpec{Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}}},
 			Status: lodiav1alpha1.ControlPlaneStatus{
 				Target:   &lodiav1alpha1.Target{Version: "v1.35.8"},
-				Endpoint: &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: host, Port: 31443}},
+				Endpoint: lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: host, Port: 31443}},
 			},
 		}
 		v, waiting, err := newValues(cp, nil)
@@ -204,7 +205,7 @@ func gatewayControlPlane(inCluster, tunnel string) *lodiav1alpha1.ControlPlane {
 	return &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+			Endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 			}},
@@ -212,11 +213,11 @@ func gatewayControlPlane(inCluster, tunnel string) *lodiav1alpha1.ControlPlane {
 		},
 		Status: lodiav1alpha1.ControlPlaneStatus{
 			Target: &lodiav1alpha1.Target{Version: "v1.35.8", OperatorRevision: "v0.0.0-test+running"},
-			Endpoint: &lodiav1alpha1.EndpointStatus{
+			Endpoint: lodiav1alpha1.EndpointStatus{
 				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
 				InCluster:    lodiav1alpha1.HostPort{Host: inCluster, Port: 6443},
-				Tunnel:       &lodiav1alpha1.HostPort{Host: tunnel, Port: 443},
+				Tunnel:       lodiav1alpha1.HostPort{Host: tunnel, Port: 443},
 			},
 		},
 	}
@@ -231,7 +232,7 @@ func proxiedControlPlane(endpoint lodiav1alpha1.Endpoint, apiServer, inCluster s
 		},
 		Status: lodiav1alpha1.ControlPlaneStatus{
 			Target: &lodiav1alpha1.Target{Version: "v1.35.8", OperatorRevision: "v0.0.0-test+running"},
-			Endpoint: &lodiav1alpha1.EndpointStatus{
+			Endpoint: lodiav1alpha1.EndpointStatus{
 				APIServer:    lodiav1alpha1.HostPort{Host: apiServer, Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: apiServer, Port: 8132},
 				InCluster:    lodiav1alpha1.HostPort{Host: inCluster, Port: 6443},
@@ -422,6 +423,17 @@ func TestApiserverProxysSecretIsTheBuildersOfThePair(t *testing.T) {
 	}
 }
 
+// TestAgentsAsADeploymentWithoutReplicasRunOne renders one agent for agent: {mode: Deployment}.
+func TestAgentsAsADeploymentWithoutReplicasRunOne(t *testing.T) {
+	cp := proxiedControlPlane(nameHost("api.dev.example.test"), "api.dev.example.test", "240.0.0.1")
+	cp.Spec.Addons = &lodiav1alpha1.Addons{Konnectivity: &lodiav1alpha1.Konnectivity{Agent: &lodiav1alpha1.KonnectivityAgent{Mode: "Deployment"}}}
+	agents := &appsv1.Deployment{}
+	renderedObject(t, rendered(t, cp), entry{Group: "apps", Version: "v1", Kind: "Deployment", Namespace: "kube-system", Name: "konnectivity-agent"}, agents)
+	if replicas := ptr.Deref(agents.Spec.Replicas, 0); replicas != 1 {
+		t.Errorf("agents as a Deployment without replicas run %d, want 1", replicas)
+	}
+}
+
 func TestWhereTheNodesProxyRunsTheAgentsTakeThePublicPath(t *testing.T) {
 	for _, agent := range []struct {
 		kind  string
@@ -440,7 +452,7 @@ func TestWhereTheNodesProxyRunsTheAgentsTakeThePublicPath(t *testing.T) {
 			objects := rendered(t, proxied)
 			direct := proxied.DeepCopy()
 			direct.Spec.Endpoint = nameHost("203.0.113.10")
-			direct.Status.Endpoint.Tunnel = nil
+			direct.Status.Endpoint.Tunnel = lodiav1alpha1.HostPort{}
 
 			var got, want corev1.PodTemplateSpec
 			if agent.kind == "DaemonSet" {
@@ -515,7 +527,7 @@ func TestOnlyTheTunnelGetsTheClientSecret(t *testing.T) {
 
 func TestAGatewayEndpointWithoutATunnelWaits(t *testing.T) {
 	gateway := gatewayControlPlane("240.0.0.1", "tunnel.dev.example.test")
-	gateway.Status.Endpoint.Tunnel = nil
+	gateway.Status.Endpoint.Tunnel = lodiav1alpha1.HostPort{}
 	if reason, waiting := waitsFor(gateway); reason != lodiav1alpha1.ReasonWaitingForEndpoint || waiting == "" {
 		t.Errorf("a gateway endpoint without a tunnel gives %q %q", reason, waiting)
 	}
@@ -541,7 +553,7 @@ func TestTheTunnelIsAnInput(t *testing.T) {
 		"port": func(h *lodiav1alpha1.HostPort) { h.Port = 8443 },
 	} {
 		changed := cp.DeepCopy()
-		change(changed.Status.Endpoint.Tunnel)
+		change(&changed.Status.Endpoint.Tunnel)
 		if inputs(changed) == before {
 			t.Errorf("a pass does not run for a change of the tunnel's %s", name)
 		}
@@ -561,8 +573,8 @@ func TestTheOperatorRevisionIsAnInput(t *testing.T) {
 }
 
 func reporting(target, apiServer, controllerManager, scheduler string) *lodiav1alpha1.ControlPlane {
-	component := func(version string) *lodiav1alpha1.ComponentStatus {
-		return &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: version}}
+	component := func(version string) lodiav1alpha1.ComponentStatus {
+		return lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: version}}
 	}
 	return &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
@@ -572,7 +584,7 @@ func reporting(target, apiServer, controllerManager, scheduler string) *lodiav1a
 		},
 		Status: lodiav1alpha1.ControlPlaneStatus{
 			Target:     &lodiav1alpha1.Target{Version: target},
-			Endpoint:   &lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
+			Endpoint:   lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}, Konnectivity: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 8132}, InCluster: lodiav1alpha1.HostPort{Host: "203.0.113.10", Port: 443}},
 			Components: &lodiav1alpha1.ComponentsStatus{APIServer: component(apiServer), ControllerManager: component(controllerManager), Scheduler: component(scheduler)},
 		},
 	}
@@ -690,7 +702,7 @@ func TestTheAddonsAreNeverNewerThanTheOldestComponent(t *testing.T) {
 
 func TestTheComponentVersionsAreInputsAndTheReplicaCountsAreNot(t *testing.T) {
 	cp := reporting("v1.36.2", "v1.36.2", "v1.36.1", "v1.36.0")
-	cp.Status.Components.APIServer.RolloutCount = lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 2, Ready: 2}, Updated: new(int32(2))}
+	cp.Status.Components.APIServer.RolloutCount = lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(2)), Ready: new(int32(2))}, Updated: new(int32(2))}
 	runs := func(changed *lodiav1alpha1.ControlPlane) bool {
 		return inputsChanged().Update(event.UpdateEvent{ObjectOld: cp, ObjectNew: changed})
 	}
@@ -698,7 +710,7 @@ func TestTheComponentVersionsAreInputsAndTheReplicaCountsAreNot(t *testing.T) {
 		"the API server's version":         func(c *lodiav1alpha1.ComponentsStatus) { c.APIServer.Version = "v1.36.1" },
 		"the controller manager's version": func(c *lodiav1alpha1.ComponentsStatus) { c.ControllerManager.Version = "v1.36.2" },
 		"the scheduler's version":          func(c *lodiav1alpha1.ComponentsStatus) { c.Scheduler.Version = "v1.36.1" },
-		"a report that goes":               func(c *lodiav1alpha1.ComponentsStatus) { c.ControllerManager = nil },
+		"a report that goes":               func(c *lodiav1alpha1.ComponentsStatus) { c.ControllerManager = lodiav1alpha1.ComponentStatus{} },
 		"a report from another component": func(c *lodiav1alpha1.ComponentsStatus) {
 			c.ControllerManager.Version, c.Scheduler.Version = "v1.36.0", "v1.36.1"
 		},
@@ -711,13 +723,13 @@ func TestTheComponentVersionsAreInputsAndTheReplicaCountsAreNot(t *testing.T) {
 		}
 	}
 	for name, change := range map[string]func(*lodiav1alpha1.ComponentStatus){
-		"total":         func(c *lodiav1alpha1.ComponentStatus) { c.Total = 3 },
-		"ready":         func(c *lodiav1alpha1.ComponentStatus) { c.Ready = 1 },
+		"total":         func(c *lodiav1alpha1.ComponentStatus) { c.Total = new(int32(3)) },
+		"ready":         func(c *lodiav1alpha1.ComponentStatus) { c.Ready = new(int32(1)) },
 		"updated":       func(c *lodiav1alpha1.ComponentStatus) { c.Updated = new(int32(1)) },
 		"updated, gone": func(c *lodiav1alpha1.ComponentStatus) { c.Updated = nil },
 	} {
 		changed := cp.DeepCopy()
-		change(changed.Status.Components.APIServer)
+		change(&changed.Status.Components.APIServer)
 		if runs(changed) {
 			t.Errorf("a pass runs for a change of the replica count %s", name)
 		}

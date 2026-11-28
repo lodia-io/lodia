@@ -174,7 +174,7 @@ func TestAVersionOutsideTheTableWaitsOnBothConditions(t *testing.T) {
 
 func TestARestoredControlPlaneWithItsControllerManagerAtZeroStillGetsItsAddons(t *testing.T) {
 	cp := controlPlane(t, "tenant-restored-zero", func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}}
+		cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}}
 	})
 	publish(t, cp)
 	issuer := &pki.Reconciler{Client: k8s, Reader: k8s, LeafLifetime: time.Hour, CALifetime: 24 * time.Hour, TrustAnchorLifetime: 48 * time.Hour, CAExpiryNotice: time.Hour, Clock: clock.RealClock{}}

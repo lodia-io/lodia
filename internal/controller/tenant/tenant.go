@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -120,9 +121,9 @@ func inputs(cp *lodiav1alpha1.ControlPlane) string {
 		fmt.Fprintf(&b, " target=%s %s", t.Version, t.OperatorRevision)
 	}
 	fmt.Fprintf(&b, " components=%q", reported(cp))
-	if e := cp.Status.Endpoint; e != nil {
+	if e := cp.Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		fmt.Fprintf(&b, " %s:%d %s:%d %s:%d", e.APIServer.Host, e.APIServer.Port, e.Konnectivity.Host, e.Konnectivity.Port, e.InCluster.Host, e.InCluster.Port)
-		if e.Tunnel != nil {
+		if e.Tunnel != (lodiav1alpha1.HostPort{}) {
 			fmt.Fprintf(&b, " %s:%d", e.Tunnel.Host, e.Tunnel.Port)
 		}
 	}
@@ -145,10 +146,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
+	if !cp.DeletionTimestamp.IsZero() || ptr.Deref(cp.Spec.Paused, false) {
 		return ctrl.Result{}, nil
 	}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		r.deliverTunnelClient(ctx, cp)
 	}
 	if err := live.Addons(ctx, r.Reader, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ConditionAddonsAvailable); err != nil {
@@ -164,7 +165,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		if err := r.wait(ctx, cp, lodiav1alpha1.ReasonWaitingForAccess, "AccessReady is not True for this generation"); err != nil {
 			return ctrl.Result{}, err
 		}
-		if cp.Spec.Endpoint.Gateway != nil {
+		if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 			return ctrl.Result{RequeueAfter: r.ApplyPeriod}, nil
 		}
 		return ctrl.Result{}, nil
@@ -472,7 +473,7 @@ type secretRead struct {
 func (r *Reconciler) credentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]byte, []byte, *corev1.Secret, string, error) {
 	bundle, kubeconfig, tunnelClient := &corev1.Secret{}, &corev1.Secret{}, &corev1.Secret{}
 	reads := []secretRead{{lodiav1alpha1.CABundleSecret, bundle}, {lodiav1alpha1.LodiaKubeconfigSecret, kubeconfig}}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		reads = append(reads, secretRead{lodiav1alpha1.TunnelClientSecret, tunnelClient})
 	}
 	unusable, err := r.readSecrets(ctx, cp, reads)

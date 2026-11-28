@@ -71,7 +71,7 @@ func pass(t *testing.T, cp, cached *lodiav1alpha1.ControlPlane, dial dialFunc, f
 	return made, err
 }
 
-func paused(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true }
+func paused(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) }
 
 func setAddons(t *testing.T, cp *lodiav1alpha1.ControlPlane, version string) {
 	t.Helper()

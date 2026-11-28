@@ -80,7 +80,7 @@ func TestEtcdDruidPatchUpgradeUnderAHeldTenant(t *testing.T) {
 				return druidRunning(ctx, k8s, druidBefore.tag)
 			})
 			createTenant(ctx, t, k8s, key, "e2e-druid-patch", func(spec *lodiav1alpha1.ControlPlaneSpec) {
-				spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: clock(start, 4*time.Hour), End: clock(start, 5*time.Hour), TimeZone: "UTC"}}
+				spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: clock(start, 4*time.Hour), End: clock(start, 5*time.Hour), TimeZone: "UTC"}}
 			})
 			return ctx
 		}).
@@ -126,7 +126,7 @@ func TestEtcdDruidPatchUpgradeUnderAHeldTenant(t *testing.T) {
 			now := time.Now().UTC().Truncate(time.Minute)
 			cp := getTenant(ctx, t, k8s, key)
 			patch := client.MergeFrom(cp.DeepCopy())
-			cp.Spec.Maintenance.Window = &lodiav1alpha1.MaintenanceWindow{Begin: clock(now, -2*time.Hour), End: clock(now, 2*time.Hour), TimeZone: "UTC"}
+			cp.Spec.Maintenance.Window = lodiav1alpha1.MaintenanceWindow{Begin: clock(now, -2*time.Hour), End: clock(now, 2*time.Hour), TimeZone: "UTC"}
 			if err := k8s.Patch(ctx, cp, patch); err != nil {
 				t.Fatal(err)
 			}

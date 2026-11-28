@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/contract"
@@ -59,7 +60,7 @@ type decision struct {
 // fieldsDiffer says whether a status field Lifecycle owns, the conditions
 // aside, is not what cp holds.
 func (d decision) fieldsDiffer(cp *lodiav1alpha1.ControlPlane) bool {
-	return d.status.ObservedGeneration != cp.Status.ObservedGeneration ||
+	return !ptr.Equal(d.status.ObservedGeneration, cp.Status.ObservedGeneration) ||
 		!equality.Semantic.DeepEqual(d.status.Target, cp.Status.Target) ||
 		!equality.Semantic.DeepEqual(d.status.Kubernetes, cp.Status.Kubernetes) ||
 		!equality.Semantic.DeepEqual(d.status.Maintenance, cp.Status.Maintenance)
@@ -109,7 +110,7 @@ func decide(f facts) decision {
 	switch {
 	case !cp.DeletionTimestamp.IsZero():
 		readyNow = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonDeleting, "the ControlPlane is being deleted")
-	case cp.Spec.Paused:
+	case ptr.Deref(cp.Spec.Paused, false):
 		progressing = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonPaused, "spec.paused is true: Lodia reconciles nothing")
 		status.Maintenance = newMaintenance(lastHandledOf(cp), settlingOf(cp), slotOf(cp))
 	default:
@@ -118,7 +119,7 @@ func decide(f facts) decision {
 		m := f.maintain(&c, readyNow)
 		progressing = c.progressing(f, m)
 		if observed(cp) {
-			status.ObservedGeneration = cp.Generation
+			status.ObservedGeneration = new(cp.Generation)
 		}
 		status.Target = newTarget(c.target, m.revision, c.class, m.scheduledFor)
 		status.Maintenance = newMaintenance(m.lastHandled, m.settlingSince, m.slotSince)
@@ -130,7 +131,7 @@ func decide(f facts) decision {
 		progressing.Message += "; " + notice
 	}
 	if reported != "" || upgrade != nil {
-		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported, Upgrade: upgrade}
+		status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: reported, Upgrade: ptr.Deref(upgrade, lodiav1alpha1.UpgradeStatus{})}
 	}
 	for _, condition := range []*metav1.Condition{progressing, readyNow} {
 		if condition != nil {
@@ -164,11 +165,7 @@ func newTarget(version, revision string, class lodiav1alpha1.DatastoreClassGener
 	if version == "" && revision == "" && class == noClass && scheduledFor == nil {
 		return nil
 	}
-	target := &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, ScheduledFor: scheduledFor}
-	if class != noClass {
-		target.DatastoreClass = &class
-	}
-	return target
+	return &lodiav1alpha1.Target{Version: version, OperatorRevision: revision, DatastoreClass: class, ScheduledFor: scheduledFor}
 }
 
 func newMaintenance(lastHandled string, settlingSince, slotSince *metav1.Time) *lodiav1alpha1.MaintenanceStatus {
@@ -193,16 +190,16 @@ func revisionOf(cp *lodiav1alpha1.ControlPlane) string {
 }
 
 func classTargetOf(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
-	if cp.Status.Target != nil && cp.Status.Target.DatastoreClass != nil {
-		return *cp.Status.Target.DatastoreClass
+	if cp.Status.Target != nil {
+		return cp.Status.Target.DatastoreClass
 	}
 	return noClass
 }
 
 // runningClass is the DatastoreClass the Etcd runs, as Datastore reports it.
 func runningClass(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.DatastoreClassStatus {
-	if d := cp.Status.Datastore; d != nil {
-		return d.Class
+	if c := &cp.Status.Datastore.Class; *c != (lodiav1alpha1.DatastoreClassStatus{}) {
+		return c
 	}
 	return nil
 }
@@ -239,8 +236,8 @@ func slotOf(cp *lodiav1alpha1.ControlPlane) *metav1.Time {
 }
 
 func upgradeOf(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.UpgradeStatus {
-	if cp.Status.Kubernetes != nil {
-		return cp.Status.Kubernetes.Upgrade
+	if k := cp.Status.Kubernetes; k != nil && k.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
+		return &k.Upgrade
 	}
 	return nil
 }
@@ -316,7 +313,7 @@ func classGeneration(running *lodiav1alpha1.DatastoreClassStatus, g lodiav1alpha
 
 func patchUpdates(cp *lodiav1alpha1.ControlPlane) bool {
 	m := cp.Spec.Maintenance
-	return m != nil && m.AutoUpdate != nil && m.AutoUpdate.KubernetesPatch
+	return m != nil && m.AutoUpdate != nil && ptr.Deref(m.AutoUpdate.KubernetesPatch, false)
 }
 
 // patchUpdate is the version a patch update moves c's target to: with patch
@@ -416,11 +413,11 @@ func (f facts) minorStep(c *change) {
 		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore,
 			fmt.Sprintf("the minor step to %s waits for DatastoreReady", next))
 		return
-	case cp.Status.Nodes == nil:
+	case cp.Status.Nodes == (lodiav1alpha1.NodesStatus{}):
 		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForNodes,
 			fmt.Sprintf("the minor step to %s waits: the nodes are not listed yet", next))
 		return
-	case cp.Status.Nodes.Truncated:
+	case ptr.Deref(cp.Status.Nodes.Truncated, false):
 		c.preflight = newCondition(cp, lodiav1alpha1.ConditionProgressing, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForNodes,
 			fmt.Sprintf("the minor step to %s waits: the nodes could not all be counted", next))
 		return
@@ -468,7 +465,7 @@ func (f facts) rehearse(c *change, next, minor string) {
 // rehearsedAbout is Rehearsed while it is about the step to next, and nil
 // otherwise.
 func rehearsedAbout(cp *lodiav1alpha1.ControlPlane, next string) *metav1.Condition {
-	if cp.Status.Rehearsal == nil || cp.Status.Rehearsal.Version != next {
+	if cp.Status.Rehearsal == (lodiav1alpha1.RehearsalStatus{}) || cp.Status.Rehearsal.Version != next {
 		return nil
 	}
 	return meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
@@ -564,7 +561,7 @@ type part struct {
 func parts(cp *lodiav1alpha1.ControlPlane) []part {
 	var apiServer, controllerManager, scheduler *lodiav1alpha1.ComponentStatus
 	if c := cp.Status.Components; c != nil {
-		apiServer, controllerManager, scheduler = c.APIServer, c.ControllerManager, c.Scheduler
+		apiServer, controllerManager, scheduler = &c.APIServer, &c.ControllerManager, &c.Scheduler
 	}
 	version := func(c *lodiav1alpha1.ComponentStatus) string {
 		if c != nil {

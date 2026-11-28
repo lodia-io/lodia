@@ -200,7 +200,7 @@ func TestAnInvalidConfigurationComesBeforeEveryTrueReasonAndAfterTheFalseOnes(t 
 				}
 				deployments = append(deployments, d)
 			}
-			count := availability(deployments, "", false)
+			count := availability(deployments, "", false, nil)
 			for _, refusal := range []string{refused, refused + servesNone, refused + servesLast} {
 				for _, served := range []string{servesLast, servesNone} {
 					got := authenticated(count, refusal+served)

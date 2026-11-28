@@ -10,7 +10,7 @@ import (
 )
 
 func TestNodeProxyAndAdvertiseAddress(t *testing.T) {
-	gateway := lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{}}
+	gateway := lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{ParentRef: lodiav1alpha1.ParentReference{Name: "tenants", Namespace: "gateway", SectionName: "tls"}}}
 	loadBalancer := func(host lodiav1alpha1.EndpointHost) lodiav1alpha1.Endpoint {
 		return lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: host}}
 	}

@@ -49,18 +49,22 @@ func TestAReportMovesOnlyToWhatTheAPIServerHolds(t *testing.T) {
 	}
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "team", Namespace: "ns", UID: "uid-1"}}
 	one := int32(1)
-	rolled := &lodiav1alpha1.ComponentStatus{
-		RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}, Updated: &one},
+	rolled := lodiav1alpha1.ComponentStatus{
+		RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(1)), Ready: new(int32(1))}, Updated: &one},
 		Rendered:     lodiav1alpha1.Rendered{Version: "v1.37.2", OperatorRevision: "r2"},
 	}
-	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: rolled.DeepCopy(), ControllerManager: rolled.DeepCopy(), Scheduler: rolled.DeepCopy()}
+	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: *rolled.DeepCopy(), ControllerManager: *rolled.DeepCopy(), Scheduler: *rolled.DeepCopy()}
 	expect := func(r *Reconciler, version, revision string) {
 		t.Helper()
-		got, err := r.components(context.Background(), cp)
+		controlled, err := r.controlled(context.Background(), cp)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, report := range []*lodiav1alpha1.ComponentStatus{got.APIServer, got.ControllerManager, got.Scheduler} {
+		got, err := r.components(context.Background(), cp, controlled)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, report := range []lodiav1alpha1.ComponentStatus{got.APIServer, got.ControllerManager, got.Scheduler} {
 			if report.Version != version || report.OperatorRevision != revision {
 				t.Errorf("a component reports %s/%s, want %s/%s", report.Version, report.OperatorRevision, version, revision)
 			}

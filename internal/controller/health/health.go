@@ -168,7 +168,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
+	if !cp.DeletionTimestamp.IsZero() || ptr.Deref(cp.Spec.Paused, false) {
 		return ctrl.Result{}, nil
 	}
 	if r.reread(req.NamespacedName) {
@@ -216,8 +216,8 @@ func (r *Reconciler) reachable(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if url == "" {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"), "", nil
 	}
-	gateway := cp.Spec.Endpoint.Gateway != nil
-	if gateway && cp.Status.Endpoint.Tunnel == nil {
+	gateway := cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{})
+	if gateway && cp.Status.Endpoint.Tunnel == (lodiav1alpha1.HostPort{}) {
 		return newCondition(cp, lodiav1alpha1.ConditionReachable, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint.tunnel"), "", nil
 	}
 	prober, waiting, err := r.certificates(ctx, cp)
@@ -257,7 +257,7 @@ func (r *Reconciler) certificates(ctx context.Context, cp *lodiav1alpha1.Control
 		}
 		return ""
 	})
-	if waiting != nil || err != nil || cp.Spec.Endpoint.Gateway == nil {
+	if waiting != nil || err != nil || cp.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) {
 		return p, waiting, err
 	}
 	pairName := lodiav1alpha1.TunnelClientSecret.Name(cp.Name)
@@ -309,7 +309,7 @@ func (r *Reconciler) accessSecret(ctx context.Context, cp *lodiav1alpha1.Control
 // passed, and the condition's message: what each path that failed answered,
 // or what answered.
 func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane, p *prober, url string) (string, string) {
-	gateway := cp.Spec.Endpoint.Gateway != nil
+	gateway := cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{})
 	internal := lodiav1alpha1.APIServerServiceURL(cp.Namespace, cp.Name) + contract.APIServerReadyzPath
 	var (
 		apiCode, internalCode, tunnelCode       int
@@ -329,7 +329,7 @@ func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	e := cp.Status.Endpoint
 	if gateway {
 		wg.Go(func() {
-			tunnelCode, tunnelErr = r.probe(ctx, r.throughTunnel(p, *e.Tunnel), url)
+			tunnelCode, tunnelErr = r.probe(ctx, r.throughTunnel(p, e.Tunnel), url)
 			tunnelCut = ctx.Err() != nil
 		})
 		wg.Go(func() {
@@ -361,8 +361,8 @@ func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		fail(lodiav1alpha1.MetricProbeAPI, apiCut, answer)
 	}
 	if gateway && tunnelCode != http.StatusOK {
-		log.Error(tunnelErr, "the probe through the tunnel failed", "tunnel", hostPort(*e.Tunnel), "code", tunnelCode)
-		fail(lodiav1alpha1.MetricProbeTunnel, tunnelCut, lodiav1alpha1.MetricProbeTunnel+": "+url+" through "+hostPort(*e.Tunnel)+" "+answered(tunnelCode))
+		log.Error(tunnelErr, "the probe through the tunnel failed", "tunnel", hostPort(e.Tunnel), "code", tunnelCode)
+		fail(lodiav1alpha1.MetricProbeTunnel, tunnelCut, lodiav1alpha1.MetricProbeTunnel+": "+url+" through "+hostPort(e.Tunnel)+" "+answered(tunnelCode))
 	}
 	if gateway && konnErr != nil {
 		log.Error(konnErr, "the TLS handshake with konnectivity failed", "address", hostPort(e.Konnectivity))
@@ -374,7 +374,7 @@ func (r *Reconciler) probes(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 	if !gateway {
 		return "", url + " answered 200"
 	}
-	return "", url + " answered 200 at the public endpoint and through the tunnel " + hostPort(*e.Tunnel) + ", and " + hostPort(e.Konnectivity) + " completed a TLS handshake"
+	return "", url + " answered 200 at the public endpoint and through the tunnel " + hostPort(e.Tunnel) + ", and " + hostPort(e.Konnectivity) + " completed a TLS handshake"
 }
 
 func answered(code int) string {
@@ -404,7 +404,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForAccess, waiting), nil
 	}
 	restoring := cp.Spec.RestoreFrom
-	if restoring != nil && restoring.Release == lodiav1alpha1.RestoreReleased {
+	if restoring.Release == lodiav1alpha1.RestoreReleased {
 		source, err := restore.Source(ctx, r.Client, cp)
 		if err != nil {
 			return nil, err
@@ -421,7 +421,7 @@ func (r *Reconciler) leading(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 	if err != nil {
 		return nil, err
 	}
-	if restoring != nil && restoring.Release != lodiav1alpha1.RestoreReleased {
+	if restoring != (lodiav1alpha1.RestoreFrom{}) && restoring.Release != lodiav1alpha1.RestoreReleased {
 		return newCondition(cp, lodiav1alpha1.ConditionControllersLeading, metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease,
 			"spec.restoreFrom.release is Pending; once released, the controller manager acts on: "+r.actedOn(ctx, tenant)), nil
 	}
@@ -944,7 +944,7 @@ func (r *Reconciler) reread(key types.NamespacedName) bool {
 }
 
 func endpoint(cp *lodiav1alpha1.ControlPlane) string {
-	if cp.Status.Endpoint == nil {
+	if cp.Status.Endpoint == (lodiav1alpha1.EndpointStatus{}) {
 		return ""
 	}
 	return "https://" + hostPort(cp.Status.Endpoint.APIServer) + contract.APIServerReadyzPath

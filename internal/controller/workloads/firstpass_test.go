@@ -24,7 +24,7 @@ func TestACacheWithoutAPIServerReadyLeavesTheServersCondition(t *testing.T) {
 		t.Helper()
 		before := get(t, cp)
 		cached := before.DeepCopy()
-		cached.Spec.Paused = false
+		cached.Spec.Paused = new(false)
 		meta.RemoveStatusCondition(&cached.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady)
 		copies := serverCopies(t, cp, func() { reconcileThrough(t, cp, caching(cached)) })
 		for _, c := range copies {

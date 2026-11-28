@@ -52,6 +52,12 @@ rules:
   - patch
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - replicasets
+  verbs:
+  - list
+- apiGroups:
   - events.k8s.io
   resources:
   - events

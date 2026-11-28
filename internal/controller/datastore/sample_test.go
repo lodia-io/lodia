@@ -131,6 +131,21 @@ func TestOneMemberGivesItsLeaderAndItsSize(t *testing.T) {
 	}
 }
 
+// TestAControlPlaneNotPausedInItsSpecIsSampled samples the etcd of a ControlPlane whose spec says paused: false.
+func TestAControlPlaneNotPausedInItsSpecIsSampled(t *testing.T) {
+	t.Parallel()
+	member := testetcd.Start(t, testetcd.Config{})
+	cp, etcd := sampledControlPlane("unpaused", "uid-unpaused")
+	cp.Spec.Paused = new(false)
+	r, clk := sampler(cp, etcd)
+	r.EtcdClient = dialURL(member.ClientURL)
+	samplePass(t, r, client.ObjectKeyFromObject(cp))
+	clk.Step(5 * time.Second)
+	if got := servedSample(t, r, cp); !got.HasLeader {
+		t.Errorf("the sample of a ControlPlane not paused is %+v, want its leader", got)
+	}
+}
+
 func TestThreeMembersGiveTheirLeaderWhileAQuorumAnswersAndTheLargestSize(t *testing.T) {
 	t.Parallel()
 	cluster := testetcd.StartCluster(t, 3, nil)
@@ -424,7 +439,7 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 			return []client.Object{cp, etcd}
 		}, time.Minute},
 		{"paused", func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
-			cp.Spec.Paused = true
+			cp.Spec.Paused = new(true)
 			return []client.Object{cp, etcd}
 		}, time.Minute},
 		{"without its Etcd", func(cp *lodiav1alpha1.ControlPlane, _ *druidv1alpha1.Etcd) []client.Object {
@@ -463,7 +478,7 @@ func TestWhatIsNotSampledIsForgotten(t *testing.T) {
 
 func TestTheRulesAnswersAndTheLatchGoWithTheControlPlaneAloneNotWithAPassThatReadsNone(t *testing.T) {
 	t.Parallel()
-	recorded := &lodiav1alpha1.MemberRestoreStatus{Member: asSidecar.Name, DetectedAt: metav1.NewTime(sampledAt.Add(-2 * time.Hour)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
+	recorded := lodiav1alpha1.MemberRestoreStatus{Member: asSidecar.Name, DetectedAt: metav1.NewTime(sampledAt.Add(-2 * time.Hour)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
 	earlier := lodiav1alpha1.MemberRestoreStatus{Member: asSidecar.Name, DetectedAt: metav1.NewTime(sampledAt.Add(-time.Hour)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
 	for _, c := range []struct {
 		name      string
@@ -479,7 +494,7 @@ func TestTheRulesAnswersAndTheLatchGoWithTheControlPlaneAloneNotWithAPassThatRea
 		}},
 		{name: "created again", recreated: true},
 		{name: "paused", kept: true, between: func(cp *lodiav1alpha1.ControlPlane, etcd *druidv1alpha1.Etcd) []client.Object {
-			cp.Spec.Paused = true
+			cp.Spec.Paused = new(true)
 			return []client.Object{cp, etcd}
 		}},
 		{name: "without its Etcd", kept: true, between: func(cp *lodiav1alpha1.ControlPlane, _ *druidv1alpha1.Etcd) []client.Object {

@@ -105,8 +105,9 @@ spec:
                       version:
                         description: |-
                           version pins the konnectivity version across a Kubernetes upgrade;
-                          empty follows the version table.
+                          absent follows the version table.
                         maxLength: 16
+                        minLength: 1
                         pattern: ^v0\.[0-9]+\.[0-9]+$
                         type: string
                     type: object
@@ -135,6 +136,7 @@ spec:
                           healthzBindAddress is the IP address kube-proxy serves its health port,
                           10256, on: beyond loopback for cloud load balancers; loopback by default.
                         maxLength: 45
+                        minLength: 1
                         type: string
                         x-kubernetes-validations:
                         - message: must be an IP address
@@ -160,6 +162,7 @@ spec:
                       240.0.0.1 by default when the first service range is IPv4, and required
                       when it is IPv6. It cannot change.
                     maxLength: 45
+                    minLength: 1
                     type: string
                     x-kubernetes-validations:
                     - message: must be a unicast IP address in canonical form, neither
@@ -460,7 +463,9 @@ spec:
                             && b.issuer.discoveryURL == a.issuer.discoveryURL))
                     type: object
                   encryption:
-                    description: encryption configures encryption of Secrets at rest.
+                    description: |-
+                      encryption configures encryption of Secrets at rest; its provider
+                      cannot change, an absent one counting as secretbox.
                     properties:
                       provider:
                         default: secretbox
@@ -473,19 +478,24 @@ spec:
                     type: object
                   extraArgs:
                     additionalProperties:
+                      description: FlagValue is a flag's value as a component reads
+                        it.
+                      maxLength: 4096
                       type: string
                     description: |-
                       extraArgs are flags passed to kube-apiserver, each under its name as
-                      kube-apiserver spells it. The schema refuses the flags Lodia sets;
-                      bind-address, etcd-prefix, etcd-servers-overrides and
-                      shutdown-send-retry-after, whose defaults it relies on; the flags that
-                      conflict with one Lodia sets; help, which ends the process; and version,
-                      which ends it or, given as vX.Y.Z, sets the version it reports while it
-                      runs on. It checks the values of disable-admission-plugins,
-                      service-account-max-token-expiration and event-ttl. Every other flag and
-                      value is passed as written, and a flag or a value kube-apiserver refuses
-                      makes it exit. enable-admission-plugins merges: its entries follow
-                      Lodia's. featureGates sets feature-gates.
+                      kube-apiserver spells it. The schema refuses the flags Lodia sets; those
+                      whose defaults it relies on; the flags that conflict with one Lodia
+                      sets; those that name a file, which no tenant can put in the pod, or act
+                      only with one; the mixed-version proxy's, which would reach every
+                      replica at the one address Lodia advertises for all of them; help, which
+                      ends the process; and version, which ends it or, given as vX.Y.Z, sets
+                      the version it reports while it runs on. It checks the values of
+                      disable-admission-plugins, service-account-max-token-expiration,
+                      event-ttl and runtime-config. Every other flag and value is passed as
+                      written, and a flag or a value kube-apiserver refuses makes it exit,
+                      which APIServerReady names. enable-admission-plugins merges: its entries follow Lodia's.
+                      featureGates sets feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
@@ -509,14 +519,28 @@ spec:
                         ''shutdown-delay-duration'', ''shutdown-watch-termination-grace-period'',
                         ''tls-cert-file'', ''tls-private-key-file''])'
                     - message: Lodia relies on this flag's default
-                      rule: '!self.exists(k, k in [''bind-address'', ''etcd-prefix'',
-                        ''etcd-servers-overrides'', ''shutdown-send-retry-after''])'
+                      rule: '!self.exists(k, k in [''bind-address'', ''emulated-version'',
+                        ''emulation-forward-compatible'', ''etcd-prefix'', ''etcd-servers-overrides'',
+                        ''min-compatibility-version'', ''request-timeout'', ''runtime-config-emulation-forward-compatible'',
+                        ''shutdown-send-retry-after''])'
                     - message: this flag conflicts with one Lodia sets
                       rule: '!self.exists(k, k in [''admission-control'', ''anonymous-auth'',
-                        ''authorization-config'', ''authorization-policy-file'', ''authorization-webhook-cache-authorized-ttl'',
-                        ''authorization-webhook-cache-unauthorized-ttl'', ''authorization-webhook-config-file'',
-                        ''authorization-webhook-version'', ''cert-dir'', ''service-account-key-file'',
-                        ''service-account-signing-key-file''] || k.startsWith(''oidc-''))'
+                        ''apiserver-count'', ''authorization-config'', ''authorization-policy-file'',
+                        ''authorization-webhook-cache-authorized-ttl'', ''authorization-webhook-cache-unauthorized-ttl'',
+                        ''authorization-webhook-config-file'', ''authorization-webhook-version'',
+                        ''cert-dir'', ''service-account-key-file'', ''service-account-signing-key-file'']
+                        || k.startsWith(''oidc-''))'
+                    - message: this flag names a file, or acts only with one, and
+                        the pod holds no file a tenant chooses
+                      rule: '!self.exists(k, k in [''admission-control-config-file'',
+                        ''allow-metric-labels-manifest'', ''kubelet-certificate-authority'',
+                        ''tls-sni-cert-key'', ''token-auth-file'', ''tracing-config-file'']
+                        || k.startsWith(''audit-'') || k.startsWith(''authentication-token-webhook-''))'
+                    - message: the mixed-version proxy would reach every replica of
+                        the API server at the one address Lodia advertises for all
+                        of them
+                      rule: '!self.exists(k, k in [''peer-advertise-ip'', ''peer-advertise-port'',
+                        ''peer-ca-file''])'
                     - message: this flag makes the component exit, or report another
                         version than the one it runs
                       rule: '!self.exists(k, k in [''help'', ''version''])'
@@ -550,10 +574,28 @@ spec:
                         #1046)'
                       rule: '!(''event-ttl'' in self) || duration(self[''event-ttl''])
                         >= duration(''1h'')'
+                    - message: runtime-config is pairs of an API or api/all, api/ga,
+                        api/beta or api/alpha and true or false, joined by commas,
+                        and nothing else, since kube-apiserver trims spaces and reads
+                        an empty value, 1 and t as true
+                      rule: '!(''runtime-config'' in self) || self[''runtime-config''].matches(''^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?){0,2}=(true|false)(,[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?){0,2}=(true|false))*$'')'
+                    - message: 'runtime-config cannot turn off api/all, api/ga, or
+                        a group version Lodia''s controllers use or a resource of
+                        one: v1, apps/v1, rbac.authorization.k8s.io/v1, discovery.k8s.io/v1,
+                        coordination.k8s.io/v1, certificates.k8s.io/v1, authentication.k8s.io/v1,
+                        authorization.k8s.io/v1 and apiregistration.k8s.io/v1'
+                      rule: '!(''runtime-config'' in self) || !self[''runtime-config''].matches(''(^|,)(api/(all|ga)|((api/)?v1|(apps|rbac[.]authorization[.]k8s[.]io|discovery[.]k8s[.]io|coordination[.]k8s[.]io|certificates[.]k8s[.]io|authentication[.]k8s[.]io|authorization[.]k8s[.]io|apiregistration[.]k8s[.]io)/v1)(/[^,=]+)?)=false(,|$)'')'
+                    - message: 'runtime-config cannot turn off a group version kube-apiserver
+                        needs to become ready, or a resource of one: admissionregistration.k8s.io/v1,
+                        apiextensions.k8s.io/v1, networking.k8s.io/v1, node.k8s.io/v1,
+                        resource.k8s.io/v1, scheduling.k8s.io/v1 and storage.k8s.io/v1'
+                      rule: '!(''runtime-config'' in self) || !self[''runtime-config''].matches(''(^|,)(admissionregistration[.]k8s[.]io|apiextensions[.]k8s[.]io|networking[.]k8s[.]io|node[.]k8s[.]io|resource[.]k8s[.]io|scheduling[.]k8s[.]io|storage[.]k8s[.]io)/v1(/[^,=]+)?=false(,|$)'')'
                   featureGates:
                     additionalProperties:
                       type: boolean
-                    description: featureGates are passed to kube-apiserver.
+                    description: |-
+                      featureGates are passed to kube-apiserver, each under its gate's bare
+                      name.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
@@ -564,6 +606,17 @@ spec:
                         renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector
                       rule: '!(''StructuredAuthenticationConfigurationEgressSelector''
                         in self) || self[''StructuredAuthenticationConfigurationEgressSelector'']'
+                    - message: 'a key must be a gate''s bare name, a capital letter
+                        then letters and digits, with no component prefix and no spaces:
+                        the component reads kube:<gate> and a name with spaces around
+                        it as the gate, which the rules that name a gate would miss'
+                      rule: self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))
+                    - message: 'AllAlpha and AllBeta are refused, true or false: each
+                        sets every alpha or beta gate the map does not name, a set
+                        that changes with every minor, true turning on gates that
+                        need an API kube-apiserver does not serve by default and AllBeta:
+                        false turning off those on by default; name each gate instead'
+                      rule: '!(''AllAlpha'' in self) && !(''AllBeta'' in self)'
                   replicas:
                     description: replicas of the API server; 1 by default, 2 with
                       high availability.
@@ -574,37 +627,6 @@ spec:
                   resources:
                     description: resources override the operator's defaults.
                     properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This field depends on the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -612,10 +634,15 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: limits are the most the container may use.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                       requests:
                         additionalProperties:
                           anyOf:
@@ -623,30 +650,43 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: requests are what the container is scheduled
+                          by.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                     type: object
+                    x-kubernetes-validations:
+                    - message: a request cannot exceed its limit
+                      rule: '!has(self.requests) || !has(self.limits) || self.requests.all(k,
+                        !(k in self.limits) || quantity(string(self.requests[k])).compareTo(quantity(string(self.limits[k])))
+                        <= 0)'
                 type: object
               controllerManager:
                 description: controllerManager configures kube-controller-manager.
                 properties:
                   extraArgs:
                     additionalProperties:
+                      description: FlagValue is a flag's value as a component reads
+                        it.
+                      maxLength: 4096
                       type: string
                     description: |-
                       extraArgs are flags passed to the component, each under its name as the
-                      component spells it. The schema refuses the flags Lodia sets;
-                      authorization-always-allow-paths and secure-port, whose defaults it
-                      relies on; the flags that conflict with one Lodia sets; help, which ends
-                      the process; and version, which ends it or, given as vX.Y.Z, sets the
-                      version it reports while it runs on. It checks the values of the node
-                      mask sizes. Every other flag and value is passed as written, and a flag
-                      or a value the component refuses makes it exit. controllers merges: its
-                      entries follow Lodia's. featureGates sets feature-gates.
+                      component spells it. The schema refuses the flags Lodia sets; those
+                      whose defaults it relies on; the flags that conflict with one Lodia
+                      sets; those that name a file, which no tenant can put in the pod; help,
+                      which ends the process; and version, which ends it or, given as vX.Y.Z,
+                      sets the version it reports while it runs on. It checks the values of
+                      the node mask sizes and of controllers. Every other flag and value is
+                      passed as written, and a flag or a value the component refuses makes it
+                      exit, which APIServerReady names. controllers merges: its entries follow Lodia's. featureGates sets
+                      feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
@@ -667,58 +707,69 @@ spec:
                         ''root-ca-file'', ''service-cluster-ip-range'', ''use-service-account-credentials''])'
                     - message: Lodia relies on this flag's default
                       rule: '!self.exists(k, k in [''authorization-always-allow-paths'',
+                        ''cidr-allocator-type'', ''emulated-version'', ''min-compatibility-version'',
                         ''secure-port''])'
                     - message: this flag conflicts with one Lodia sets
                       rule: '!self.exists(k, k in [''cluster-signing-cert-file'',
                         ''cluster-signing-key-file'', ''master'', ''service-account-private-key-file''])'
+                    - message: this flag names a file, and the pod holds no file a
+                        tenant chooses
+                      rule: '!self.exists(k, k in [''allow-metric-labels-manifest'',
+                        ''cloud-config'', ''cluster-signing-kube-apiserver-client-cert-file'',
+                        ''cluster-signing-kube-apiserver-client-key-file'', ''cluster-signing-kubelet-serving-cert-file'',
+                        ''cluster-signing-kubelet-serving-key-file'', ''cluster-signing-legacy-unknown-cert-file'',
+                        ''cluster-signing-legacy-unknown-key-file'', ''leader-migration-config'',
+                        ''pv-recycler-pod-template-filepath-hostpath'', ''pv-recycler-pod-template-filepath-nfs'',
+                        ''tls-cert-file'', ''tls-private-key-file'', ''tls-sni-cert-key''])'
                     - message: a node mask size is a positive decimal number without
                         a sign or a leading zero, since kube-controller-manager reads
                         024 as octal and 0 as unset
                       rule: '[''node-cidr-mask-size'', ''node-cidr-mask-size-ipv4'',
                         ''node-cidr-mask-size-ipv6''].all(k, !(k in self) || self[k].matches(''^[1-9][0-9]*$''))'
+                    - message: 'node-cidr-mask-size-ipv4 is at most 32, the length
+                        of an IPv4 address: kube-controller-manager allocates no node
+                        range from a longer mask, and says nothing'
+                      rule: '!(''node-cidr-mask-size-ipv4'' in self) || int(self[''node-cidr-mask-size-ipv4''])
+                        <= 32'
+                    - message: 'a node mask size is at most 128, the length of an
+                        IPv6 address: kube-controller-manager allocates no node range
+                        from a longer mask, and says nothing'
+                      rule: '[''node-cidr-mask-size'', ''node-cidr-mask-size-ipv6''].all(k,
+                        !(k in self) || int(self[k]) <= 128)'
                     - message: this flag makes the component exit, or report another
                         version than the one it runs
                       rule: '!self.exists(k, k in [''help'', ''version''])'
+                    - message: controllers is names of controllers, each perhaps after
+                        a dash, or *, joined by commas, and nothing else, since kube-controller-manager
+                        reads it as CSV
+                      rule: '!(''controllers'' in self) || self[''controllers''].matches(''^([*]|-?[a-z0-9]+(-[a-z0-9]+)*)(,([*]|-?[a-z0-9]+(-[a-z0-9]+)*))*$'')'
+                    - message: 'controllers cannot turn off a controller nodes join
+                        by: the CSR signer and approver, the bootstrap signer, the
+                        token cleaner and the root CA publisher'
+                      rule: '!(''controllers'' in self) || !self[''controllers''].matches(''(^|,)-(certificatesigningrequest-signing-controller|csrsigning|certificatesigningrequest-approving-controller|csrapproving|bootstrap-signer-controller|bootstrapsigner|token-cleaner-controller|tokencleaner|root-ca-certificate-publisher-controller|root-ca-cert-publisher)(,|$)'')'
                   featureGates:
                     additionalProperties:
                       type: boolean
-                    description: featureGates are passed to the component.
+                    description: |-
+                      featureGates are passed to the component, each under its gate's bare
+                      name and set to the same value in apiServer.featureGates.
                     maxProperties: 64
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'a key must be a gate''s bare name, a capital letter
+                        then letters and digits, with no component prefix and no spaces:
+                        the component reads kube:<gate> and a name with spaces around
+                        it as the gate, which the rules that name a gate would miss'
+                      rule: self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))
+                    - message: 'AllAlpha and AllBeta are refused, true or false: each
+                        sets every alpha or beta gate the map does not name, a set
+                        that changes with every minor, true turning on gates that
+                        need an API kube-apiserver does not serve by default and AllBeta:
+                        false turning off those on by default; name each gate instead'
+                      rule: '!(''AllAlpha'' in self) && !(''AllBeta'' in self)'
                   resources:
                     description: resources override the operator's defaults.
                     properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This field depends on the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -726,10 +777,15 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: limits are the most the container may use.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                       requests:
                         additionalProperties:
                           anyOf:
@@ -737,29 +793,40 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: requests are what the container is scheduled
+                          by.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                     type: object
+                    x-kubernetes-validations:
+                    - message: a request cannot exceed its limit
+                      rule: '!has(self.requests) || !has(self.limits) || self.requests.all(k,
+                        !(k in self.limits) || quantity(string(self.requests[k])).compareTo(quantity(string(self.limits[k])))
+                        <= 0)'
                 type: object
               datastore:
                 description: |-
                   datastore is where the cluster's data lives: an etcd of the tenant's
                   own.
+                minProperties: 1
                 properties:
                   className:
-                    description: |-
-                      className names the DatastoreClass the etcd is built from; empty
-                      means the default class.
+                    description: className names the DatastoreClass the etcd is built
+                      from.
                     maxLength: 253
+                    minLength: 1
                     type: string
                 type: object
               endpoint:
                 description: endpoint is how nodes, people and pods reach the API
                   server.
+                minProperties: 1
                 properties:
                   certSANs:
                     description: certSANs are extra names on the API server's serving
@@ -871,6 +938,7 @@ spec:
                       class:
                         description: class is the Service's loadBalancerClass.
                         maxLength: 253
+                        minLength: 1
                         type: string
                       host:
                         description: |-
@@ -972,10 +1040,12 @@ spec:
                     properties:
                       begin:
                         description: begin is HH:MM.
+                        minLength: 1
                         pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
                         type: string
                       end:
                         description: end is HH:MM.
+                        minLength: 1
                         pattern: ^([01][0-9]|2[0-3]):[0-5][0-9]$
                         type: string
                       timeZone:
@@ -983,6 +1053,7 @@ spec:
                           timeZone is an IANA time zone; UTC by default. One the operator's
                           embedded zone database lacks is TimeZoneUnsupported.
                         maxLength: 64
+                        minLength: 1
                         type: string
                     required:
                     - begin
@@ -1052,53 +1123,104 @@ spec:
                 properties:
                   nodeSelector:
                     additionalProperties:
+                      description: |-
+                        LabelValue is a label's value: empty, or at most 63 alphanumerics, dashes,
+                        underscores and dots that begin and end with an alphanumeric.
+                      maxLength: 63
                       type: string
-                    description: nodeSelector for every control plane pod.
+                      x-kubernetes-validations:
+                      - message: 'must be a label''s value: empty, or alphanumerics,
+                          dashes, underscores and dots that begin and end with an
+                          alphanumeric'
+                        rule: self.matches('^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$')
+                    description: 'nodeSelector for every pod: label names and values.'
                     maxProperties: 16
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'a key must be a label''s name: at most 63 alphanumerics,
+                        dashes, underscores and dots that begin and end with an alphanumeric,
+                        after a lowercase DNS subdomain of at most 253 characters
+                        and a slash'
+                      rule: 'self.all(k, size(k) <= 317 && k.matches(''^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$'')
+                        && (k.contains(''/'') ? size(k.split(''/'')[0]) <= 253 &&
+                        size(k.split(''/'')[1]) <= 63 : size(k) <= 63))'
                   priorityClassName:
-                    description: priorityClassName for every control plane pod.
+                    description: priorityClassName for every pod, a lowercase DNS
+                      subdomain.
                     maxLength: 253
+                    minLength: 1
                     type: string
+                    x-kubernetes-validations:
+                    - message: must be a lowercase DNS subdomain
+                      rule: self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$')
                   tolerations:
-                    description: tolerations for every control plane pod.
+                    description: tolerations for every pod.
                     items:
                       description: |-
-                        The pod this Toleration is attached to tolerates any taint that matches
-                        the triple <key,value,effect> using the matching operator <operator>.
+                        Toleration is a pod's toleration as pod validation takes it, without the
+                        operators Lt and Gt.
                       properties:
                         effect:
                           description: |-
-                            Effect indicates the taint effect to match. Empty means match all taint effects.
-                            When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                            effect is the taint's effect, NoSchedule, PreferNoSchedule or NoExecute;
+                            without it the toleration matches every effect.
+                          enum:
+                          - NoSchedule
+                          - PreferNoSchedule
+                          - NoExecute
                           type: string
                         key:
                           description: |-
-                            Key is the taint key that the toleration applies to. Empty means match all taint keys.
-                            If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                            key is the taint's key, a label's name; without it, and with operator
+                            Exists, the toleration matches every taint.
+                          maxLength: 317
+                          minLength: 1
                           type: string
+                          x-kubernetes-validations:
+                          - message: 'must be a label''s name: at most 63 alphanumerics,
+                              dashes, underscores and dots that begin and end with
+                              an alphanumeric, after a lowercase DNS subdomain of
+                              at most 253 characters and a slash'
+                            rule: 'self.matches(''^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$'')
+                              && (self.contains(''/'') ? size(self.split(''/'')[0])
+                              <= 253 && size(self.split(''/'')[1]) <= 63 : size(self)
+                              <= 63)'
                         operator:
                           description: |-
-                            Operator represents a key's relationship to the value.
-                            Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
-                            Exists is equivalent to wildcard for value, so that a pod can
-                            tolerate all taints of a particular category.
-                            Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                            operator is Equal, the taint's value equal to value, or Exists, any
+                            value; Equal by default.
+                          enum:
+                          - Equal
+                          - Exists
                           type: string
                         tolerationSeconds:
                           description: |-
-                            TolerationSeconds represents the period of time the toleration (which must be
-                            of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
-                            it is not set, which means tolerate the taint forever (do not evict). Zero and
-                            negative values will be treated as 0 (evict immediately) by the system.
+                            tolerationSeconds is how long a pod stays on a node tainted NoExecute;
+                            without it, for as long as the taint.
                           format: int64
                           type: integer
                         value:
-                          description: |-
-                            Value is the taint value the toleration matches to.
-                            If the operator is Exists, the value should be empty, otherwise just a regular string.
+                          description: value is the taint's value that operator Equal
+                            matches.
+                          maxLength: 63
+                          minLength: 1
                           type: string
+                          x-kubernetes-validations:
+                          - message: 'must be a label''s value: empty, or alphanumerics,
+                              dashes, underscores and dots that begin and end with
+                              an alphanumeric'
+                            rule: self.matches('^(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])?$')
                       type: object
+                      x-kubernetes-validations:
+                      - message: a toleration without a key has operator Exists
+                        rule: has(self.key) || has(self.operator) && self.operator
+                          == 'Exists'
+                      - message: tolerationSeconds is set only with effect NoExecute
+                        rule: '!has(self.tolerationSeconds) || has(self.effect) &&
+                          self.effect == ''NoExecute'''
+                      - message: a toleration with operator Exists has no value
+                        rule: '!has(self.operator) || self.operator != ''Exists''
+                          || !has(self.value)'
                     maxItems: 16
                     type: array
                     x-kubernetes-list-type: atomic
@@ -1144,16 +1266,20 @@ spec:
                 properties:
                   extraArgs:
                     additionalProperties:
+                      description: FlagValue is a flag's value as a component reads
+                        it.
+                      maxLength: 4096
                       type: string
                     description: |-
                       extraArgs are flags passed to kube-scheduler, each under its name as
-                      kube-scheduler spells it. The schema refuses the flags Lodia sets;
-                      authorization-always-allow-paths and secure-port, whose defaults it
-                      relies on; the flags that conflict with one Lodia sets; help and
-                      write-config-to, which end the process; and version, which ends it or,
-                      given as vX.Y.Z, sets the version it reports while it runs on. Every
+                      kube-scheduler spells it. The schema refuses the flags Lodia sets; those
+                      whose defaults it relies on; the flags that conflict with one Lodia
+                      sets; those that name a file, which no tenant can put in the pod; help
+                      and write-config-to, which end the process; and version, which ends it
+                      or, given as vX.Y.Z, sets the version it reports while it runs on. Every
                       other flag and value is passed as written, and a flag or a value
-                      kube-scheduler refuses makes it exit. featureGates sets feature-gates.
+                      kube-scheduler refuses makes it exit, which APIServerReady names.
+                      featureGates sets feature-gates.
                     maxProperties: 64
                     type: object
                     x-kubernetes-validations:
@@ -1168,52 +1294,40 @@ spec:
                         ''leader-elect-resource-name'', ''leader-elect-resource-namespace''])'
                     - message: Lodia relies on this flag's default
                       rule: '!self.exists(k, k in [''authorization-always-allow-paths'',
-                        ''secure-port''])'
+                        ''emulated-version'', ''min-compatibility-version'', ''secure-port''])'
                     - message: this flag conflicts with one Lodia sets
                       rule: '!self.exists(k, k in [''config'', ''master''])'
+                    - message: this flag names a file, and the pod holds no file a
+                        tenant chooses
+                      rule: '!self.exists(k, k in [''allow-metric-labels-manifest'',
+                        ''client-ca-file'', ''requestheader-client-ca-file'', ''tls-cert-file'',
+                        ''tls-private-key-file'', ''tls-sni-cert-key''])'
                     - message: this flag makes the component exit, or report another
                         version than the one it runs
                       rule: '!self.exists(k, k in [''help'', ''version'', ''write-config-to''])'
                   featureGates:
                     additionalProperties:
                       type: boolean
-                    description: featureGates are passed to kube-scheduler.
+                    description: |-
+                      featureGates are passed to kube-scheduler, each under its gate's bare
+                      name.
                     maxProperties: 64
                     type: object
+                    x-kubernetes-validations:
+                    - message: 'a key must be a gate''s bare name, a capital letter
+                        then letters and digits, with no component prefix and no spaces:
+                        the component reads kube:<gate> and a name with spaces around
+                        it as the gate, which the rules that name a gate would miss'
+                      rule: self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))
+                    - message: 'AllAlpha and AllBeta are refused, true or false: each
+                        sets every alpha or beta gate the map does not name, a set
+                        that changes with every minor, true turning on gates that
+                        need an API kube-apiserver does not serve by default and AllBeta:
+                        false turning off those on by default; name each gate instead'
+                      rule: '!(''AllAlpha'' in self) && !(''AllBeta'' in self)'
                   resources:
                     description: resources override the operator's defaults.
                     properties:
-                      claims:
-                        description: |-
-                          Claims lists the names of resources, defined in spec.resourceClaims,
-                          that are used by this container.
-
-                          This field depends on the
-                          DynamicResourceAllocation feature gate.
-
-                          This field is immutable. It can only be set for containers.
-                        items:
-                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
-                          properties:
-                            name:
-                              description: |-
-                                Name must match the name of one entry in pod.spec.resourceClaims of
-                                the Pod where this field is used. It makes that resource available
-                                inside a container.
-                              type: string
-                            request:
-                              description: |-
-                                Request is the name chosen for a request in the referenced claim.
-                                If empty, everything from the claim is made available, otherwise
-                                only the result of this request.
-                              type: string
-                          required:
-                          - name
-                          type: object
-                        type: array
-                        x-kubernetes-list-map-keys:
-                        - name
-                        x-kubernetes-list-type: map
                       limits:
                         additionalProperties:
                           anyOf:
@@ -1221,10 +1335,15 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Limits describes the maximum amount of compute resources allowed.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: limits are the most the container may use.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                       requests:
                         additionalProperties:
                           anyOf:
@@ -1232,13 +1351,22 @@ spec:
                           - type: string
                           pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                           x-kubernetes-int-or-string: true
-                        description: |-
-                          Requests describes the minimum amount of compute resources required.
-                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
-                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
-                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        description: requests are what the container is scheduled
+                          by.
+                        maxProperties: 3
                         type: object
+                        x-kubernetes-validations:
+                        - message: a control plane container takes cpu, memory and
+                            ephemeral-storage alone
+                          rule: self.all(k, k in ['cpu', 'memory', 'ephemeral-storage'])
+                        - message: a quantity cannot be negative
+                          rule: self.all(k, !quantity(string(self[k])).isLessThan(quantity('0')))
                     type: object
+                    x-kubernetes-validations:
+                    - message: a request cannot exceed its limit
+                      rule: '!has(self.requests) || !has(self.limits) || self.requests.all(k,
+                        !(k in self.limits) || quantity(string(self.requests[k])).compareTo(quantity(string(self.limits[k])))
+                        <= 0)'
                 type: object
               serviceAccount:
                 description: serviceAccount configures the tokens the API server issues.
@@ -1248,6 +1376,7 @@ spec:
                       issuer is the tokens' issuer and the OIDC discovery URL; the public API
                       URL by default.
                     maxLength: 512
+                    minLength: 1
                     type: string
                     x-kubernetes-validations:
                     - message: must be an https URL
@@ -1259,6 +1388,7 @@ spec:
                   minor Lodia runs. The minor never decreases; Lodia upgrades one minor
                   at a time towards it.
                 maxLength: 16
+                minLength: 1
                 pattern: ^v1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$
                 type: string
                 x-kubernetes-validations:
@@ -1320,11 +1450,8 @@ spec:
                 and never removed
               rule: has(self.restoreFrom) == has(oldSelf.restoreFrom)
             - message: datastore.className is immutable in v1alpha1
-              rule: 'has(self.datastore) && has(self.datastore.className) && size(self.datastore.className)
-                > 0 ? has(oldSelf.datastore) && has(oldSelf.datastore.className) &&
-                oldSelf.datastore.className == self.datastore.className : !has(oldSelf.datastore)
-                || !has(oldSelf.datastore.className) || size(oldSelf.datastore.className)
-                == 0'
+              rule: has(self.datastore) == has(oldSelf.datastore) && (!has(self.datastore)
+                || self.datastore.className == oldSelf.datastore.className)
             - message: 'kube-controller-manager refuses node-cidr-mask-size with two
                 pod ranges: use node-cidr-mask-size-ipv4 and node-cidr-mask-size-ipv6'
               rule: '!has(self.controllerManager) || !has(self.controllerManager.extraArgs)
@@ -1342,6 +1469,14 @@ spec:
                 || !(''node-cidr-mask-size-ipv6'' in self.controllerManager.extraArgs)
                 || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0])
                 || cidr(self.network.podCIDRs[0]).ip().family() == 6'
+            - message: 'node-cidr-mask-size beside an IPv4 pod range is at most 32,
+                the length of an IPv4 address: kube-controller-manager allocates no
+                node range from a longer mask, and says nothing'
+              rule: '!has(self.controllerManager) || !has(self.controllerManager.extraArgs)
+                || !(''node-cidr-mask-size'' in self.controllerManager.extraArgs)
+                || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family()
+                == 6 || int(self.controllerManager.extraArgs[''node-cidr-mask-size''])
+                <= 32'
             - message: kube-controller-manager refuses a pod range narrower than the
                 node mask of its family, 24 for IPv4 and 64 for IPv6 unless controllerManager.extraArgs
                 sets it, and an IPv6 range more than 16 bits wider than it
@@ -1362,13 +1497,58 @@ spec:
                 : has(self.controllerManager) && has(self.controllerManager.extraArgs)
                 && ''node-cidr-mask-size'' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs[''node-cidr-mask-size''])
                 : 64) - cidr(c).prefixLength() <= 16))'
+            - message: 'apiServer.encryption.provider is immutable, an absent one
+                counting as secretbox: with another provider first, an API server
+                that has not reloaded the configuration cannot read what one that
+                has writes'
+              rule: '(has(self.apiServer) && has(self.apiServer.encryption) && has(self.apiServer.encryption.provider)
+                ? self.apiServer.encryption.provider : ''secretbox'') == (has(oldSelf.apiServer)
+                && has(oldSelf.apiServer.encryption) && has(oldSelf.apiServer.encryption.provider)
+                ? oldSelf.apiServer.encryption.provider : ''secretbox'')'
             - message: kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer
               rule: '!has(self.serviceAccount) || !has(self.serviceAccount.issuer)
                 || !has(self.apiServer) || !has(self.apiServer.authentication) ||
                 !has(self.apiServer.authentication.jwt) || !self.apiServer.authentication.jwt.exists(a,
                 a.issuer.url == self.serviceAccount.issuer)'
+            - message: 'controllerManager.featureGates sets a gate that apiServer.featureGates
+                does not set to the same value: a feature needs its gate on every
+                component it spans, and kube-apiserver serves the APIs the controller
+                manager reads'
+              messageExpression: '''controllerManager.featureGates sets '' + self.controllerManager.featureGates.filter(g,
+                (!has(self.apiServer) || !has(self.apiServer.featureGates) || !(g
+                in self.apiServer.featureGates) || self.apiServer.featureGates[g]
+                != self.controllerManager.featureGates[g]) && !self.controllerManager.featureGates.exists(h,
+                h < g && (!has(self.apiServer) || !has(self.apiServer.featureGates)
+                || !(h in self.apiServer.featureGates) || self.apiServer.featureGates[h]
+                != self.controllerManager.featureGates[h])))[0] + '', which apiServer.featureGates
+                must set to the same value: a feature needs its gate on every component
+                it spans, and kube-apiserver serves the APIs the controller manager
+                reads'''
+              rule: '!has(self.controllerManager) || !has(self.controllerManager.featureGates)
+                || self.controllerManager.featureGates.all(g, has(self.apiServer)
+                && has(self.apiServer.featureGates) && g in self.apiServer.featureGates
+                && self.apiServer.featureGates[g] == self.controllerManager.featureGates[g])'
+            - message: 'CoordinatedLeaderElection on the scheduler needs it on kube-apiserver
+                too: a component with the gate only renews a Lease that kube-apiserver''s
+                election gives it, which kube-apiserver without the gate never does,
+                so the component never leads'
+              rule: '!(has(self.scheduler) && has(self.scheduler.featureGates) &&
+                ''CoordinatedLeaderElection'' in self.scheduler.featureGates && self.scheduler.featureGates[''CoordinatedLeaderElection''])
+                || has(self.apiServer) && has(self.apiServer.featureGates) && ''CoordinatedLeaderElection''
+                in self.apiServer.featureGates && self.apiServer.featureGates[''CoordinatedLeaderElection'']'
+            - message: 'CoordinatedLeaderElection on kube-apiserver needs apiServer.extraArgs''
+                runtime-config to hold coordination.k8s.io/v1beta1=true and to turn
+                neither it nor its leasecandidates off: kube-apiserver waits for its
+                informer of LeaseCandidates, which that group version serves, and
+                is never ready without it'
+              rule: '!(has(self.apiServer) && has(self.apiServer.featureGates) &&
+                ''CoordinatedLeaderElection'' in self.apiServer.featureGates && self.apiServer.featureGates[''CoordinatedLeaderElection''])
+                || has(self.apiServer.extraArgs) && ''runtime-config'' in self.apiServer.extraArgs
+                && self.apiServer.extraArgs[''runtime-config''].matches(''(^|,)coordination[.]k8s[.]io/v1beta1=true(,|$)'')
+                && !self.apiServer.extraArgs[''runtime-config''].matches(''(^|,)coordination[.]k8s[.]io/v1beta1(/leasecandidates)?=false(,|$)'')'
           status:
             description: status is what Lodia observed and did.
+            minProperties: 1
             properties:
               addons:
                 description: addons is what Tenant last applied in full inside the
@@ -1379,10 +1559,12 @@ spec:
                       operatorRevision is the operator revision of that render, which the
                       annotation lodia.io/operator-revision on its objects records.
                     maxLength: 128
+                    minLength: 1
                     type: string
                   version:
                     description: version is the Kubernetes version of that render.
                     maxLength: 16
+                    minLength: 1
                     type: string
                 type: object
               components:
@@ -1412,6 +1594,7 @@ spec:
                           operatorRevision is the operator revision of that render, which the
                           annotation lodia.io/operator-revision on its objects records.
                         maxLength: 128
+                        minLength: 1
                         type: string
                       ready:
                         description: ready never exceeds Total.
@@ -1433,6 +1616,7 @@ spec:
                       version:
                         description: version is the Kubernetes version of that render.
                         maxLength: 16
+                        minLength: 1
                         type: string
                     required:
                     - ready
@@ -1461,6 +1645,7 @@ spec:
                           operatorRevision is the operator revision of that render, which the
                           annotation lodia.io/operator-revision on its objects records.
                         maxLength: 128
+                        minLength: 1
                         type: string
                       ready:
                         description: ready never exceeds Total.
@@ -1482,6 +1667,7 @@ spec:
                       version:
                         description: version is the Kubernetes version of that render.
                         maxLength: 16
+                        minLength: 1
                         type: string
                     required:
                     - ready
@@ -1509,6 +1695,7 @@ spec:
                           operatorRevision is the operator revision of that render, which the
                           annotation lodia.io/operator-revision on its objects records.
                         maxLength: 128
+                        minLength: 1
                         type: string
                       ready:
                         description: ready never exceeds Total.
@@ -1530,6 +1717,7 @@ spec:
                       version:
                         description: version is the Kubernetes version of that render.
                         maxLength: 16
+                        minLength: 1
                         type: string
                     required:
                     - ready
@@ -1721,6 +1909,7 @@ spec:
                     description: operatorRevision is the operator revision the Etcd
                       was rendered with.
                     maxLength: 128
+                    minLength: 1
                     type: string
                   snapshots:
                     description: snapshots is where the etcd's continuous snapshots
@@ -1732,9 +1921,10 @@ spec:
                         minLength: 1
                         type: string
                       endpoint:
-                        description: endpoint of an S3-compatible store; empty for
+                        description: endpoint of an S3-compatible store; absent for
                           the provider's own.
                         maxLength: 512
+                        minLength: 1
                         type: string
                       prefix:
                         description: prefix is the prefix in the bucket.
@@ -1929,6 +2119,7 @@ spec:
                       version is the oldest of the versions the components and the addons
                       report, and absent until all of them do.
                     maxLength: 16
+                    minLength: 1
                     type: string
                 type: object
               maintenance:
@@ -1941,6 +2132,7 @@ spec:
                       lodia.io/maintain-requested-at that Lifecycle acted on last; a value
                       longer than this field holds is not handled.
                     maxLength: 256
+                    minLength: 1
                     type: string
                   settlingSince:
                     description: |-
@@ -2006,6 +2198,7 @@ spec:
                     description: oldestKubelet is the oldest version a node's kubelet
                       reports.
                     maxLength: 64
+                    minLength: 1
                     type: string
                   outdatedKubelets:
                     description: outdatedKubelets run an older minor than the control
@@ -2133,6 +2326,7 @@ spec:
                       with: the operator's build version and a digest of its rendering
                       configuration, compared for equality only.
                     maxLength: 128
+                    minLength: 1
                     type: string
                   scheduledFor:
                     description: |-
@@ -2149,6 +2343,7 @@ spec:
                       maintenance.autoUpdate.kubernetesPatch the newest patch of that minor,
                       moved in the window.
                     maxLength: 16
+                    minLength: 1
                     type: string
                 type: object
             type: object

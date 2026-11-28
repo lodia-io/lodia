@@ -828,7 +828,7 @@ func TestAKeptConditionIsDecidedFromTheServer(t *testing.T) {
 	stale := get(t, cp)
 	pass := func(at *lodiav1alpha1.ControlPlane, reader client.Reader, mayWrite bool) error {
 		held := at.DeepCopy()
-		held.Spec.Paused = false
+		held.Spec.Paused = new(false)
 		holding := interceptor.NewClient(k8s, interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
@@ -1220,13 +1220,13 @@ func renew(t *testing.T, name, holder string, at time.Time) {
 
 func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) })
 }
 
 func unpaused(t *testing.T, cp *lodiav1alpha1.ControlPlane) client.WithWatch {
 	t.Helper()
 	held := get(t, cp)
-	held.Spec.Paused = false
+	held.Spec.Paused = new(false)
 	return interceptor.NewClient(k8s, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok && key == client.ObjectKeyFromObject(cp) {

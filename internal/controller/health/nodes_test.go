@@ -169,15 +169,15 @@ func expectNotHeld(t *testing.T, cp *lodiav1alpha1.ControlPlane, message string)
 	}
 }
 
-func expectNodes(t *testing.T, cp *lodiav1alpha1.ControlPlane, want *lodiav1alpha1.NodesStatus) {
+func expectNodes(t *testing.T, cp *lodiav1alpha1.ControlPlane, want lodiav1alpha1.NodesStatus) {
 	t.Helper()
 	if got := get(t, cp).Status.Nodes; !equality.Semantic.DeepEqual(got, want) {
 		t.Errorf("status.nodes is %+v, want %+v", got, want)
 	}
 }
 
-func nodesOf(total, ready, outdated int32, oldest string) *lodiav1alpha1.NodesStatus {
-	return &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: total, Ready: ready}, OutdatedKubelets: outdated, OldestKubelet: oldest}
+func nodesOf(total, ready, outdated int32, oldest string) lodiav1alpha1.NodesStatus {
+	return lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(total), Ready: new(ready)}, OutdatedKubelets: new(outdated), OldestKubelet: oldest}
 }
 
 func throughProxy(t *testing.T, intercept func(http.ResponseWriter, *http.Request) bool) []byte {
@@ -675,7 +675,7 @@ func TestARestartWhoseListOfNodesFailsKeepsStatusNodes(t *testing.T) {
 				return err
 			}
 			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-				plane.Status.Nodes = nil
+				plane.Status.Nodes = lodiav1alpha1.NodesStatus{}
 			}
 			return nil
 		},
@@ -708,7 +708,7 @@ func TestAPassOnACacheHoldingAPredecessorLeavesTheSuccessorAlone(t *testing.T) {
 	if err := k8s.Get(t.Context(), client.ObjectKeyFromObject(cp), got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Nodes != nil {
+	if got.Status.Nodes != (lodiav1alpha1.NodesStatus{}) {
 		t.Errorf("the successor carries the predecessor's status.nodes: %+v", got.Status.Nodes)
 	}
 }
@@ -750,7 +750,7 @@ func TestWithNoListOfNodesAtAllThereIsNoStatusNodes(t *testing.T) {
 		t.Errorf("a pass whose list of Nodes hangs took %s with a Timeout of %s", took, r.Timeout)
 	}
 	expectNotHeld(t, cp, "the nodes are not listed yet")
-	expectNodes(t, cp, nil)
+	expectNodes(t, cp, lodiav1alpha1.NodesStatus{})
 }
 
 func TestReconcilingIsAppliedBeforeATenantThatNeverAnswersIsCalled(t *testing.T) {
@@ -789,7 +789,7 @@ func TestReconcilingIsAppliedBeforeATenantThatNeverAnswersIsCalled(t *testing.T)
 	if err := expectHeld(t, cp, metav1.ConditionUnknown, lodiav1alpha1.ReasonReconciling, "the first pass has not finished"); err != nil {
 		t.Error(err)
 	}
-	expectNodes(t, cp, nil)
+	expectNodes(t, cp, lodiav1alpha1.NodesStatus{})
 }
 
 func TestTheHoldIsDisabledWithTheFieldFalse(t *testing.T) {
@@ -975,7 +975,7 @@ func TestAPausedOrDeletedControlPlaneGetsNoPassAndNoRequeue(t *testing.T) {
 	sample(t, r, cp)
 	expectNotHeld(t, cp, silent(0, 2))
 
-	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) })
 	r.Client = noControlPlaneWrite(t, k8s)
 	for _, at := range []int{10, 25} {
 		now.SetTime(start.Add(time.Duration(at) * time.Second))
@@ -985,7 +985,7 @@ func TestAPausedOrDeletedControlPlaneGetsNoPassAndNoRequeue(t *testing.T) {
 		}
 	}
 	r.Client = k8s
-	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	updateSpec(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(false) })
 	sample(t, r, cp)
 	expectNotHeld(t, cp, silent(0, 2))
 
@@ -1047,7 +1047,7 @@ func TestAStaleCacheDoesNotPutReconcilingOverACondition(t *testing.T) {
 			}
 			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
 				meta.RemoveStatusCondition(&plane.Status.Conditions, lodiav1alpha1.ConditionControllerManagerHeld)
-				plane.Status.Nodes = nil
+				plane.Status.Nodes = lodiav1alpha1.NodesStatus{}
 			}
 			return nil
 		},

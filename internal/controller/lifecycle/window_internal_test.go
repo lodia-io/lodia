@@ -13,7 +13,7 @@ import (
 
 func withWindow(begin, end, zone string) *lodiav1alpha1.ControlPlane {
 	return &lodiav1alpha1.ControlPlane{Spec: lodiav1alpha1.ControlPlaneSpec{Maintenance: &lodiav1alpha1.Maintenance{
-		Window: &lodiav1alpha1.MaintenanceWindow{Begin: begin, End: end, TimeZone: zone},
+		Window: lodiav1alpha1.MaintenanceWindow{Begin: begin, End: end, TimeZone: zone},
 	}}}
 }
 

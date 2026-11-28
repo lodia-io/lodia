@@ -16,7 +16,7 @@ func patches(f *facts) {
 	if f.cp.Spec.Maintenance == nil {
 		f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{}
 	}
-	f.cp.Spec.Maintenance.AutoUpdate = &lodiav1alpha1.AutoUpdate{KubernetesPatch: true}
+	f.cp.Spec.Maintenance.AutoUpdate = &lodiav1alpha1.AutoUpdate{KubernetesPatch: new(true)}
 }
 
 func specAt(version string) func(*facts) { return func(f *facts) { f.cp.Spec.Version = version } }
@@ -27,7 +27,7 @@ func targetAt(version string) func(*facts) {
 
 func runsAt(version string) func(*facts) {
 	return func(f *facts) {
-		for _, c := range []*lodiav1alpha1.ComponentStatus{f.cp.Status.Components.APIServer, f.cp.Status.Components.ControllerManager, f.cp.Status.Components.Scheduler} {
+		for _, c := range []*lodiav1alpha1.ComponentStatus{&f.cp.Status.Components.APIServer, &f.cp.Status.Components.ControllerManager, &f.cp.Status.Components.Scheduler} {
 			c.Version = version
 		}
 		f.cp.Status.Addons.Version = version
@@ -36,7 +36,7 @@ func runsAt(version string) func(*facts) {
 
 func upgrading(step lodiav1alpha1.UpgradeStep) func(*facts) {
 	return func(f *facts) {
-		f.cp.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: step, StartedAt: started}}
+		f.cp.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: lodiav1alpha1.UpgradeStatus{Step: step, StartedAt: started}}
 	}
 }
 
@@ -59,8 +59,8 @@ func expectVersion(t *testing.T, d decision, want versioned) {
 		t.Errorf("target is %+v, want version %s", got, want.version)
 	}
 	var upgrade *lodiav1alpha1.UpgradeStatus
-	if k := d.status.Kubernetes; k != nil {
-		upgrade = k.Upgrade
+	if k := d.status.Kubernetes; k != nil && k.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
+		upgrade = &k.Upgrade
 	}
 	switch {
 	case want.step == "" && upgrade != nil:
@@ -102,8 +102,8 @@ func TestAPatchUpdateIsGrantedByItsOwnRules(t *testing.T) {
 		{"not at once on APIServerReady WaitingForTarget", held(running(revisionA), closedWindow, patches,
 			condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForTarget})), waitsForTheWindow, stays},
 		{"not at once on a restored tenant whose controller manager is not released", held(running(revisionA), closedWindow, patches, func(f *facts) {
-			f.cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
-			f.cp.Status.Components.ControllerManager.Total = 0
+			f.cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
+			f.cp.Status.Components.ControllerManager.Total = new(int32(0))
 		}), waitsForTheWindow, stays},
 		{"not while Failed stands", held(running(revisionA), patches, refused, upgrading(lodiav1alpha1.UpgradeStepAddons), func(f *facts) { f.cp.Status.Addons.Version = "v1.37.0" }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "the tenant refuses"}, versioned{version: "v1.37.1", step: lodiav1alpha1.UpgradeStepAddons, since: started.Time}},
@@ -122,6 +122,8 @@ func TestAPatchUpdateIsGrantedByItsOwnRules(t *testing.T) {
 		{"none at latest", held(running(revisionA), patches, targetAt(latest137), runsAt(latest137)),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, versioned{version: latest137}},
 		{"none with patch updates off", held(running(revisionA), closedWindow),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, stays},
+		{"none with patch updates set false", held(running(revisionA), closedWindow, patches, func(f *facts) { f.cp.Spec.Maintenance.AutoUpdate.KubernetesPatch = new(false) }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, stays},
 		{"none during a minor step", held(running(revisionA), closedWindow, patches, specAt("v1.37.1"), targetAt("v1.36.5"), runsAt("v1.36.5"), upgrading(lodiav1alpha1.UpgradeStepBackup)),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonUpgrading}, versioned{version: "v1.36.5", step: lodiav1alpha1.UpgradeStepBackup, since: started.Time}},
@@ -190,11 +192,11 @@ func onClass(running, target, class int64) func(*facts) {
 
 func onClasses(running, target, class lodiav1alpha1.DatastoreClassGeneration) func(*facts) {
 	return func(f *facts) {
-		f.cp.Status.Datastore.Class = &lodiav1alpha1.DatastoreClassStatus{Name: "shared", DatastoreClassGeneration: running}
+		f.cp.Status.Datastore.Class = lodiav1alpha1.DatastoreClassStatus{Name: "shared", DatastoreClassGeneration: running}
 		if f.cp.Status.Target != nil {
-			f.cp.Status.Target.DatastoreClass = nil
+			f.cp.Status.Target.DatastoreClass = lodiav1alpha1.DatastoreClassGeneration{}
 			if target != noClass {
-				f.cp.Status.Target.DatastoreClass = &target
+				f.cp.Status.Target.DatastoreClass = target
 			}
 		}
 		f.class = class
@@ -234,8 +236,8 @@ func TestAClassEditIsGrantedByItsOwnRules(t *testing.T) {
 		{"not at once on APIServerReady WaitingForTarget", held(running(revisionA), closedWindow, onClass(4, 4, 5),
 			condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForTarget})), waitsForTheWindow, 4},
 		{"not at once on a restored tenant whose controller manager is not released", held(running(revisionA), closedWindow, onClass(4, 4, 5), func(f *facts) {
-			f.cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
-			f.cp.Status.Components.ControllerManager.Total = 0
+			f.cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
+			f.cp.Status.Components.ControllerManager.Total = new(int32(0))
 		}), waitsForTheWindow, 4},
 		{"not with no slot free", held(running(revisionA), onClass(4, 4, 5), fleet(holding("a", "a")), func(f *facts) { f.limit = 1 }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, message: "DatastoreClass shared generation 5 waits for one of the fleet's 1 slots", scheduledFor: &nowSecond, requeue: fleetRequeue}, 4},
@@ -249,7 +251,7 @@ func TestAClassEditIsGrantedByItsOwnRules(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
 		{"a class gone before the Etcd took its granted edit leaves the target at what the Etcd runs", held(running(revisionA), closedWindow, onClass(4, 5, 0), slotted(lodiav1alpha1.ReasonMaintaining, 3)),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "keeps its slot of the fleet until", slot: true, settlingSince: &nowSecond, requeue: settling}, 4},
-		{"an Etcd without a class reported keeps the target", held(running(revisionA), closedWindow, func(f *facts) { f.cp.Status.Target.DatastoreClass = new(shared(4)) }),
+		{"an Etcd without a class reported keeps the target", held(running(revisionA), closedWindow, func(f *facts) { f.cp.Status.Target.DatastoreClass = shared(4) }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
 		{"the owner's edit refused is Failed", held(running(revisionA), onClass(4, 5, 5), refusedEtcd),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: Refused: the API server refuses Etcd dev-etcd"}, 5},
@@ -454,13 +456,13 @@ func TestAStandingRefusalIsFailedWhereTheClassTargetTakesWhatTheEtcdRuns(t *test
 
 func TestAPausedOrDeletingPassKeepsTheClassTarget(t *testing.T) {
 	for _, change := range []func(*facts){
-		func(f *facts) { f.cp.Spec.Paused = true },
+		func(f *facts) { f.cp.Spec.Paused = new(true) },
 		func(f *facts) { f.cp.DeletionTimestamp = &started },
 	} {
 		f := held(running(revisionA), onClass(4, 4, 5), change)
 		expectClass(t, decide(f), shared(4))
 		f = held(running(revisionA), onClass(4, 0, 4), change)
-		if target := decide(f).status.Target; target == nil || target.DatastoreClass != nil {
+		if target := decide(f).status.Target; target == nil || target.DatastoreClass != (lodiav1alpha1.DatastoreClassGeneration{}) {
 			t.Errorf("a paused or deleting pass wrote target %+v, want no class", target)
 		}
 	}

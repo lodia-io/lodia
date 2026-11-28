@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
@@ -121,7 +122,7 @@ func TestTheRevisionSurvivesTheEdgesOfAPass(t *testing.T) {
 				t.Errorf("a pass of %s wrote %t, want %t", c.revision, wrote, c.writes)
 			}
 		}
-		if after := getQuiet(t, cp); after.Status.Target.Version != settled.Status.Target.Version || after.Status.ObservedGeneration != settled.Status.ObservedGeneration {
+		if after := getQuiet(t, cp); after.Status.Target.Version != settled.Status.Target.Version || !ptr.Equal(after.Status.ObservedGeneration, settled.Status.ObservedGeneration) {
 			t.Errorf("a revision changed more than itself: target %+v then %+v", settled.Status.Target, after.Status.Target)
 		}
 	})
@@ -147,7 +148,7 @@ func TestTheRevisionSurvivesTheEdgesOfAPass(t *testing.T) {
 		cp := seed(t)
 		quietPass(t, cp)
 		paused := getQuiet(t, cp)
-		paused.Spec.Paused = true
+		paused.Spec.Paused = new(true)
 		if err := quiet.Update(t.Context(), paused); err != nil {
 			t.Fatal(err)
 		}
@@ -158,7 +159,7 @@ func TestTheRevisionSurvivesTheEdgesOfAPass(t *testing.T) {
 			t.Errorf("a paused ControlPlane holds the revision %q, want %q", got, runningRevision)
 		}
 		unpaused := getQuiet(t, cp)
-		unpaused.Spec.Paused = false
+		unpaused.Spec.Paused = new(false)
 		if err := quiet.Update(t.Context(), unpaused); err != nil {
 			t.Fatal(err)
 		}

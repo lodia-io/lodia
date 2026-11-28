@@ -26,7 +26,7 @@ const (
 func controlPlane(name string, uid types.UID, source *lodiav1alpha1.UIDReference) *lodiav1alpha1.ControlPlane {
 	cp := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team-a", UID: uid}}
 	if source != nil {
-		cp.Status.Restore = &lodiav1alpha1.RestoreStatus{
+		cp.Status.Restore = lodiav1alpha1.RestoreStatus{
 			Backup:      lodiav1alpha1.UIDReference{Name: "a-1", UID: "5e1f7c3a-0000-4000-8000-000000000009"},
 			Source:      *source,
 			CompletedAt: metav1.Date(2026, 11, 2, 18, 0, 0, 0, time.UTC),

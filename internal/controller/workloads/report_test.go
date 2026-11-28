@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -33,7 +34,7 @@ var componentNames = []string{"kube-apiserver", "kube-controller-manager", "kube
 func highlyAvailable(t *testing.T) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	})
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
@@ -55,9 +56,9 @@ func reported(c *lodiav1alpha1.ComponentsStatus) string {
 		return "absent"
 	}
 	var got []string
-	for _, s := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+	for _, s := range []lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
 		switch {
-		case s == nil:
+		case s == (lodiav1alpha1.ComponentStatus{}):
 			got = append(got, "absent")
 		case s.Version == "":
 			got = append(got, "none")
@@ -103,7 +104,7 @@ func imagesAt(t *testing.T, cp *lodiav1alpha1.ControlPlane, tag string, componen
 
 func pause(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
-	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = new(true) })
 	generation := get(t, cp).Generation
 	testenv.Eventually(t, func() error {
 		if read := managerReads.pausedAt(client.ObjectKeyFromObject(cp)); read < generation {
@@ -215,10 +216,10 @@ func TestAGoneDeploymentKeepsItsReportOnBothPaths(t *testing.T) {
 	if got := reported(status.Components); got != "v1.37.1 v1.37.1 v1.37.1" {
 		t.Fatalf("a pass that finds the scheduler's Deployment gone reports %s, want every version kept", got)
 	}
-	if s := status.Components.Scheduler; s.Total != 0 || s.Ready != 0 || s.Updated != nil {
+	if s := status.Components.Scheduler; ptr.Deref(s.Total, -1) != 0 || ptr.Deref(s.Ready, -1) != 0 || s.Updated != nil {
 		t.Errorf("the scheduler without a Deployment counts %+v, want no replicas and no updated count", s.RolloutCount)
 	}
-	if s := status.Components.APIServer; s.Total != 1 || s.Ready != 1 || s.Updated == nil || *s.Updated != 1 {
+	if s := status.Components.APIServer; ptr.Deref(s.Total, -1) != 1 || ptr.Deref(s.Ready, -1) != 1 || s.Updated == nil || *s.Updated != 1 {
 		t.Errorf("the API server, whose Deployment is there, counts %+v, want 1 of 1 updated", s.RolloutCount)
 	}
 
@@ -226,8 +227,8 @@ func TestAGoneDeploymentKeepsItsReportOnBothPaths(t *testing.T) {
 	if got := reported(status.Components); got != "v1.37.1 v1.37.1 v1.37.1" {
 		t.Fatalf("a pass that controls no Deployment reports %s, want every version kept", got)
 	}
-	for _, s := range []*lodiav1alpha1.ComponentStatus{status.Components.APIServer, status.Components.ControllerManager, status.Components.Scheduler} {
-		if s.Total != 0 || s.Ready != 0 || s.Updated != nil {
+	for _, s := range []lodiav1alpha1.ComponentStatus{status.Components.APIServer, status.Components.ControllerManager, status.Components.Scheduler} {
+		if ptr.Deref(s.Total, -1) != 0 || ptr.Deref(s.Ready, -1) != 0 || s.Updated != nil {
 			t.Errorf("a component without a Deployment counts %+v, want no replicas and no updated count", s.RolloutCount)
 		}
 	}
@@ -317,7 +318,7 @@ func TestThePreviousReportIsReadFromTheAPIServerNotTheCache(t *testing.T) {
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
 				cache.DeepCopyInto(cp)
-				cp.Spec.Paused = false
+				cp.Spec.Paused = new(false)
 				return nil
 			}
 			return c.Get(ctx, key, obj, opts...)

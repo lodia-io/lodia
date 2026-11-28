@@ -29,7 +29,7 @@ func recordForManager(t *testing.T, cp *lodiav1alpha1.ControlPlane, told lodiav1
 	tell(managerLatches, cp, told)
 	datastore.Send(t.Context(), managerLatches, cp)
 	testenv.Eventually(t, func() error {
-		if got := liveRecord(t, cp); got == nil || !got.DetectedAt.Equal(&told.DetectedAt) {
+		if got := liveRecord(t, cp); got == (lodiav1alpha1.MemberRestoreStatus{}) || !got.DetectedAt.Equal(&told.DetectedAt) {
 			return fmt.Errorf("status.memberRestore is %+v, want %+v", got, told)
 		}
 		return nil
@@ -71,7 +71,7 @@ func warned(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 func reportedAt(t *testing.T, cp *lodiav1alpha1.ControlPlane) *metav1.Time {
 	t.Helper()
 	record := liveRecord(t, cp)
-	if record == nil {
+	if record == (lodiav1alpha1.MemberRestoreStatus{}) {
 		t.Fatal("no status.memberRestore")
 	}
 	return record.ReportedAt
@@ -102,7 +102,7 @@ func TestARestoredMemberIsReportedUntilItsRollIsDone(t *testing.T) {
 			waitCondition(t, ns, cp.Name, metav1.ConditionTrue, lodiav1alpha1.ReasonMemberRestored, "member rolling-etcd-0")
 			reportRoll(t, cp, told.DetectedAt, rolledComponents...)
 			waitCondition(t, ns, cp.Name, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 1 of 1 members ready")
-			if _, err := pass(t, recorder(k8s, k8s, datastore.NewLatches()), cp); err != nil || liveRecord(t, cp) == nil {
+			if _, err := pass(t, recorder(k8s, k8s, datastore.NewLatches()), cp); err != nil || liveRecord(t, cp) == (lodiav1alpha1.MemberRestoreStatus{}) {
 				t.Errorf("a restarted reconciler's pass returned %v and left status.memberRestore %+v, want it kept", err, liveRecord(t, cp))
 			}
 		})

@@ -18,7 +18,7 @@ func controlPlaneAt(target, apiServer string) *lodiav1alpha1.ControlPlane {
 		cp.Status.Target = &lodiav1alpha1.Target{Version: target}
 	}
 	if apiServer != "" {
-		cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: apiServer}}}
+		cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: apiServer}}}
 	}
 	return cp
 }
@@ -84,9 +84,9 @@ func TestTheControllerManagerAndSchedulerAreNeverNewerThanTheAPIServersReport(t 
 					cp := &lodiav1alpha1.ControlPlane{Status: lodiav1alpha1.ControlPlaneStatus{
 						Target: &lodiav1alpha1.Target{Version: target},
 						Components: &lodiav1alpha1.ComponentsStatus{
-							APIServer:         &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: apiServer}},
-							ControllerManager: &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: controllerManager}},
-							Scheduler:         &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: scheduler}},
+							APIServer:         lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: apiServer}},
+							ControllerManager: lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: controllerManager}},
+							Scheduler:         lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: scheduler}},
 						},
 					}}
 					images, message, unknown := imagesOf(cp)

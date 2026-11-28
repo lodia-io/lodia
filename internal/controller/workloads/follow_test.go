@@ -229,7 +229,7 @@ func TestAStaleReportInTheCacheDoesNotRollTheControllerManagerBack(t *testing.T)
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
 				cache.DeepCopyInto(cp)
-				cp.Spec.Paused = false
+				cp.Spec.Paused = new(false)
 				return nil
 			}
 			return c.Get(ctx, key, obj, opts...)

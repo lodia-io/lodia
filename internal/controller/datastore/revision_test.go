@@ -32,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/utils/clock"
 	clocktesting "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -51,7 +52,7 @@ func unpaused(c client.WithWatch) client.WithWatch {
 				return err
 			}
 			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-				cp.Spec.Paused = false
+				cp.Spec.Paused = new(false)
 			}
 			return nil
 		},
@@ -138,7 +139,7 @@ func stamped(etcd *druidv1alpha1.Etcd) string {
 func heldTenant(t *testing.T, ns, name, class string, edit func(*lodiav1alpha1.ControlPlane)) *druidv1alpha1.Etcd {
 	t.Helper()
 	cp := controlPlane(ns, name, class)
-	cp.Spec.Paused = true
+	cp.Spec.Paused = new(true)
 	if edit != nil {
 		edit(cp)
 	}
@@ -215,7 +216,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 	create(t, credentials(credentialsNamespace))
 	createClass(t, fullClass("held-copy", credentialsNamespace))
 	before := heldTenant(t, ns, cp, "held-copy", func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	})
 	if _, ok := before.Annotations["resources.druid.gardener.cloud/allow-unhealthy-pod-eviction"]; !ok {
 		t.Fatalf("the Etcd of a highly available ControlPlane is annotated %v", before.Annotations)
@@ -231,7 +232,7 @@ func TestAHeldPassChangesNothingButTheCertificateReferences(t *testing.T) {
 		class.Spec.Etcd.QuotaBackendBytes = new(resource.MustParse("3Gi"))
 		class.Spec.Placement.PriorityClassName = "another"
 	})
-	setHighAvailability(t, ns, cp, nil)
+	setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{})
 	before = getEtcd(t, ns, cp)
 	if err := requestedAs(fmt.Sprintf("%d/%s", before.Generation, previousRevision), false)(before); err != nil {
 		t.Fatalf("a person's edit of the Etcd: %v", err)
@@ -483,7 +484,7 @@ func TestAHeldPassCreatesAMissingEtcdFromTheFullRender(t *testing.T) {
 	const cp = "held-create"
 	createClass(t, newClass("held-create", "Retain"))
 	plane := controlPlane(ns, cp, "held-create")
-	plane.Spec.Paused = true
+	plane.Spec.Paused = new(true)
 	create(t, plane)
 	grant(t, plane, previousRevision)
 	writeGeneration(t, ns, cp, 1)
@@ -581,7 +582,7 @@ func TestTheRequestFollowsEveryWriteOfTheEtcd(t *testing.T) {
 	waitEtcd(t, ns, cp, requestedAs("2/"+revision, false))
 	consistently(t, func() error { return requestedAs("2/"+revision, false)(getEtcd(t, ns, cp)) })
 
-	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
+	setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	runStatefulSet(t, ns, cp, 2)
 	setEtcdStatus(t, ns, cp)
 	third := waitEtcd(t, ns, cp, requestedAs("3/"+revision, true))
@@ -597,7 +598,7 @@ func TestARequestThatConflictsIsMadeByTheNextPass(t *testing.T) {
 	const cp = "request-conflict"
 	createClass(t, newClass("request-conflict", "Retain"))
 	plane := controlPlane(ns, cp, "request-conflict")
-	plane.Spec.Paused = true
+	plane.Spec.Paused = new(true)
 	create(t, plane)
 	writeGeneration(t, ns, cp, 1)
 	r := operatorAt(unpaused(k8s), revision)
@@ -688,7 +689,7 @@ func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
 	if ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonRefused || ready.Message != "Etcd "+cp+"-etcd has quorum, 1 of 1 members ready; "+want {
 		t.Errorf("a refused request over an etcd with quorum leaves DatastoreReady %s %s %q, want True %s %q", ready.Status, ready.Reason, ready.Message, lodiav1alpha1.ReasonRefused, want)
 	}
-	if datastore := plane.Status.Datastore; datastore == nil || len(datastore.Endpoints) != 1 || datastore.OperatorRevision != previousRevision || datastore.Members.Updated == nil {
+	if datastore := plane.Status.Datastore; len(datastore.Endpoints) != 1 || datastore.OperatorRevision != previousRevision || datastore.Members.Updated == nil {
 		t.Errorf("a refused request leaves status.datastore %+v, want the applied Etcd's, members updated, and %s kept", datastore, previousRevision)
 	}
 	if backup := meta.FindStatusCondition(plane.Status.Conditions, lodiav1alpha1.ConditionBackupReady); backup.Reason != lodiav1alpha1.ReasonNoBackupStore {
@@ -713,7 +714,7 @@ func TestARefusedRequestLabelsTheClaimsOfTheAppliedEtcd(t *testing.T) {
 	const cp = "refused-claims"
 	createClass(t, newClass(cp, "Retain"))
 	plane := controlPlane(ns, cp, cp)
-	plane.Spec.Paused = true
+	plane.Spec.Paused = new(true)
 	create(t, plane)
 	writeGeneration(t, ns, cp, 1)
 	refusing, refused := refusingRequests(cp)
@@ -747,7 +748,7 @@ func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
 	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
 		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse("3Gi"))}
 	})
-	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
+	setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	grant(t, getControlPlane(t, ns, cp), revision)
 	grantClass(t, ns, cp, cp)
 	refusing, refused := refusingRequests(cp)
@@ -758,8 +759,8 @@ func TestARefusedRequestReportsTheAppliedEtcd(t *testing.T) {
 		t.Fatalf("the grant's pass applied %d members of class generation %s, want 3 of 2", etcd.Spec.Replicas, etcd.Annotations[lodiav1alpha1.DatastoreClassGenerationAnnotation])
 	}
 	datastore := getControlPlane(t, ns, cp).Status.Datastore
-	if datastore.Class == nil || datastore.Class.Generation != 1 || datastore.Members.Total != 3 {
-		t.Errorf("a refused request reports class %+v and %d members, want class generation 1, which runs until etcd-druid serves a request, and the applied Etcd's 3 members", datastore.Class, datastore.Members.Total)
+	if datastore.Class == (lodiav1alpha1.DatastoreClassStatus{}) || datastore.Class.Generation != 1 || ptr.Deref(datastore.Members.Total, 0) != 3 {
+		t.Errorf("a refused request reports class %+v and %d members, want class generation 1, which runs until etcd-druid serves a request, and the applied Etcd's 3 members", datastore.Class, ptr.Deref(datastore.Members.Total, -1))
 	}
 }
 
@@ -892,7 +893,7 @@ func TestAnEtcdWithoutAStampOrARecordWaitsForEtcdDruid(t *testing.T) {
 func reportedRevision(t *testing.T, ns, cp string) string {
 	t.Helper()
 	datastore := getControlPlane(t, ns, cp).Status.Datastore
-	if datastore == nil {
+	if len(datastore.Endpoints) == 0 {
 		t.Fatal("no status.datastore")
 	}
 	return datastore.OperatorRevision
@@ -933,7 +934,7 @@ func TestTheOperatorRevisionIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 				if err := c.Get(ctx, key, obj, opts...); err != nil {
 					return err
 				}
-				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok && plane.Status.Datastore != nil {
+				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok && len(plane.Status.Datastore.Endpoints) > 0 {
 					plane.Status.Datastore.OperatorRevision = "v0.0.0-test+older"
 				}
 				return nil
@@ -1094,7 +1095,7 @@ func TestARequestConsumedByAReconcileThatStartedBeforeItIsAskedAgain(t *testing.
 		const cp = "new-etcd-request"
 		createClass(t, newClass(cp, "Retain"))
 		plane := controlPlane(ns, cp, cp)
-		plane.Spec.Paused = true
+		plane.Spec.Paused = new(true)
 		create(t, plane)
 		writeGeneration(t, ns, cp, 1)
 		first := interceptor.NewClient(unpaused(k8s), interceptor.Funcs{
@@ -1307,7 +1308,7 @@ func TestAHeldPassAtANewGenerationReportsTheQuorumAtTheGenerationItDescribes(t *
 	setEtcdStatus(t, ns, cp, druidtest.BackupReady(druidv1alpha1.ConditionTrue, "BackupSucceeded", "Snapshot backup succeeded"))
 	r := operatorAt(unpaused(k8s), revision)
 	mustPass(t, r, ns, cp)
-	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
+	setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	generation := getControlPlane(t, ns, cp).Generation
 
 	check := func(conditionType string, status metav1.ConditionStatus, reason, message string) {
@@ -1417,7 +1418,7 @@ func TestWithoutAGrantedRevisionDatastoreWaitsForTheTarget(t *testing.T) {
 		return nil
 	})
 
-	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
+	setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	consistently(t, func() error {
 		for _, c := range getControlPlane(t, ns, cp).Status.Conditions {
 			if (c.Type == lodiav1alpha1.ConditionDatastoreReady || c.Type == lodiav1alpha1.ConditionBackupReady) && c.ObservedGeneration != 1 {
@@ -1451,7 +1452,7 @@ func TestWithoutAGrantedRevisionDatastoreWaitsForTheTarget(t *testing.T) {
 func TestTheRestoreAsksEtcdDruidOnEveryEtcdItWrites(t *testing.T) {
 	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
 	etcd := r.copied(t)
 	if etcd.Spec.Replicas != 1 {
@@ -1472,7 +1473,7 @@ func TestTheRestoreAsksEtcdDruidOnEveryEtcdItWrites(t *testing.T) {
 func TestARefusedRequestOnTheRestoresRaiseReportsTheRestore(t *testing.T) {
 	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
 	r.copied(t)
 	waitEtcd(t, r.ns, restoredCP, requestedAs("1/"+revision, true))
@@ -1523,7 +1524,7 @@ func TestARefusedRequestOnTheRestoresRaiseReportsTheRestore(t *testing.T) {
 	if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
 		t.Errorf("the pass that completes the restore applied %d members, want 3", n)
 	}
-	if restore := r.controlPlane(t).Status.Restore; restore == nil || restore.Backup.Name != backupName {
+	if restore := r.controlPlane(t).Status.Restore; restore == (lodiav1alpha1.RestoreStatus{}) || restore.Backup.Name != backupName {
 		t.Errorf("the pass that completes the restore and whose request is refused wrote status.restore %+v, want Backup %s", restore, backupName)
 	}
 }
@@ -1617,7 +1618,7 @@ func TestAHeldPassTriesTheEtcdsRender(t *testing.T) {
 	createClass(t, newClass(class, "Retain"))
 	heldTenant(t, ns, name, class, nil)
 	editClass(t, class, func(c *lodiav1alpha1.DatastoreClass) {
-		c.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Defragmentation: &lodiav1alpha1.Defragmentation{Schedule: schedule}}
+		c.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Defragmentation: lodiav1alpha1.Defragmentation{Schedule: schedule}}
 	})
 	grantClass(t, ns, name, class)
 	rule := admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}}

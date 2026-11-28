@@ -20,7 +20,7 @@
     "kubernetesVersion": "v1.35.0",
     "seal": {
       "quotaBackendBytes": "8Gi",
-      "revision": 0
+      "revision": 184739
     },
     "source": {
       "name": "dev",

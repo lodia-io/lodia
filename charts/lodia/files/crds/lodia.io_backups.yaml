@@ -75,6 +75,7 @@ spec:
               rule: self == oldSelf
           status:
             description: status is the copy's progress and where it is.
+            minProperties: 1
             properties:
               completedAt:
                 description: completedAt is when the Backup was complete.
@@ -148,6 +149,7 @@ spec:
                   until Lifecycle writes the former. A ControlPlane restored from the
                   Backup runs the same minor.
                 maxLength: 16
+                minLength: 1
                 type: string
               network:
                 description: |-
@@ -229,9 +231,10 @@ spec:
                     minLength: 1
                     type: string
                   endpoint:
-                    description: endpoint of an S3-compatible store; empty for the
+                    description: endpoint of an S3-compatible store; absent for the
                       provider's own.
                     maxLength: 512
+                    minLength: 1
                     type: string
                   fromSecret:
                     description: |-

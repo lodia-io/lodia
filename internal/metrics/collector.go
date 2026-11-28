@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -213,7 +214,7 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	}
 	endpoint := lodiav1alpha1.MetricEndpointNodePort
 	switch {
-	case cp.Spec.Endpoint.Gateway != nil:
+	case cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}):
 		endpoint = lodiav1alpha1.MetricEndpointGateway
 	case cp.Spec.Endpoint.LoadBalancer != nil:
 		endpoint = lodiav1alpha1.MetricEndpointLoadBalancer
@@ -233,15 +234,15 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	}
 
 	emit(generation, float64(cp.Generation))
-	if status.ObservedGeneration > 0 {
-		emit(observedGeneration, float64(status.ObservedGeneration))
+	if g := status.ObservedGeneration; g != nil {
+		emit(observedGeneration, float64(*g))
 	}
 
-	if n := status.Nodes; n != nil {
-		emit(nodes, float64(n.Total))
-		emit(nodesReady, float64(n.Ready))
-		if !n.Truncated {
-			emit(nodesOutdatedKubelets, float64(n.OutdatedKubelets))
+	if n := status.Nodes; n != (lodiav1alpha1.NodesStatus{}) {
+		emit(nodes, float64(ptr.Deref(n.Total, 0)))
+		emit(nodesReady, float64(ptr.Deref(n.Ready, 0)))
+		if !ptr.Deref(n.Truncated, false) {
+			emit(nodesOutdatedKubelets, float64(ptr.Deref(n.OutdatedKubelets, 0)))
 		}
 	}
 	if silent, counted, ok := c.NodeCounts(client.ObjectKeyFromObject(cp), cp.UID); ok {
@@ -252,22 +253,22 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	if components := status.Components; components != nil {
 		for _, component := range []struct {
 			name   string
-			status *lodiav1alpha1.ComponentStatus
+			status lodiav1alpha1.ComponentStatus
 		}{
 			{lodiav1alpha1.MetricComponentAPIServer, components.APIServer},
 			{lodiav1alpha1.MetricComponentControllerManager, components.ControllerManager},
 			{lodiav1alpha1.MetricComponentScheduler, components.Scheduler},
 		} {
-			if component.status != nil {
-				emit(componentReplicas, float64(component.status.Total), component.name)
-				emit(componentReplicasReady, float64(component.status.Ready), component.name)
+			if component.status != (lodiav1alpha1.ComponentStatus{}) {
+				emit(componentReplicas, float64(ptr.Deref(component.status.Total, 0)), component.name)
+				emit(componentReplicasReady, float64(ptr.Deref(component.status.Ready, 0)), component.name)
 			}
 		}
 	}
 
-	if d := status.Datastore; d != nil {
-		emit(datastoreMembers, float64(d.Members.Total))
-		emit(datastoreMembersReady, float64(d.Members.Ready))
+	if d := status.Datastore; len(d.Endpoints) > 0 {
+		emit(datastoreMembers, float64(ptr.Deref(d.Members.Total, 0)))
+		emit(datastoreMembersReady, float64(ptr.Deref(d.Members.Ready, 0)))
 		if d.Members.Updated != nil {
 			emit(datastoreMembersUpdated, float64(*d.Members.Updated))
 		}
@@ -290,7 +291,7 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 		}
 	}
 
-	if r := status.MemberRestore; r != nil {
+	if r := status.MemberRestore; r != (lodiav1alpha1.MemberRestoreStatus{}) {
 		emit(datastoreMemberRestore, seconds(r.DetectedAt), string(r.From))
 	}
 
@@ -301,7 +302,7 @@ func (c *Collector) collect(ch chan<- prometheus.Metric, cp *lodiav1alpha1.Contr
 	if t := status.Target; t != nil && t.ScheduledFor != nil {
 		emit(scheduledFor, seconds(*t.ScheduledFor))
 	}
-	if k := status.Kubernetes; k != nil && k.Upgrade != nil {
+	if k := status.Kubernetes; k != nil && k.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
 		emit(upgradeStarted, seconds(k.Upgrade.StartedAt), string(k.Upgrade.Step))
 	}
 	if c := status.Credentials; c != nil && c.NotAfter != nil {

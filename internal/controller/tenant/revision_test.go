@@ -51,7 +51,7 @@ func (c unpaused) Get(ctx context.Context, key client.ObjectKey, obj client.Obje
 		return err
 	}
 	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-		cp.Spec.Paused = false
+		cp.Spec.Paused = new(false)
 	}
 	return nil
 }
@@ -1070,7 +1070,7 @@ func TestAHeldPassTriesARefusedUpdateOfAnObjectMadeByHand(t *testing.T) {
 		t.Fatal(err)
 	}
 	refuseConfigMap(t, admin, "kube-proxy")
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(false) })
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	testenv.Eventually(t, func() error {
 		return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "ConfigMap kube-system/kube-proxy is refused by the tenant's API server; the reason is in Lodia's log", taken)

@@ -33,7 +33,7 @@ func TestNoSecretNameOfOneControlPlaneIsAnothers(t *testing.T) {
 func gatewayControlPlane() *lodiav1alpha1.ControlPlane {
 	return &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev"},
-		Spec:       lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{}}},
+		Spec:       lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{ParentRef: lodiav1alpha1.ParentReference{Name: "tenants", Namespace: "gateway", SectionName: "tls"}}}},
 	}
 }
 

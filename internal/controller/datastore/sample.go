@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -202,7 +203,7 @@ func (r *SampleReconciler) pass(ctx context.Context, cp *lodiav1alpha1.ControlPl
 // that is not paused; nil otherwise. An etcd that never had a ready member is
 // on its way, a new one or a restore's, and has no leader to page about.
 func (r *SampleReconciler) sampled(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*etcddruid.Store, error) {
-	if cp.Spec.Paused {
+	if ptr.Deref(cp.Spec.Paused, false) {
 		return nil, nil
 	}
 	etcd, err := r.Druid.Get(ctx, r.Cache, cp)
@@ -367,10 +368,10 @@ func (r *SampleReconciler) newest(ctx context.Context, cp *lodiav1alpha1.Control
 		logf.FromContext(ctx).Error(err, "read the ControlPlane's memberRestore")
 		return "", false
 	}
-	if record := current.Status.MemberRestore; record != nil {
+	if record := current.Status.MemberRestore; record != (lodiav1alpha1.MemberRestoreStatus{}) {
 		return record.From, true
 	}
-	if cp.Spec.RestoreFrom != nil {
+	if cp.Spec.RestoreFrom != (lodiav1alpha1.RestoreFrom{}) {
 		return lodiav1alpha1.MemberRestoreFromSnapshots, true
 	}
 	return "", true
