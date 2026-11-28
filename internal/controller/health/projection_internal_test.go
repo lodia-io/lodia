@@ -16,7 +16,7 @@ import (
 // docs/operations.md: no object and no array of a tenant's answer is decoded
 // by encoding/json, whose decoding multiplies a tenant's bytes.
 func TestNothingIsPassedToEncodingJSONButAScalarToken(t *testing.T) {
-	allowed := map[string]bool{"jsonscan.go: Text": true, "jsonscan.go: keyOf": true}
+	allowed := map[string]bool{"jsonscan.go: Text": true, "jsonscan.go: Head": true, "jsonscan.go: keyOf": true}
 	found := map[string]bool{}
 	for _, pattern := range []string{"*.go", "../../jsonscan/*.go"} {
 		files, err := filepath.Glob(pattern)

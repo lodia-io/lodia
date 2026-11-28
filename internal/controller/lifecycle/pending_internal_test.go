@@ -255,8 +255,8 @@ func TestAClassEditIsGrantedByItsOwnRules(t *testing.T) {
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 4},
 		{"the owner's edit refused is Failed", held(running(revisionA), onClass(4, 5, 5), refusedEtcd),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: Refused: the API server refuses Etcd dev-etcd"}, 5},
-		{"a standing refusal once the Etcd runs the target is Ready's to report", held(running(revisionA), onClass(5, 5, 5), refusedEtcd),
-			granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}, 5},
+		{"a standing refusal once the Etcd runs the target is Failed too", held(running(revisionA), onClass(5, 5, 5), refusedEtcd),
+			granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: Refused: the API server refuses Etcd dev-etcd"}, 5},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			expectClass(t, expectGrant(t, c.f, c.want), shared(c.class))
@@ -341,7 +341,7 @@ func TestAClassHeldForItsCredentialsTakesNoSlotAndFailsInOne(t *testing.T) {
 	for _, reason := range []string{lodiav1alpha1.ReasonSecretNotFound, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonRefused} {
 		t.Run(reason, func(t *testing.T) {
 			expectClass(t, expectGrant(t, held(running(revisionA), onClass(4, 4, 5), heldFor(reason)),
-				granted{revision: revisionA, reason: reason, message: "DatastoreReady: " + note}), shared(4))
+				granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: " + reason + ": " + note}), shared(4))
 
 			f := held(running(revisionA), onClass(4, 5, 5), slotted(lodiav1alpha1.ReasonMaintaining, 3), heldFor(reason))
 			failed := granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintenanceFailed, message: "the change Lodia started failed: DatastoreReady: " + reason + ": " + note, slot: true}
@@ -358,9 +358,10 @@ func TestAClassHeldForItsCredentialsTakesNoSlotAndFailsInOne(t *testing.T) {
 
 	f := held(running(revisionA), closedWindow, onClass(4, 4, 5), heldFor(lodiav1alpha1.ReasonSecretNotFound))
 	nextStart := time.Date(2026, 11, 9, 13, 0, 0, 0, time.UTC)
-	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: &nextStart, requeue: 30 * time.Minute}))
+	failed := granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "DatastoreReady: SecretNotFound: " + note}
+	adopt(f.cp, expectGrant(t, f, failed))
 	f.now = nextStart
-	adopt(f.cp, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonSecretNotFound, message: "DatastoreReady: " + note}))
+	adopt(f.cp, expectGrant(t, f, failed))
 	condition(metav1.Condition{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "Etcd dev-etcd has quorum, 1 of 1 members ready"})(&f)
 	expectClass(t, expectGrant(t, f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonMaintaining, message: "etcd: runs DatastoreClass shared generation 4, not 5", slot: true, takesSlot: true}), shared(5))
 }
@@ -436,7 +437,7 @@ func TestAClassEditOnATenantWithNoTargetWaitsForTheWindow(t *testing.T) {
 	expectClass(t, d, shared(4))
 }
 
-func TestAStandingRefusalIsIdleWhereTheClassTargetTakesWhatTheEtcdRuns(t *testing.T) {
+func TestAStandingRefusalIsFailedWhereTheClassTargetTakesWhatTheEtcdRuns(t *testing.T) {
 	refused := condition(metav1.Condition{Type: lodiav1alpha1.ConditionAddonsApplied, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonRefused, Message: "the tenant refuses"})
 	for _, c := range []struct {
 		name  string
@@ -448,7 +449,7 @@ func TestAStandingRefusalIsIdleWhereTheClassTargetTakesWhatTheEtcdRuns(t *testin
 		{"a class gone after its grant", held(running(revisionA), onClass(4, 5, 0), refused), shared(4)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			expectClass(t, expectGrant(t, c.f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonIdle}), c.class)
+			expectClass(t, expectGrant(t, c.f, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFailed, message: "AddonsApplied: Refused: the tenant refuses"}), c.class)
 		})
 	}
 }

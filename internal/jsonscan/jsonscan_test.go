@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"go.lodia.io/lodia/internal/jsonscan"
 )
@@ -375,6 +376,57 @@ func TestTextDecodesWhatEncodingJSONDecodesUpToItsBound(t *testing.T) {
 				t.Errorf("Text returned %q, %v; want %q, %q", got, err, c.want, c.err)
 			}
 		})
+	}
+}
+
+// Head of any string is what encoding/json decodes of it, cut before the rune that crosses the bound.
+func TestHeadIsTheDecodedStringCutBeforeTheRuneThatCrossesItsBound(t *testing.T) {
+	pieces := []string{"a", "é", "😀", `\n`, `\"`, `\\`, `é`, `😀`, `\ud83d`, "\xff", "\xe2\x82", `\/`}
+	random := rand.New(rand.NewPCG(1, 2))
+	for range 2000 {
+		var b strings.Builder
+		for range random.IntN(40) {
+			b.WriteString(pieces[random.IntN(len(pieces))])
+		}
+		value := []byte(`"` + b.String() + `"`)
+		var whole string
+		if err := json.Unmarshal(value, &whole); err != nil {
+			t.Fatalf("encoding/json refuses %s: %v", value, err)
+		}
+		most := random.IntN(24)
+		want := whole
+		if len(want) > most {
+			cut := most
+			for cut > 0 && !utf8.RuneStart(want[cut]) {
+				cut--
+			}
+			want = want[:cut]
+		}
+		got, err := jsonscan.Head("the field", value, most)
+		if err != nil || got != want {
+			t.Fatalf("Head(%s, %d) = %q, %v; want %q", value, most, got, err, want)
+		}
+	}
+	for _, c := range []struct{ value, err string }{{`null`, ""}, {`1`, "the field is not a string"}, {`{}`, "the field is not a string"}} {
+		if got, err := jsonscan.Head("the field", []byte(c.value), 8); got != "" || (err != nil) != (c.err != "") || err != nil && err.Error() != c.err {
+			t.Errorf("Head(%s) = %q, %v; want %q", c.value, got, err, c.err)
+		}
+	}
+}
+
+// Head decodes no more of a long string than its bound needs.
+func TestHeadDecodesNothingPastItsBound(t *testing.T) {
+	value := []byte(`"` + strings.Repeat(`é`, 1<<20) + `"`)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got, err := jsonscan.Head("the field", value, 1024)
+	if err != nil || got != strings.Repeat("é", 512) {
+		t.Fatalf("Head returned %d bytes, %v", len(got), err)
+	}
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 1<<16 {
+		t.Errorf("Head allocated %d bytes over a token of %d", allocated, len(value))
 	}
 }
 

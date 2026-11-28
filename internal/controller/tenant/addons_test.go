@@ -175,12 +175,10 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		testenv.Eventually(t, func() error {
 			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied)
 		})
+		taken := cp.Generation
 		pause(t, cp)
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
-		rebindOperator(t, admin, []rbacv1.PolicyRule{
-			{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
-			{NonResourceURLs: []string{"*"}, Verbs: []string{"*"}},
-		}, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
+		rebindOperator(t, admin, writesButConfigMaps, authorizationv1.ResourceAttributes{Resource: "configmaps", Verb: "patch", Namespace: "kube-system"})
 		setAddons(t, cp, older)
 		refresh(t, cp)
 
@@ -188,7 +186,7 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		if err == nil {
 			t.Fatal("a pass whose apply the tenant refuses succeeded")
 		}
-		if err := expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused); err != nil {
+		if err := expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, refusedConfigMaps("is refused by the tenant's API server"), taken); err != nil {
 			t.Error(err)
 		}
 		expectAddons(t, made, older, previous)
@@ -215,9 +213,10 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		if err := admin.Patch(t.Context(), foreign, edit, client.FieldOwner("kubectl")); err != nil {
 			t.Fatal(err)
 		}
+		taken := cp.Generation
 		setCoreDNS(t, cp, true)
 		testenv.Eventually(t, func() error {
-			return expectCondition(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere)
+			return expectAddonsApplied(t, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, "ConfigMap kube-system/coredns exists and is not Lodia's: its field managers are helm, kubectl; delete it or disable the addon", taken)
 		})
 		pause(t, cp)
 		setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
@@ -239,7 +238,7 @@ func TestAPassThatDidNotApplyInFullKeepsTheAddonsVersion(t *testing.T) {
 		generation := condition(t, cp, lodiav1alpha1.ConditionAddonsApplied).ObservedGeneration
 		setTarget(t, cp, version, previous)
 		heldPass(t, cp)
-		expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, generation)
+		expectAt(t, cp, lodiav1alpha1.ConditionAddonsApplied, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, generation)
 	})
 }
 

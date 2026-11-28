@@ -24,7 +24,7 @@ func sizedForTheBounds(t testing.TB) {
 		{"maxHolderRaw", maxHolderRaw, 512},
 		{"maxKubeletRaw", maxKubeletRaw, 384},
 		{"tenantclient.MaxNumberRaw", tenantclient.MaxNumberRaw, 11},
-		{"tenantclient.MaxMessageRaw", tenantclient.MaxMessageRaw, 1024},
+		{"tenantclient.MaxMessage", tenantclient.MaxMessage, 1024},
 		{"maxConditions", maxConditions, 64},
 		{"maxWebhooks", maxWebhooks, 256},
 		{"tenantclient.MaxCauses", tenantclient.MaxCauses, 64},

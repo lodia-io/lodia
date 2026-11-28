@@ -1,0 +1,6 @@
+zz_generated.*.go linguist-generated=true
+api/crds/*.yaml linguist-generated=true
+charts/lodia/files/crds/*.yaml linguist-generated=true
+charts/lodia/files/policies/*.yaml linguist-generated=true
+charts/lodia/files/rbac/*.yaml linguist-generated=true
+test/rules/lodia_test.yaml linguist-generated=true

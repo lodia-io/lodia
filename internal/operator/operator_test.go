@@ -491,7 +491,7 @@ func expectAPass(t *testing.T, k8s client.Client, stopped <-chan struct{}, reaso
 		}
 		last = nil
 		for conditionType, message := range want {
-			if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c == nil || c.Status != metav1.ConditionFalse || c.Reason != reason || c.Message != message {
+			if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c == nil || c.Status != metav1.ConditionFalse || c.Reason != reason || c.Message != message && !strings.HasPrefix(c.Message, message+"; also ") {
 				last = errors.Join(last, fmt.Errorf("%s is %+v, want False %s %q", conditionType, c, reason, message))
 			}
 		}

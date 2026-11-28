@@ -61,6 +61,7 @@ var (
 	asDatastore    *rest.Config
 	managerReads   *reads
 	managerLatches *datastore.Latches
+	etcd           string
 )
 
 type reads struct {
@@ -145,7 +146,7 @@ func TestMain(m *testing.M) {
 		CRDs:                   druid,
 		EnforceOwnerReferences: true,
 	})
-	k8s = env.Client
+	k8s, etcd = env.Client, env.Etcd()
 	asDatastore = env.AsController("datastore")
 	if err := runDruid(context.Background()); err != nil {
 		env.Fatal("etcd-druid's Deployment", err)
@@ -691,6 +692,7 @@ func TestEtcdRefused(t *testing.T) {
 	waitCondition(t, ns, "dev", metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1 of Etcd dev-etcd")
 }
 
+// A refused apply over an etcd that serves keeps DatastoreReady True with the refusal, at the generation it took up through an edit.
 func TestARefusedApplyKeepsTheDatastoreThatRuns(t *testing.T) {
 	t.Parallel()
 	ns := namespace(t)
@@ -707,7 +709,23 @@ func TestARefusedApplyKeepsTheDatastoreThatRuns(t *testing.T) {
 
 	refuseEtcds(t, ns)
 	writeGeneration(t, ns, cp, 2)
-	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Etcd "+cp+"-etcd on certificate generation 2")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "has quorum, 1 of 1 members ready; the API server refuses Etcd "+cp+"-etcd on certificate generation 2")
+	taken := getControlPlane(t, ns, cp)
+	edited := taken.DeepCopy()
+	edited.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Patch(t.Context(), edited, client.MergeFrom(taken)); err != nil {
+		t.Fatal(err)
+	}
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
+	testenv.Eventually(t, func() error {
+		if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}}); !apistatus.Refused(err) {
+			return fmt.Errorf("a pass whose Etcd is refused returned %w", err)
+		}
+		if c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonRefused || c.ObservedGeneration != taken.Generation {
+			return fmt.Errorf("DatastoreReady is %+v after a pass at generation %d, want True Refused at %d", c, edited.Generation, taken.Generation)
+		}
+		return nil
+	})
 	got := getControlPlane(t, ns, cp)
 	if len(got.Status.Datastore.Endpoints) == 0 || !reflect.DeepEqual(got.Status.Datastore.Endpoints, running.Endpoints) {
 		t.Errorf("a refused apply left status.datastore %+v, want the running Etcd's endpoints %+v", got.Status.Datastore, running.Endpoints)
@@ -771,9 +789,14 @@ func refuseEtcds(t *testing.T, ns string) *admissionregistrationv1.ValidatingAdm
 
 func refuse(t *testing.T, ns string, rule admissionregistrationv1.Rule, probe func() client.Object) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
 	t.Helper()
+	return refuseUnless(t, ns, "refuse-"+rule.Resources[0]+"-in-"+ns, rule, "object.metadata.namespace != '"+ns+"'", probe)
+}
+
+func refuseUnless(t *testing.T, ns, name string, rule admissionregistrationv1.Rule, expression string, probe func() client.Object) *admissionregistrationv1.ValidatingAdmissionPolicyBinding {
+	t.Helper()
 	resource := rule.Resources[0]
 	policy := &admissionregistrationv1.ValidatingAdmissionPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "refuse-" + resource + "-in-" + ns},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
 			FailurePolicy: new(admissionregistrationv1.Fail),
 			MatchConstraints: &admissionregistrationv1.MatchResources{ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
@@ -782,7 +805,7 @@ func refuse(t *testing.T, ns string, rule admissionregistrationv1.Rule, probe fu
 					Rule:       rule,
 				},
 			}}},
-			Validations: []admissionregistrationv1.Validation{{Expression: "object.metadata.namespace != '" + ns + "'", Message: "no " + resource + " in " + ns}},
+			Validations: []admissionregistrationv1.Validation{{Expression: expression, Message: "no " + resource + " in " + ns}},
 		},
 	}
 	binding := &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
@@ -2431,8 +2454,8 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 
 	binding := refuseEtcds(t, ns)
 	edit("11Gi")
-	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused,
-		"with the fields of DatastoreClass quota generation 3; the reason is in Lodia's log; DatastoreClass quota's quota 11Gi is capped at 10Gi: it needs 22Gi of volume and Etcd quota-etcd's is 20Gi")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused,
+		"has quorum, 1 of 1 members ready; the API server refuses Etcd quota-etcd on certificate generation 1 with the fields of DatastoreClass quota generation 3; the reason is in Lodia's log; DatastoreClass quota's quota 11Gi is capped at 10Gi: it needs 22Gi of volume and Etcd quota-etcd's is 20Gi")
 	if err := k8s.Delete(t.Context(), binding); err != nil {
 		t.Fatal(err)
 	}
@@ -2805,10 +2828,11 @@ func TestDeletionBeforeLabelling(t *testing.T) {
 	writeGeneration(t, ns, "dev", 1)
 	waitEtcd(t, ns, "dev", nil)
 	refuseEtcds(t, ns)
-	settle(t, ns, "dev")
-	if c := meta.FindStatusCondition(getControlPlane(t, ns, "dev").Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c.Reason != lodiav1alpha1.ReasonRefused {
-		t.Fatalf("DatastoreReady is %s, want %s: a pass whose apply is not refused labels the claim", c.Reason, lodiav1alpha1.ReasonRefused)
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
+	if _, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: "dev"}}); !apistatus.Refused(err) {
+		t.Fatalf("a pass returned %v, want the refusal: a pass whose apply is not refused labels the claim", err)
 	}
+	waitCondition(t, ns, "dev", metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "; the API server refuses Etcd dev-etcd")
 
 	create(t, claim(ns, "dev-etcd-dev-etcd-0", druidv1alpha1.GetDefaultLabels(metav1.ObjectMeta{Name: "dev-etcd"})))
 	if pvc := getClaim(t, ns, "dev-etcd-dev-etcd-0"); pvc.Labels[lodiav1alpha1.ControlPlaneUIDLabel] != "" {
@@ -3054,7 +3078,7 @@ func TestNetworkPolicyOfAnotherOwner(t *testing.T) {
 			runStatefulSet(t, ns, row.cp, 1)
 			setEtcdStatus(t, ns, row.cp)
 			reconciled(t, ns, row.cp)
-			waitCondition(t, ns, row.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, row.message)
+			waitCondition(t, ns, row.cp, metav1.ConditionTrue, lodiav1alpha1.ReasonObjectsControlledElsewhere, row.message)
 			if after := reconcileNow(t, ns, row.cp); after != time.Minute {
 				t.Errorf("a NetworkPolicy another owner keeps requeues after %s, want a minute: an unlabelled one is outside the cache", after)
 			}
@@ -3115,7 +3139,7 @@ func TestNetworkPolicyRefused(t *testing.T) {
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonProvisioning, "etcd-druid has not observed generation 1")
 	runStatefulSet(t, ns, cp, 1)
 	setEtcdStatus(t, ns, cp)
-	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses NetworkPolicy walled-etcd; the reason is in Lodia's log")
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "has quorum, 1 of 1 members ready; the API server refuses NetworkPolicy walled-etcd; the reason is in Lodia's log")
 	if err := k8s.Get(t.Context(), client.ObjectKey{Namespace: ns, Name: cp + "-etcd"}, &networkingv1.NetworkPolicy{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("want no NetworkPolicy while the API server refuses it, got %v", err)
 	}
@@ -3173,4 +3197,40 @@ func TestAFailedNetworkPolicyCallLeavesTheStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A refused NetworkPolicy keeps DatastoreReady at the generation it describes through an edit.
+func TestARefusedPolicyKeepsTheGenerationThroughAnEdit(t *testing.T) {
+	t.Parallel()
+	ns := namespace(t)
+	const cp = "walled-edit"
+	createClass(t, newClass("walling-edit", "Retain"))
+	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{networkingv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"networkpolicies"}}, func() client.Object {
+		return &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+	})
+	create(t, controlPlane(ns, cp, "walling-edit"))
+	writeGeneration(t, ns, cp, 1)
+	waitEtcd(t, ns, cp, namesGeneration(1))
+	runStatefulSet(t, ns, cp, 1)
+	setEtcdStatus(t, ns, cp)
+	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "the API server refuses NetworkPolicy walled-edit-etcd")
+	taken := getControlPlane(t, ns, cp)
+	edited := taken.DeepCopy()
+	edited.Spec.Placement = &lodiav1alpha1.Placement{PriorityClassName: "system-cluster-critical"}
+	if err := k8s.Patch(t.Context(), edited, client.MergeFrom(taken)); err != nil {
+		t.Fatal(err)
+	}
+	reconciler := &datastore.Reconciler{Client: k8s, Reader: k8s, Druid: newDruid(), OperatorNamespace: operatorNamespace, Revision: revision, Latches: datastore.NewLatches()}
+	testenv.Eventually(t, func() error {
+		_, _ = reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: cp}})
+		got := getControlPlane(t, ns, cp)
+		c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+		if got.Generation == taken.Generation {
+			return fmt.Errorf("the edit has not landed")
+		}
+		if c == nil || c.ObservedGeneration != taken.Generation {
+			return fmt.Errorf("DatastoreReady is %+v at generation %d, want the generation %d it described before the edit", c, got.Generation, taken.Generation)
+		}
+		return nil
+	})
 }

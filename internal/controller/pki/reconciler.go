@@ -261,10 +261,13 @@ func listed(items []string) string {
 	return strings.Join(items[:5], ", ") + " and " + strconv.Itoa(len(items)-5) + " more"
 }
 
-// access counts a refusal from the tenant as an answer, which turns
-// AccessReady False, Refused; no answer keeps a True, since whether the
-// tenant can be reached is Health's to report, and leaves anything else
-// Binding. While it waits it keeps AccessReady at an older generation.
+// access counts a refusal from the tenant as an answer: Refused, naming every
+// binding refused, True over a True AccessReady while lodia:operator reads
+// each of them, at the generation the condition describes, and False
+// otherwise; no answer keeps a True, since whether the tenant can be reached
+// is Health's to report, and leaves anything else Binding, and a read of a
+// refused binding that gets none keeps AccessReady as it was. While it waits
+// it keeps AccessReady at an older generation.
 func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, error) {
 	c := metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "APIServerReady is not True for this generation"}
 	kept := meta.FindStatusCondition(t.cp.Status.Conditions, c.Type)
@@ -276,12 +279,30 @@ func (r *Reconciler) access(ctx context.Context, t *tenant) (metav1.Condition, e
 		return statusapply.Wait(t.cp, kept, c), nil
 	}
 	refused, err := r.bind(ctx, t)
+	bound := metav1.Condition{Type: c.Type, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonBound, Message: "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound"}
 	if err == nil {
-		c.Status, c.Reason, c.Message = metav1.ConditionTrue, lodiav1alpha1.ReasonBound, "lodia:operator, lodia:cluster-admins and lodia:kubelet-api-admins are bound"
-		return c, nil
+		return bound, nil
 	}
-	if refused != "" {
-		c.Reason, c.Message = lodiav1alpha1.ReasonRefused, "ClusterRoleBinding "+refused+" is refused by the tenant's API server; the reason is in Lodia's log"
+	if len(refused) > 0 {
+		messages := make([]string, 0, len(refused))
+		for _, f := range refused {
+			messages = append(messages, "ClusterRoleBinding "+f.name+" "+tenantclient.Refused(f.err))
+		}
+		c.Reason, c.Message = lodiav1alpha1.ReasonRefused, strings.Join(messages, "; ")+"; the reason is in Lodia's log"
+		if kept == nil || kept.Status != metav1.ConditionTrue {
+			return c, err
+		}
+		for _, f := range refused {
+			held, answered, readErr := r.held(ctx, t, f.name)
+			switch {
+			case !answered:
+				return *kept, errors.Join(err, readErr)
+			case !held:
+				return c, errors.Join(err, readErr)
+			}
+		}
+		c = statusapply.Refusing(bound, c)
+		c.ObservedGeneration = kept.ObservedGeneration
 		return c, err
 	}
 	if kept != nil && kept.Status == metav1.ConditionTrue {

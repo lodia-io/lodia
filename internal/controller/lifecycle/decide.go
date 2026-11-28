@@ -16,6 +16,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/statusapply"
 	"go.lodia.io/lodia/internal/versions"
 )
@@ -598,13 +599,21 @@ func notAtTarget(cp *lodiav1alpha1.ControlPlane, target string) []string {
 	return behind
 }
 
-// upgradeFailures are the reasons of a condition Ready is built from that stop
-// an upgrade: an object refused or kept elsewhere, a rollout past its
-// deadline, or a class's credentials Secret missing
+var refusals = contract.Refusals()
+
+// upgradeFailures are the reasons that stop a change: a refusal, or a rollout
+// past its deadline (docs/decisions/upgrades-and-maintenance-windows.md).
+var upgradeFailures = append(slices.Clone(refusals), lodiav1alpha1.ReasonProgressDeadlineExceeded)
+
+// retried says whether a condition's refusal is one its writer tries again on
+// every pass while granted is the revision after the pass: not one no dry run
+// of a held writer can try while the running revision is not granted, which
+// only the grant tries
 // (docs/decisions/upgrades-and-maintenance-windows.md).
-var upgradeFailures = []string{
-	lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonProgressDeadlineExceeded,
-	lodiav1alpha1.ReasonSecretNotFound,
+func (f facts) retried(granted string) func(*metav1.Condition) bool {
+	return func(condition *metav1.Condition) bool {
+		return granted == f.revision || condition.Reason != lodiav1alpha1.ReasonRefusedBeforeHold
+	}
 }
 
 // failure is why a version change under way has stopped, empty while it has
@@ -613,44 +622,56 @@ func (c change) failure(cp *lodiav1alpha1.ControlPlane) string {
 	if c.upgrade == nil {
 		return ""
 	}
-	return c.cause(cp)
+	return c.cause(cp, nil)
 }
 
-// failed is why a change its owner started has stopped: a cause while an
-// upgrade exists, a renderer has not reached the granted revision or the Etcd
-// the granted class generation, so that an idle tenant's standing refusal is
-// Ready's to report, and an owner's or a token's grant that is refused is not.
-func (c change) failed(f facts, granted string) string {
+// failed is why a change has stopped: a cause while an upgrade exists, a
+// renderer has not reached the granted revision or the Etcd the granted
+// class generation, and otherwise a refusal standing, an edit's or one at
+// rest, since none of those ends without a person. Only the conditions
+// counts takes stop it, every one when counts is nil.
+func (c change) failed(f facts, granted string, counts func(*metav1.Condition) bool) string {
 	if c.upgrade == nil && len(behind(f.cp, granted, f.revision)) == 0 && len(classBehind(f.cp, c.class)) == 0 {
-		return ""
+		return quoted(stopping(f.cp, refusals, counts))
 	}
-	return c.cause(f.cp)
+	return c.cause(f.cp, counts)
 }
 
-// cause is the first condition Ready is built from that stops a change, or
-// the pre-upgrade Backup's failure.
-func (c change) cause(cp *lodiav1alpha1.ControlPlane) string {
+// cause is the first condition Ready is built from that stops a change and
+// that counts takes, or the pre-upgrade Backup's failure.
+func (c change) cause(cp *lodiav1alpha1.ControlPlane, counts func(*metav1.Condition) bool) string {
 	if c.rehearsalFailed != "" {
 		return c.rehearsalFailed
 	}
 	if c.backupFailed != "" {
 		return c.backupFailed
 	}
-	if condition := stopping(cp); condition != nil {
-		return fmt.Sprintf("%s: %s: %s", condition.Type, condition.Reason, condition.Message)
-	}
-	return ""
+	return quoted(stopping(cp, upgradeFailures, counts))
 }
 
-// stopping is the first condition Ready is built from whose reason stops a
-// change, or nil.
-func stopping(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
+func quoted(condition *metav1.Condition) string {
+	if condition == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s: %s: %s", condition.Type, condition.Reason, condition.Message)
+}
+
+// stopping is the first condition Ready is built from whose reason is one of
+// reasons and that counts takes, every one when counts is nil, or nil; one
+// under RefusedBeforeHold, which keeps no revision from its grant, comes
+// after every other.
+func stopping(cp *lodiav1alpha1.ControlPlane, reasons []string, counts func(*metav1.Condition) bool) *metav1.Condition {
+	var untried *metav1.Condition
 	for _, conditionType := range readiness(cp) {
-		if condition := meta.FindStatusCondition(cp.Status.Conditions, conditionType); condition != nil && slices.Contains(upgradeFailures, condition.Reason) {
+		switch condition := meta.FindStatusCondition(cp.Status.Conditions, conditionType); {
+		case condition == nil || !slices.Contains(reasons, condition.Reason) || counts != nil && !counts(condition):
+		case condition.Reason != lodiav1alpha1.ReasonRefusedBeforeHold:
 			return condition
+		case untried == nil:
+			untried = condition
 		}
 	}
-	return nil
+	return untried
 }
 
 // rolling names what keeps a change rolling: a component or an etcd member
@@ -681,7 +702,7 @@ func (c change) reason(f facts, m maintenance) *metav1.Condition {
 	case m.unsupported != "":
 		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonUnsupported, m.unsupported)
 	}
-	if why := c.failed(f, m.revision); why != "" && m.slotSince == nil {
+	if why := c.failed(f, m.revision, nil); why != "" && m.slotSince == nil {
 		return progressing(metav1.ConditionFalse, lodiav1alpha1.ReasonFailed, why)
 	}
 	switch {

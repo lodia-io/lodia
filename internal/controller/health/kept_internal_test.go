@@ -51,7 +51,7 @@ func TestWhatTheTypesKeepAtTheRawBoundsIsUnderKeptAtMost(t *testing.T) {
 		cron := `{"metadata":{"namespace":"` + s(tenantclient.MaxNameRaw) + `","name":"` + s(tenantclient.MaxNameRaw) + `"},"spec":{"suspend":false}}`
 		hook := `{"name":"` + s(tenantclient.MaxNameRaw) + `","failurePolicy":"` + s(tenantclient.MaxWordRaw) + `","clientConfig":{"url":"x"}}`
 		config := `{"metadata":{"name":"` + s(tenantclient.MaxNameRaw) + `"},"webhooks":[` + repeated(maxWebhooks, hook) + `]}`
-		status := `{"kind":"Status","status":"Failure","reason":"` + s(tenantclient.MaxReasonRaw) + `","message":"` + s(tenantclient.MaxMessageRaw) + `","code":500,"details":{"causes":[` + repeated(tenantclient.MaxCauses, `{"reason":"`+s(tenantclient.MaxReasonRaw)+`"}`) + `]}}`
+		status := `{"kind":"Status","status":"Failure","reason":"` + s(tenantclient.MaxReasonRaw) + `","message":"` + s(tenantclient.MaxMessage) + `","code":500,"details":{"causes":[` + repeated(tenantclient.MaxCauses, `{"reason":"`+s(tenantclient.MaxReasonRaw)+`"}`) + `]}}`
 		list := func(n int, item string) []byte {
 			return []byte(`{"metadata":{"continue":""},"items":[` + repeated(n, item) + `]}`)
 		}

@@ -24,6 +24,7 @@ import (
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/contract"
+	"go.lodia.io/lodia/internal/tenantclient"
 )
 
 const (
@@ -237,8 +238,11 @@ func nodesSilent(cp *lodiav1alpha1.ControlPlane, message string) *metav1.Conditi
 // refusedRow is what the pass reports of a write the API server refused: a take
 // tells the refusal, and a renewal or a release keeps the Lease as it read it.
 func refusedRow(cp *lodiav1alpha1.ControlPlane, chosen row, err error) row {
-	verb := map[leaseWrite]string{takeLease: "take", renewLease: "renewal", releaseLease: "release"}[chosen.write]
-	message := "the API server refused the " + verb + " of Lease " + contract.LeaderElectionNamespace + "/" + contract.ControllerManagerLease + ": " + quoted(err.Error())
+	write := map[leaseWrite]string{takeLease: "take", renewLease: "renewal", releaseLease: "release"}[chosen.write] + " of Lease " + contract.LeaderElectionNamespace + "/" + contract.ControllerManagerLease
+	message := "the API server refused the " + write + ": " + quoted(err.Error())
+	if name, _ := apistatus.Webhook(err); name != "" {
+		message = "the " + write + " " + tenantclient.Refused(err) + ": " + quoted(err.Error())
+	}
 	if chosen.write == takeLease {
 		return row{condition: held(cp, lodiav1alpha1.ReasonHoldBlocked, message)}
 	}

@@ -27,6 +27,7 @@ import (
 	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/fence"
 	"go.lodia.io/lodia/internal/ownership"
+	"go.lodia.io/lodia/internal/statusapply"
 )
 
 // gateway checks the listener the parentRef names, publishes the endpoint at
@@ -147,8 +148,10 @@ var routeReasons = []string{
 // and deletes those it controls otherwise. Every write goes through write's
 // re-check; a route the cache holds as rendered gets none, so a pass that
 // changes nothing writes nothing on the Gateway, and a held pass writes only
-// a route the cache lacks. The error of a refused route comes with its
-// condition, for the backoff.
+// a route the cache lacks, and, while it tries the grant, sends the render of
+// one it leaves as it is by dry run. The error of a refused route comes with
+// its condition, for the backoff, which stays True with the refusal, at the
+// generation it describes, while every route exists and is Accepted.
 func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane, gw *gatewayv1.Gateway, port int32) (*metav1.Condition, error) {
 	owners, err := r.owners(ctx, cp)
 	if err != nil {
@@ -167,9 +170,11 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 		return routesCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonHostnameConflict,
 			fmt.Sprintf("hostnames named first on Gateway %s/%s by another ControlPlane: %s; no route of this ControlPlane is applied until they are free", gw.Namespace, gw.Name, strings.Join(named, ", "))), nil
 	}
-	var problems []routeProblem
+	var problems, served []routeProblem
 	var refusals error
+	tried := &trial{}
 	for _, desired := range routes(cp) {
+		refused := routeProblem{lodiav1alpha1.ReasonRefused, fmt.Sprintf("%sTLSRoute %s%s", refuses, desired.Name, inTheLog)}
 		current := &gatewayv1.TLSRoute{}
 		if err := r.Get(ctx, client.ObjectKeyFromObject(desired), current); err != nil {
 			if !apierrors.IsNotFound(err) {
@@ -187,33 +192,57 @@ func (r *Reconciler) attach(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 			problem, err := r.write(ctx, cp, gw, port, desired)
 			switch {
 			case apistatus.Refused(err):
-				problems = append(problems, routeProblem{lodiav1alpha1.ReasonRefused, fmt.Sprintf("the API server refuses TLSRoute %s; the reason is in Lodia's log", desired.Name)})
 				refusals = errors.Join(refusals, err)
-				continue
+				if current == nil {
+					problems = append(problems, refused)
+					continue
+				}
+				served = append(served, refused)
 			case err != nil:
 				return nil, err
 			case problem != nil:
 				problems = append(problems, *problem)
 				continue
+			default:
+				current = desired
 			}
-			current = desired
+		} else if r.trying(cp) && !unchanged(current, desired) {
+			if err := r.try(ctx, tried, desired); err != nil {
+				return nil, errors.Join(refusals, err)
+			}
 		}
 		if message := notAccepted(current, cp.Spec.Endpoint.Gateway.ParentRef); message != "" {
 			problems = append(problems, routeProblem{lodiav1alpha1.ReasonRouteNotAccepted, message})
 		}
 	}
-	if len(problems) == 0 {
+	refusals = errors.Join(refusals, tried.refusals)
+	switch {
+	case len(problems) == 0 && len(served) == 0 && len(tried.refused) == 0 && len(tried.untried) == 0:
 		return routesCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted,
 			fmt.Sprintf("every route is applied and Accepted by Gateway %s/%s", gw.Namespace, gw.Name)), nil
+	case len(problems) == 0:
+		condition := routesCondition(metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted,
+			fmt.Sprintf("every route is Accepted by Gateway %s/%s", gw.Namespace, gw.Name))
+		if len(served) > 0 {
+			condition = new(statusapply.Refusing(*condition, metav1.Condition{Reason: lodiav1alpha1.ReasonRefused, Message: messages(served)}))
+		}
+		condition = new(tried.on(*condition))
+		condition.ObservedGeneration = statusapply.Described(cp, condition.Type)
+		return condition, refusals
 	}
+	problems = append(problems, served...)
 	reason := routeReasons[slices.IndexFunc(routeReasons, func(reason string) bool {
 		return slices.ContainsFunc(problems, func(p routeProblem) bool { return p.reason == reason })
 	})]
-	var messages []string
+	return new(tried.on(*routesCondition(metav1.ConditionFalse, reason, messages(problems)))), refusals
+}
+
+func messages(problems []routeProblem) string {
+	messages := make([]string, 0, len(problems))
 	for _, p := range problems {
 		messages = append(messages, p.message)
 	}
-	return routesCondition(metav1.ConditionFalse, reason, strings.Join(messages, "; ")), refusals
+	return strings.Join(messages, "; ")
 }
 
 func heldElsewhere(route *gatewayv1.TLSRoute, owner *metav1.OwnerReference) routeProblem {

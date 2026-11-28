@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/contract"
 	"go.lodia.io/lodia/internal/live"
 	"go.lodia.io/lodia/internal/ownership"
 	"go.lodia.io/lodia/internal/statusapply"
@@ -205,15 +206,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return r.hold(ctx, cp, tenant, objects, applied, available)
 	}
 
-	others, applyErr := applyInventory(ctx, tenant, objects)
-	syncErr := applyErr
+	others, refused, applyErr := applyInventory(ctx, tenant, objects)
 	var rolled metav1.Condition
-	if applyErr == nil {
-		rolled, syncErr = rollout(ctx, tenant, cp, entriesOf(objects), others)
+	var rolloutErr error
+	_, _, answered := outcome(applyErr)
+	read := applyErr == nil || answered
+	if read {
+		rolled, rolloutErr = rollout(ctx, tenant, cp, entriesOf(objects), others)
 	}
+	syncErr := errors.Join(joined(refused), applyErr, rolloutErr)
 	switch reason, message, answered := outcome(applyErr); {
+	case len(refused) > 0:
+		var readErr error
+		applied, readErr = refusing(ctx, tenant, applied, refusal(cp, applied.Type, refused, others, nil), refused)
+		syncErr = errors.Join(syncErr, readErr)
 	case applyErr == nil && len(others) > 0:
-		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonObjectsControlledElsewhere, others[0].String()+" exists and is not Lodia's: "+others[0].owners()+"; delete it or disable the addon")
+		applied = standing(applied, refusal(cp, applied.Type, nil, others, nil))
 	case applyErr == nil:
 		applied = newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, fmt.Sprintf("%d objects are applied and the inventory is pruned", len(objects)))
 	case answered || applied.Status != metav1.ConditionTrue && !slices.Contains([]string{lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere}, applied.Reason):
@@ -222,16 +230,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		applied = newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message)
 	}
 	addons := cp.Status.Addons
-	if applyErr == nil && len(others) == 0 {
+	if applyErr == nil && len(refused) == 0 && len(others) == 0 {
 		addons = &lodiav1alpha1.Rendered{Version: v.Version, OperatorRevision: r.Revision}
 	}
-	if syncErr == nil {
+	switch {
+	case read && rolloutErr == nil:
 		available = rolled
-	}
-	if syncErr != nil && available.Reason != lodiav1alpha1.ReasonAvailable && available.Reason != lodiav1alpha1.ReasonRolloutPending {
+	case available.Reason != lodiav1alpha1.ReasonAvailable && available.Reason != lodiav1alpha1.ReasonRolloutPending:
 		// A rollout read before stays while none can be read; until one is,
-		// what stopped the pass says why.
-		reason, message, _ := outcome(syncErr)
+		// what stopped the read says why.
+		stopped := applyErr
+		if read {
+			stopped = rolloutErr
+		}
+		reason, message, _ := outcome(stopped)
 		available = newCondition(cp, available.Type, metav1.ConditionFalse, reason, message)
 	}
 	if err := r.applyStatus(ctx, cp, addons, applied, available); err != nil || syncErr != nil {
@@ -243,36 +255,76 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // hold is a pass while Lifecycle has not granted the running revision: it
 // creates what the stored inventory lists and the tenant lacks, with an apply
 // since appliedByLodia counts only that, writes nothing else, and reports what
-// runs, each condition at the generation it describes. objects is nil when the
-// running operator cannot render.
+// runs, each condition at the generation it describes: the refusals it meets,
+// a creation or another owner's object, beside the rollout, which it returns.
+// While AddonsApplied holds a refusal or is not True it also sends every write
+// of the grant's first pass, the inventory's among them, by dry run, and
+// reports what that finds, True while no object it lists is missing and the
+// condition was True or the inventory is whole, or, with every write accepted
+// over a refusal, that the grant waits; a dry run or a read that gets no answer
+// changes nothing. objects is nil when the running operator cannot render.
 func (r *Reconciler) hold(ctx context.Context, cp *lodiav1alpha1.ControlPlane, tenant tenantAPI, objects []*unstructured.Unstructured, applied, available metav1.Condition) (ctrl.Result, error) {
-	listed, missing, complete, err := heldInventory(ctx, tenant, objects)
+	listed, missing, others, inventoried, err := heldInventory(ctx, tenant, objects)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	var failures []*failure
 	for _, obj := range missing {
-		if err := apply(ctx, tenant, obj); err != nil {
-			if reason, message, _ := outcome(err); reason == lodiav1alpha1.ReasonRefused {
-				err = errors.Join(err, r.applyStatus(ctx, cp, cp.Status.Addons, at(newCondition(cp, applied.Type, metav1.ConditionFalse, reason, message), applied.ObservedGeneration), available))
-			}
-			return ctrl.Result{}, err
+		err := apply(ctx, tenant, obj)
+		if f, ok := errors.AsType[*failure](err); ok && f.reason == lodiav1alpha1.ReasonRefused {
+			failures = append(failures, f)
+		} else if err != nil {
+			return ctrl.Result{}, errors.Join(joined(failures), err)
 		}
 	}
-	// A wait over a healthy render, as an API server restart leaves, would
-	// otherwise outlast it until the grant.
-	if complete && applied.Status == metav1.ConditionFalse && strings.HasPrefix(applied.Reason, "WaitingFor") && cp.Status.Addons != nil && cp.Status.Addons.Version != "" {
+	refusing := slices.Contains(contract.Refusals(), applied.Reason)
+	trying := objects != nil && (refusing || applied.Status != metav1.ConditionTrue)
+	var tried []*failure
+	if trying {
+		_, refused, err := applyInventory(ctx, tenant.dryRun(), objects)
+		if f, ok := errors.AsType[*failure](err); ok && f.reason == lodiav1alpha1.ReasonRefused {
+			refused, err = append(refused, f), nil
+		}
+		if err != nil {
+			return ctrl.Result{}, errors.Join(joined(failures), err)
+		}
+		tried = refused
+	}
+	whole := inventoried && cp.Status.Addons != nil && cp.Status.Addons.Version != ""
+	switch {
+	case len(failures) > 0 || len(others) > 0 || len(tried) > 0:
+		met := at(refusal(cp, applied.Type, failures, others, tried), applied.ObservedGeneration)
+		if len(failures) == 0 && (applied.Status == metav1.ConditionTrue || whole) {
+			met.Status = metav1.ConditionTrue
+		}
+		applied = met
+	// A wait over a healthy render, as an API server restart leaves, or a
+	// refusal the dry run no longer finds, would otherwise outlast it until
+	// the grant.
+	case whole && (refusing || applied.Status == metav1.ConditionFalse && strings.HasPrefix(applied.Reason, "WaitingFor")):
 		applied = at(newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied,
 			fmt.Sprintf("the %d objects the inventory lists are applied; waiting for Lifecycle to grant the running operator revision %s", len(listed), r.Revision)), applied.ObservedGeneration)
+	case trying && refusing:
+		accepted := "the tenant accepts by dry run every write of the running operator revision " + r.Revision + "; waiting for Lifecycle to grant it"
+		if applied.Status == metav1.ConditionTrue {
+			applied = at(newCondition(cp, applied.Type, metav1.ConditionTrue, lodiav1alpha1.ReasonApplied, accepted), applied.ObservedGeneration)
+		} else {
+			applied = at(newCondition(cp, applied.Type, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, accepted), applied.ObservedGeneration)
+		}
 	}
+	refused := errors.Join(joined(failures), joined(tried))
 	if slices.ContainsFunc(listed, isWorkload) {
 		rolled, err := rollout(ctx, tenant, cp, listed, nil)
-		if err != nil {
+		switch {
+		case err == nil:
+			available = at(rolled, available.ObservedGeneration)
+		case refused == nil:
 			return ctrl.Result{}, err
 		}
-		available = at(rolled, available.ObservedGeneration)
+		refused = errors.Join(refused, err)
 	}
-	if err := r.applyStatus(ctx, cp, cp.Status.Addons, applied, available); err != nil {
-		return ctrl.Result{}, err
+	if err := r.applyStatus(ctx, cp, cp.Status.Addons, applied, available); err != nil || refused != nil {
+		return ctrl.Result{}, errors.Join(refused, err)
 	}
 	return r.next(available), nil
 }
@@ -288,6 +340,96 @@ func (r *Reconciler) next(available metav1.Condition) ctrl.Result {
 func at(c metav1.Condition, generation int64) metav1.Condition {
 	c.ObservedGeneration = generation
 	return c
+}
+
+// standing is refused while what it names exists: True under its reason, at
+// the generation previous describes, while previous is True, and refused
+// otherwise.
+func standing(previous, refused metav1.Condition) metav1.Condition {
+	if previous.Status == metav1.ConditionTrue {
+		refused.Status = metav1.ConditionTrue
+		return at(refused, previous.ObservedGeneration)
+	}
+	return refused
+}
+
+// refusing is AddonsApplied while the refusals of failures stand, which
+// refused names: standing while the tenant holds every object refused, which
+// a refused creation leaves missing, refused while it lacks one or refuses its
+// read, and previous while a read gets no answer, which tells nothing.
+func refusing(ctx context.Context, a tenantAPI, previous, refused metav1.Condition, failures []*failure) (metav1.Condition, error) {
+	for _, f := range failures {
+		existing, err := readEntry(ctx, a, f.entry)
+		switch _, _, answered := outcome(err); {
+		case err != nil && !answered:
+			return previous, err
+		case existing == nil:
+			return refused, err
+		}
+	}
+	return standing(previous, refused), nil
+}
+
+// maxRefused is how many refused objects, how many of another owner and how
+// many writes of the grant a message names: the prunes of an inventory the
+// tenant's administrator wrote, up to maxEntries of them, would pass a
+// condition's message bound.
+const maxRefused = 10
+
+// refusal is the condition of conditionType that names the refusals of
+// failures, the objects of another owner and the grant's writes whose dry run
+// tried refuses, the first maxRefused of each and the count of the rest, under
+// the reason of the first refusal: an object refused, another owner's, then a
+// dry run's, so that one the pass meets itself keeps its own.
+func refusal(cp *lodiav1alpha1.ControlPlane, conditionType string, failures []*failure, others []foreignObject, tried []*failure) metav1.Condition {
+	var parts []string
+	if len(failures) > 0 {
+		named := make([]string, 0, maxRefused+1)
+		for _, f := range failures[:min(len(failures), maxRefused)] {
+			named = append(named, f.entry.String()+" "+f.verdict)
+		}
+		if more := len(failures) - maxRefused; more > 0 {
+			named = append(named, fmt.Sprintf("%d more objects are refused", more))
+		}
+		parts = append(parts, strings.Join(named, "; ")+"; the reason is in Lodia's log")
+	}
+	if len(others) > 0 {
+		named := make([]string, 0, maxRefused+1)
+		for _, o := range others[:min(len(others), maxRefused)] {
+			named = append(named, o.String()+" exists and is not Lodia's: "+o.owners())
+		}
+		ending := "; delete it or disable the addon"
+		if len(others) > 1 {
+			ending = "; delete them or disable their addons"
+		}
+		if more := len(others) - maxRefused; more > 0 {
+			named = append(named, fmt.Sprintf("%d more objects are another owner's", more))
+		}
+		parts = append(parts, strings.Join(named, "; ")+ending)
+	}
+	if len(tried) > 0 {
+		named := make([]string, 0, maxRefused+1)
+		for _, f := range tried[:min(len(tried), maxRefused)] {
+			named = append(named, "the grant's write of "+f.entry.String()+" would be refused: the dry run "+f.verdict)
+		}
+		if more := len(tried) - maxRefused; more > 0 {
+			named = append(named, fmt.Sprintf("%d more writes of the grant would be refused", more))
+		}
+		parts = append(parts, strings.Join(named, "; ")+"; the reason is in Lodia's log")
+	}
+	reason := lodiav1alpha1.ReasonRefused
+	if len(failures) == 0 && len(others) > 0 {
+		reason = lodiav1alpha1.ReasonObjectsControlledElsewhere
+	}
+	return newCondition(cp, conditionType, metav1.ConditionFalse, reason, strings.Join(parts, "; "))
+}
+
+func joined(failures []*failure) error {
+	errs := make([]error, 0, len(failures))
+	for _, f := range failures {
+		errs = append(errs, f)
+	}
+	return errors.Join(errs...)
 }
 
 // outcome is the reason and the message a pass that stopped on err reports,

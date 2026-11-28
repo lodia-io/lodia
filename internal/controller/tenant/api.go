@@ -16,9 +16,26 @@ import (
 	"go.lodia.io/lodia/internal/tenantclient"
 )
 
+// tenantAPI sends a pass's requests to the tenant, each within timeout, and
+// its writes by dry run when dry is set.
 type tenantAPI struct {
 	client  *tenantclient.Client
 	timeout time.Duration
+	dry     bool
+}
+
+// dryRun is a with every write sent by dry run.
+func (a tenantAPI) dryRun() tenantAPI {
+	a.dry = true
+	return a
+}
+
+// dryRuns is a write's dryRun parameter.
+func (a tenantAPI) dryRuns() []string {
+	if a.dry {
+		return []string{metav1.DryRunAll}
+	}
+	return nil
 }
 
 func (a tenantAPI) do(ctx context.Context, request *rest.Request) ([]byte, error) {
@@ -53,7 +70,7 @@ func (a tenantAPI) apply(ctx context.Context, e entry, body []byte) error {
 		return &failure{entry: e, err: errNotInTable}
 	}
 	_, err := a.do(ctx, request.
-		VersionedParams(&metav1.PatchOptions{FieldManager: FieldManager, Force: new(true)}, metav1.ParameterCodec).
+		VersionedParams(&metav1.PatchOptions{FieldManager: FieldManager, Force: new(true), DryRun: a.dryRuns()}, metav1.ParameterCodec).
 		Body(body))
 	return err
 }
@@ -68,6 +85,7 @@ func (a tenantAPI) delete(ctx context.Context, e entry, o *object) error {
 		TypeMeta:          metav1.TypeMeta{Kind: "DeleteOptions", APIVersion: "v1"},
 		Preconditions:     &metav1.Preconditions{UID: new(types.UID(o.uid)), ResourceVersion: &o.resourceVersion},
 		PropagationPolicy: &policy,
+		DryRun:            a.dryRuns(),
 	})
 	if err != nil {
 		return err

@@ -21,9 +21,10 @@ import (
 
 // applyNetworkPolicy finds the policy by name, labelled or not, as the Etcd is
 // found, never writes over one another owner keeps, and while the pass is
-// held writes it only when it is missing. The first result says why the
-// policy is not written, the second carries a refusal for the log.
-func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store) (*metav1.Condition, error) {
+// held writes it only when it is missing, sending it by dry run into tried
+// when that is set. The first result says why the policy is not written, the
+// second carries a refusal for the log.
+func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, tried *trial) (*metav1.Condition, error) {
 	key := client.ObjectKey{Namespace: cp.Namespace, Name: contract.EtcdName(cp.Name)}
 	current := &networkingv1.NetworkPolicy{}
 	err := r.Get(ctx, key, current)
@@ -42,7 +43,10 @@ func (r *Reconciler) applyNetworkPolicy(ctx context.Context, cp *lodiav1alpha1.C
 			return &held, nil
 		}
 		if r.held(cp) {
-			return nil, nil
+			if tried == nil {
+				return nil, nil
+			}
+			return nil, tried.answer("NetworkPolicy "+key.Name, r.Apply(ctx, r.Druid.NetworkPolicy(cp, etcd, r.OperatorNamespace), client.FieldOwner(FieldManager), client.ForceOwnership, client.DryRunAll), inTheLog)
 		}
 	}
 	if err := r.Apply(ctx, r.Druid.NetworkPolicy(cp, etcd, r.OperatorNamespace), client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {

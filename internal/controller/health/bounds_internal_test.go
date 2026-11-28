@@ -142,7 +142,7 @@ func TestAStatusIsReadAtTheBoundsOfItsFieldsAndNeverPastThem(t *testing.T) {
 	}{
 		{"a reason", func(n int) string { return status(quotedOf(n), `"m"`, "500", `"c"`) }, tenantclient.MaxReasonRaw, ""},
 		{"a cause's reason", func(n int) string { return status(`"r"`, `"m"`, "500", quotedOf(n)) }, tenantclient.MaxReasonRaw, ""},
-		{"a message", func(n int) string { return status(`"r"`, quotedOf(n), "500", `"c"`) }, 1024, tenantclient.LongMessage},
+		{"a message", func(n int) string { return status(`"r"`, quotedOf(n), "500", `"c"`) }, 1024, strings.Repeat("a", 1024)},
 		{"a code", func(n int) string { return status(`"r"`, `"m"`, integerOfLength(n), `"c"`) }, 11, ""},
 	} {
 		for _, past := range []bool{false, true} {

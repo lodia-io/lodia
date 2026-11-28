@@ -1083,6 +1083,30 @@ func TestUseDefaultGatewaysOnTheExperimentalCRDIsLeftAlone(t *testing.T) {
 	}
 }
 
+// A refused update of a route that exists and is Accepted keeps RoutesReady True with the refusal, at the generation it describes.
+func TestARefusedRouteThatIsAcceptedKeepsRoutesReady(t *testing.T) {
+	cp := gatewayRunning(t)
+	taken := routesReady(t, cp).ObservedGeneration
+	pause(t, cp)
+	refusing := interceptor.NewClient(unpaused(func(_ client.ObjectKey, obj client.Object) {
+		if route, ok := obj.(*gatewayv1.TLSRoute); ok && route.Name == "dev-tunnel" {
+			delete(route.Labels, lodiav1alpha1.ControlPlaneLabel)
+		}
+	}), interceptor.Funcs{Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+		if kindOf(t, obj) == "TLSRoute" {
+			return apierrors.NewForbidden(gatewayv1.Resource("tlsroutes"), "dev-tunnel", errors.New("denied by a policy"))
+		}
+		return c.Apply(ctx, obj, opts...)
+	}})
+	if _, err := operatorAt(refusing, revision).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
+		t.Fatalf("a pass whose route is refused returned %v", err)
+	}
+	if c := routesReady(t, cp); c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonRefused || c.ObservedGeneration != taken ||
+		c.Message != "every route is Accepted by Gateway "+cp.Namespace+"/shared; the API server refuses TLSRoute dev-tunnel; the reason is in Lodia's log" {
+		t.Errorf("RoutesReady is %+v, want True Refused at generation %d", c, taken)
+	}
+}
+
 func TestARoutingProblemLeavesTheAPIServerReady(t *testing.T) {
 	ns := namespace(t)
 	createGateway(t, ns)

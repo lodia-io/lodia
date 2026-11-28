@@ -298,27 +298,62 @@ func ready(cp *lodiav1alpha1.ControlPlane) *metav1.Condition {
 	return readyOf(cp, readiness(cp))
 }
 
+// readyOf is the first of inputs that is not True, or else the first True
+// with a refusal's reason, since the tenant serves while it stands, one under
+// RefusedBeforeHold, which keeps no revision from its grant, after every
+// other; its message ends with every other input in trouble, by type and
+// reason.
 func readyOf(cp *lodiav1alpha1.ControlPlane, inputs []string) *metav1.Condition {
 	next := newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 		strings.Join(inputs[:len(inputs)-1], ", ")+" and "+inputs[len(inputs)-1]+" are True")
-	for _, conditionType := range inputs {
+	first := slices.IndexFunc(inputs, func(conditionType string) bool {
 		c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
-		if c == nil {
+		return c == nil || c.Status != metav1.ConditionTrue
+	})
+	if first < 0 {
+		first = slices.IndexFunc(inputs, func(conditionType string) bool {
+			c := meta.FindStatusCondition(cp.Status.Conditions, conditionType)
+			return troubled(c) && c.Reason != lodiav1alpha1.ReasonRefusedBeforeHold
+		})
+	}
+	if first < 0 {
+		first = slices.IndexFunc(inputs, func(conditionType string) bool {
+			return troubled(meta.FindStatusCondition(cp.Status.Conditions, conditionType))
+		})
+	}
+	if first >= 0 {
+		if c := meta.FindStatusCondition(cp.Status.Conditions, inputs[first]); c == nil {
 			next = newCondition(cp, lodiav1alpha1.ConditionReady, metav1.ConditionUnknown, lodiav1alpha1.ReasonLatestGenerationNotObserved,
-				fmt.Sprintf("%s is not reported for generation %d", conditionType, cp.Generation))
-			break
+				fmt.Sprintf("%s is not reported for generation %d", inputs[first], cp.Generation))
+		} else {
+			next = newCondition(cp, lodiav1alpha1.ConditionReady, c.Status, c.Reason, named(c))
 		}
-		if c.Status != metav1.ConditionTrue {
-			message := conditionType
-			if c.Message != "" {
-				message += ": " + c.Message
-			}
-			next = newCondition(cp, lodiav1alpha1.ConditionReady, c.Status, c.Reason, message)
-			break
+	}
+	var also []string
+	for i, conditionType := range inputs {
+		if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); i != first && troubled(c) {
+			also = append(also, fmt.Sprintf("%s (%s)", conditionType, c.Reason))
 		}
+	}
+	if len(also) > 0 {
+		next.Message += "; also " + strings.Join(also, ", ")
 	}
 	next.ObservedGeneration = oldest(cp)
 	return next
+}
+
+// troubled says whether c reports something to fix: it is not True, or True
+// under a refusal.
+func troubled(c *metav1.Condition) bool {
+	return c != nil && (c.Status != metav1.ConditionTrue || slices.Contains(refusals, c.Reason))
+}
+
+// named is c's message after its type.
+func named(c *metav1.Condition) string {
+	if c.Message == "" {
+		return c.Type
+	}
+	return c.Type + ": " + c.Message
 }
 
 // oldest is what Ready describes, so that Ready True at the object's

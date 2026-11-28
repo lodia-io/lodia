@@ -351,6 +351,32 @@ func nodeAffinity(nodeSelector map[string]string) *corev1.Affinity {
 // Apply applies the rendered Etcd with c as manager and returns the Etcd the
 // API server answers with.
 func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, rendered *Store) (*Store, error) {
+	applied, err := applied(rendered)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(manager), client.ForceOwnership); err != nil {
+		return nil, err
+	}
+	result := &druidv1alpha1.Etcd{}
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, result); err != nil {
+		return nil, err
+	}
+	return &Store{etcd: result}, nil
+}
+
+// Try applies the rendered Etcd as Apply does, by dry run, and returns the
+// API server's answer.
+func (e *Engine) Try(ctx context.Context, c client.Client, manager string, rendered *Store) error {
+	applied, err := applied(rendered)
+	if err != nil {
+		return err
+	}
+	return c.Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(manager), client.ForceOwnership, client.DryRunAll)
+}
+
+// applied is the rendered Etcd as Apply sends it.
+func applied(rendered *Store) (*unstructured.Unstructured, error) {
 	content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(rendered.etcd)
 	if err != nil {
 		return nil, err
@@ -369,15 +395,7 @@ func (e *Engine) Apply(ctx context.Context, c client.Client, manager string, ren
 			unstructured.RemoveNestedField(content, object...)
 		}
 	}
-	applied := &unstructured.Unstructured{Object: content}
-	if err := c.Apply(ctx, client.ApplyConfigurationFromUnstructured(applied), client.FieldOwner(manager), client.ForceOwnership); err != nil {
-		return nil, err
-	}
-	result := &druidv1alpha1.Etcd{}
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, result); err != nil {
-		return nil, err
-	}
-	return &Store{etcd: result}, nil
+	return &unstructured.Unstructured{Object: content}, nil
 }
 
 // @todo: goes with the drop in Apply once every minor a management cluster runs keeps an object its removal empties (todo.md).

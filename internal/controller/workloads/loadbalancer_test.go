@@ -258,11 +258,13 @@ func TestARestartBetweenTheServiceAndTheStatusLeavesThePassToTheNext(t *testing.
 	}
 }
 
-func TestAHeldPassKeepsARefusalOfAServiceItDidNotApply(t *testing.T) {
+// A held pass leaves a Service whose update is refused as stored, tries it by dry run and reports the refusal on LoadBalancerReady over the stored Service's load balancer, at the generation it describes, and once the cause is gone reports that load balancer alone.
+func TestAHeldPassTriesARefusedServiceItLeavesAsStored(t *testing.T) {
 	cp := running(t, atLBAddress)
 	testenv.Eventually(t, func() error {
 		return expectBalancer(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, of+" reports endpoint.loadBalancer.host "+lbAddress)
 	})
+	taken := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady).ObservedGeneration
 	pause(t, cp)
 	changeSpec(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 		spec.Endpoint.LoadBalancer.SourceRanges = []lodiav1alpha1.CIDR{"198.51.100.0/24"}
@@ -277,16 +279,23 @@ func TestAHeldPassKeepsARefusalOfAServiceItDidNotApply(t *testing.T) {
 		t.Fatalf("the refused pass returned %v", err)
 	}
 	refused := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
-	if refused.Reason != lodiav1alpha1.ReasonRefused {
-		t.Fatalf("after the refused pass LoadBalancerReady is %+v", refused)
+	if refused.Status != metav1.ConditionTrue || refused.Reason != lodiav1alpha1.ReasonRefused || refused.ObservedGeneration != taken ||
+		refused.Message != of+" reports endpoint.loadBalancer.host "+lbAddress+"; the API server refuses Service dev-kube-apiserver; the reason is in Lodia's log" {
+		t.Fatalf("after the refused pass LoadBalancerReady is %+v, want True Refused over the stored Service's load balancer at generation %d", refused, taken)
 	}
-	passOf(t, operatorAt(unpaused(), next), cp)
+	if _, err := operatorAt(refusing, next).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
+		t.Fatalf("a held pass whose dry run is refused returned %v", err)
+	}
 	if svc := getService(t, cp); len(svc.Spec.LoadBalancerSourceRanges) != 0 {
 		t.Fatalf("a held pass applied %v", svc.Spec.LoadBalancerSourceRanges)
 	}
 	held := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady)
-	if held.Status != refused.Status || held.Reason != refused.Reason || held.Message != refused.Message || held.ObservedGeneration != refused.ObservedGeneration {
-		t.Errorf("a held pass that left the Service as stored wrote LoadBalancerReady %+v over the refusal %+v", held, refused)
+	if want := of + " reports endpoint.loadBalancer.host " + lbAddress + "; the grant's write of Service dev-kube-apiserver would be refused: the API server refuses the dry run; the reason is in Lodia's log"; held.Status != metav1.ConditionTrue || held.Reason != lodiav1alpha1.ReasonRefused || held.Message != want || held.ObservedGeneration != taken {
+		t.Errorf("a held pass that left the Service as stored wrote LoadBalancerReady %+v, want True Refused %q at generation %d", held, want, taken)
+	}
+	passOf(t, operatorAt(unpaused(), next), cp)
+	if ended := meta.FindStatusCondition(get(t, cp).Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady); ended.Reason != lodiav1alpha1.ReasonReady || ended.ObservedGeneration != taken {
+		t.Errorf("a held pass whose dry run is accepted wrote LoadBalancerReady %+v, want Ready at generation %d", ended, taken)
 	}
 }
 

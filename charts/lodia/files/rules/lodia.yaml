@@ -228,7 +228,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "A change of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} failed."
+          summary: "A change of ControlPlane {{ $labels.namespace }}/{{ $labels.controlplane }} failed, or a refusal stands on it."
           runbook_url: https://github.com/lodia-io/lodia/blob/main/docs/operations.md#lodiaupgradefailed
 
       - alert: LodiaUpgradeStalled

@@ -7,6 +7,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -109,7 +110,7 @@ func (f *failure) Unwrap() error {
 func failed(e entry, err error) error {
 	f := &failure{entry: e, err: err}
 	if apistatus.Refused(err) {
-		f.reason, f.verdict = lodiav1alpha1.ReasonRefused, "is refused by the tenant's API server"
+		f.reason, f.verdict = lodiav1alpha1.ReasonRefused, tenantclient.Refused(err)
 	}
 	return f
 }
@@ -220,18 +221,21 @@ func prune(ctx context.Context, a tenantAPI, e entry) error {
 }
 
 // applyInventory applies the objects but another owner's, which it returns,
-// then prunes what the previous inventory lists and they do not. The
-// inventory names an object before Lodia first writes it, so a pass that
-// stops anywhere leaves nothing a later pass cannot prune.
-func applyInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]foreignObject, error) {
+// past each one the tenant refuses, and only once it refused none prunes what
+// the previous inventory lists and they do not and writes the inventory of
+// what it applied. The inventory names an object before Lodia first writes it,
+// so a pass that stops anywhere leaves nothing a later pass cannot prune. It
+// returns the refusals it went past, and the failure it stopped at: before
+// the first apply any failure, and after it one that is no answer.
+func applyInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]foreignObject, []*failure, error) {
 	previous, err := readInventory(ctx, a)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	previous = union(previous)
 	others, err := foreign(ctx, a, objects, previous)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var desired []entry
 	var writes []*unstructured.Unstructured
@@ -244,24 +248,35 @@ func applyInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Un
 	stored := previous
 	if both := union(desired, previous); !slices.Equal(both, previous) {
 		if err := writeInventory(ctx, a, both); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		stored = both
 	}
-	for _, obj := range writes {
-		if err := apply(ctx, a, obj); err != nil {
-			return nil, err
+	var refused []*failure
+	past := func(err error) error {
+		if f, ok := errors.AsType[*failure](err); ok && f.verdict != "" {
+			refused = append(refused, f)
+			return nil
 		}
+		return err
+	}
+	for _, obj := range writes {
+		if err := past(apply(ctx, a, obj)); err != nil {
+			return others, refused, err
+		}
+	}
+	if len(refused) > 0 {
+		return others, refused, nil
 	}
 	for _, e := range stale(previous, desired) {
-		if err := prune(ctx, a, e); err != nil {
-			return nil, err
+		if err := past(prune(ctx, a, e)); err != nil {
+			return others, refused, err
 		}
 	}
-	if !slices.Equal(desired, stored) {
-		return others, writeInventory(ctx, a, desired)
+	if len(refused) == 0 && !slices.Equal(desired, stored) {
+		return others, refused, past(writeInventory(ctx, a, desired))
 	}
-	return others, nil
+	return others, refused, nil
 }
 
 func apply(ctx context.Context, a tenantAPI, obj *unstructured.Unstructured) error {
@@ -276,14 +291,14 @@ func apply(ctx context.Context, a tenantAPI, obj *unstructured.Unstructured) err
 }
 
 // heldInventory reads what a held pass acts on: the stored inventory, the
-// objects of the render it lists that the tenant lacks, and whether it is
-// applied: it lists something, every object it lists is stored with Lodia's
-// apply but those missing ones, and no object of the render it does not list
-// is another owner's. Without a render, nil objects, only the inventory is read.
-func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]entry, []*unstructured.Unstructured, bool, error) {
+// objects of the render it lists that the tenant lacks, the objects of the
+// render it does not list that are another owner's, and whether every object
+// it lists is stored with Lodia's apply but those missing ones, and it lists
+// something. Without a render, nil objects, only the inventory is read.
+func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Unstructured) ([]entry, []*unstructured.Unstructured, []foreignObject, bool, error) {
 	listed, err := readInventory(ctx, a)
 	if err != nil || objects == nil {
-		return union(listed), nil, false, err
+		return union(listed), nil, nil, false, err
 	}
 	listed = union(listed)
 	applied := len(listed) > 0
@@ -291,7 +306,7 @@ func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Uns
 	for _, e := range listed {
 		existing, err := readEntry(ctx, a, e)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, nil, nil, false, err
 		}
 		i := slices.IndexFunc(objects, func(obj *unstructured.Unstructured) bool { return compareEntries(entryOf(obj), e) == 0 })
 		switch {
@@ -303,7 +318,7 @@ func heldInventory(ctx context.Context, a tenantAPI, objects []*unstructured.Uns
 	}
 	others, err := foreign(ctx, a, objects, listed)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, nil, false, err
 	}
-	return listed, missing, applied && len(others) == 0, nil
+	return listed, missing, others, applied, nil
 }

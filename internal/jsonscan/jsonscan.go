@@ -19,6 +19,8 @@ import (
 	"errors"
 	"iter"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 )
 
 // MaxKey is the longest key, in bytes between its quotes, that Walk unquotes
@@ -67,6 +69,44 @@ func Text(field string, value []byte, most int) (string, error) {
 		return "", NotA(field, "a string")
 	}
 	return s, nil
+}
+
+// Head is Text for a string kept to its first most bytes, cut before the rune
+// that would cross them. It decodes only the raw tokens that can make them,
+// each a byte or an escape that decodes to one at least, and utf8.UTFMax
+// more, so that a rune or an escaped pair the raw cut splits decodes past
+// them.
+func Head(field string, value []byte, most int) (string, error) {
+	switch {
+	case Null(value):
+		return "", nil
+	case value[0] != '"':
+		return "", NotA(field, "a string")
+	}
+	raw := value[1 : len(value)-1]
+	end := 0
+	for tokens := 0; end < len(raw) && tokens < most+utf8.UTFMax; tokens++ {
+		switch {
+		case raw[end] != '\\':
+			end++
+		case raw[end+1] == 'u':
+			end += 6
+		default:
+			end += 2
+		}
+	}
+	var s string
+	if err := json.Unmarshal(append(append([]byte{'"'}, raw[:end]...), '"'), &s); err != nil {
+		return "", NotA(field, "a string")
+	}
+	if len(s) <= most {
+		return s, nil
+	}
+	cut := most
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return strings.Clone(s[:cut]), nil
 }
 
 // Word is Text for a field a caller only compares with words: a string past

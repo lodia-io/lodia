@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
+	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/controller/datastore"
 	"go.lodia.io/lodia/internal/etcddruid/druidtest"
 	"go.lodia.io/lodia/internal/testenv"
@@ -685,8 +686,8 @@ func TestARequestTheAPIServerRefusesIsRefused(t *testing.T) {
 	plane := getControlPlane(t, ns, cp)
 	ready := meta.FindStatusCondition(plane.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 	want := "the API server refuses the request that etcd-druid reconcile Etcd " + cp + "-etcd, the annotations " + druidv1alpha1.DruidOperationAnnotation + " and " + lodiav1alpha1.EtcdReconcileRequestedAnnotation + "; the reason is in Lodia's log"
-	if ready.Status != metav1.ConditionFalse || ready.Reason != lodiav1alpha1.ReasonRefused || ready.Message != want {
-		t.Errorf("a refused request leaves DatastoreReady %s %s %q, want False %s %q", ready.Status, ready.Reason, ready.Message, lodiav1alpha1.ReasonRefused, want)
+	if ready.Status != metav1.ConditionTrue || ready.Reason != lodiav1alpha1.ReasonRefused || ready.Message != "Etcd "+cp+"-etcd has quorum, 1 of 1 members ready; "+want {
+		t.Errorf("a refused request over an etcd with quorum leaves DatastoreReady %s %s %q, want True %s %q", ready.Status, ready.Reason, ready.Message, lodiav1alpha1.ReasonRefused, want)
 	}
 	if datastore := plane.Status.Datastore; len(datastore.Endpoints) != 1 || datastore.OperatorRevision != previousRevision || datastore.Members.Updated == nil {
 		t.Errorf("a refused request leaves status.datastore %+v, want the applied Etcd's, members updated, and %s kept", datastore, previousRevision)
@@ -1519,11 +1520,185 @@ func TestARefusedRequestOnTheRestoresRaiseReportsTheRestore(t *testing.T) {
 
 	createLease(t, r.ns, restoredCP+"-etcd-full-snap", strconv.FormatInt(marker, 10))
 	poke(t, r.ns)
-	waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses the request that etcd-druid reconcile Etcd "+restoredCP+"-etcd")
+	waitCondition(t, r.ns, restoredCP, metav1.ConditionTrue, lodiav1alpha1.ReasonRefused, "has quorum, 1 of 3 members ready; the API server refuses the request that etcd-druid reconcile Etcd "+restoredCP+"-etcd")
 	if n := getEtcd(t, r.ns, restoredCP).Spec.Replicas; n != 3 {
 		t.Errorf("the pass that completes the restore applied %d members, want 3", n)
 	}
 	if restore := r.controlPlane(t).Status.Restore; restore == (lodiav1alpha1.RestoreStatus{}) || restore.Backup.Name != backupName {
 		t.Errorf("the pass that completes the restore and whose request is refused wrote status.restore %+v, want Backup %s", restore, backupName)
+	}
+}
+
+func expectReady(t *testing.T, ns, name, reason, message string, generation int64) {
+	t.Helper()
+	c := meta.FindStatusCondition(getControlPlane(t, ns, name).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
+	if c == nil || c.Status != metav1.ConditionTrue || c.Reason != reason || c.Message != message || c.ObservedGeneration != generation {
+		t.Fatalf("DatastoreReady is %+v, want True %s %q at generation %d", c, reason, message, generation)
+	}
+}
+
+func heldRefused(t *testing.T, held *datastore.Reconciler, ns, name, message string, generation int64) {
+	t.Helper()
+	for range 2 {
+		if _, err := passOf(t, held, ns, name); !apistatus.Refused(err) {
+			t.Fatalf("a held pass whose dry run is refused returned %v, want the refusal", err)
+		}
+		expectReady(t, ns, name, lodiav1alpha1.ReasonRefused, message, generation)
+	}
+}
+
+// A held pass over a refused update of the etcd's NetworkPolicy tries the grant's write by dry run on every pass and reports its refusal, which blocks, writing nothing; once the cause is gone the next held pass reports what serves and the granted pass writes the policy.
+func TestAHeldPassTriesARefusedPolicyUpdateUntilItsCauseIsGone(t *testing.T) {
+	t.Parallel()
+	ns := namespace(t)
+	const name = "walled-held"
+	const quorum = "Etcd walled-held-etcd has quorum, 1 of 1 members ready"
+	createClass(t, newClass("walling-held", "Retain"))
+	heldTenant(t, ns, name, "walling-held", nil)
+	policy := waitPolicy(t, ns, name, nil)
+	binding := refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{networkingv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"networkpolicies"}}, func() client.Object {
+		return &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+	})
+	granted, held := operatorAt(unpaused(k8s), previousRevision), operatorAt(unpaused(k8s), revision)
+	if _, err := passOf(t, granted, ns, name); !apistatus.Refused(err) {
+		t.Fatalf("a granted pass over a refused update of the policy returned %v", err)
+	}
+	described := getControlPlane(t, ns, name).Generation
+	expectReady(t, ns, name, lodiav1alpha1.ReasonRefused, quorum+"; the API server refuses NetworkPolicy walled-held-etcd; the reason is in Lodia's log", described)
+	heldRefused(t, held, ns, name, quorum+"; the grant's write of NetworkPolicy walled-held-etcd would be refused: the API server refuses the dry run; the reason is in Lodia's log", described)
+
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		if _, err := passOf(t, held, ns, name); err != nil {
+			return err
+		}
+		if c := meta.FindStatusCondition(getControlPlane(t, ns, name).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c.Reason != lodiav1alpha1.ReasonReady || c.Message != quorum || c.ObservedGeneration != described {
+			return fmt.Errorf("DatastoreReady is %+v, want True Ready %q at generation %d", c, quorum, described)
+		}
+		return nil
+	})
+	if after := waitPolicy(t, ns, name, nil); after.ResourceVersion != policy.ResourceVersion {
+		t.Errorf("a held pass wrote the NetworkPolicy: resourceVersion %s, then %s", policy.ResourceVersion, after.ResourceVersion)
+	}
+}
+
+// A held pass that creates the missing etcd NetworkPolicy and is refused meets that refusal itself, which blocks, and tries nothing of a policy it did not find.
+func TestAHeldPassMeetsARefusedCreateOfThePolicy(t *testing.T) {
+	t.Parallel()
+	ns := namespace(t)
+	const name = "walled-create"
+	createClass(t, newClass("walling-create", "Retain"))
+	heldTenant(t, ns, name, "walling-create", nil)
+	waitPolicy(t, ns, name, nil)
+	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{networkingv1.GroupName}, APIVersions: []string{"v1"}, Resources: []string{"networkpolicies"}}, func() client.Object {
+		return &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+	})
+	if err := k8s.Delete(t.Context(), &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name + "-etcd"}}); err != nil {
+		t.Fatal(err)
+	}
+	described := getControlPlane(t, ns, name).Generation
+	held := operatorAt(unpaused(k8s), revision)
+	testenv.Eventually(t, func() error {
+		if _, err := passOf(t, held, ns, name); !apistatus.Refused(err) {
+			return fmt.Errorf("a held pass that creates the policy returned %w, want the refusal", err)
+		}
+		return nil
+	})
+	expectReady(t, ns, name, lodiav1alpha1.ReasonRefused, "Etcd walled-create-etcd has quorum, 1 of 1 members ready; the API server refuses NetworkPolicy walled-create-etcd; the reason is in Lodia's log", described)
+}
+
+// A held pass over a refused render of the Etcd tries the render by dry run on every pass and reports its refusal, also beside a refusal of its own copy, which it meets, and the granted revision's pass meets the render's again.
+func TestAHeldPassTriesTheEtcdsRender(t *testing.T) {
+	t.Parallel()
+	ns := namespace(t)
+	const name, class, schedule = "rendered-held", "rendering-held", "0 4 * * *"
+	const quorum = "Etcd rendered-held-etcd has quorum, 1 of 1 members ready"
+	createClass(t, newClass(class, "Retain"))
+	heldTenant(t, ns, name, class, nil)
+	editClass(t, class, func(c *lodiav1alpha1.DatastoreClass) {
+		c.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Defragmentation: lodiav1alpha1.Defragmentation{Schedule: schedule}}
+	})
+	grantClass(t, ns, name, class)
+	rule := admissionregistrationv1.Rule{APIGroups: []string{druidv1alpha1.SchemeGroupVersion.Group}, APIVersions: []string{"v1alpha1"}, Resources: []string{"etcds"}}
+	refuseUnless(t, ns, "refuse-the-schedule-in-"+ns, rule, "object.metadata.namespace != '"+ns+"' || !has(object.spec.etcd.defragmentationSchedule) || object.spec.etcd.defragmentationSchedule != '"+schedule+"'", func() client.Object {
+		return &druidv1alpha1.Etcd{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}, Spec: druidv1alpha1.EtcdSpec{Replicas: 1, Labels: map[string]string{"app": "etcd"}, Etcd: druidv1alpha1.EtcdConfig{DefragmentationSchedule: new(schedule)}}}
+	})
+	granted, held := operatorAt(unpaused(k8s), previousRevision), operatorAt(unpaused(k8s), revision)
+	if _, err := passOf(t, granted, ns, name); !apistatus.Refused(err) {
+		t.Fatalf("a granted pass over a refused render returned %v", err)
+	}
+	described := getControlPlane(t, ns, name).Generation
+	expectReady(t, ns, name, lodiav1alpha1.ReasonRefused, quorum+"; the API server refuses Etcd rendered-held-etcd on certificate generation 1 with the fields of DatastoreClass rendering-held generation 2; the reason is in Lodia's log", described)
+	heldRefused(t, held, ns, name, quorum+"; the grant's write of Etcd rendered-held-etcd on certificate generation 1 with the fields of DatastoreClass rendering-held generation 2 would be refused: the API server refuses the dry run; the reason is in Lodia's log", described)
+	writeGeneration(t, ns, name, 2)
+	refuseEtcds(t, ns)
+	heldRefused(t, held, ns, name, quorum+"; the API server refuses Etcd rendered-held-etcd on certificate generation 2, the rest of its spec as stored; the reason is in Lodia's log", described)
+	if _, err := passOf(t, granted, ns, name); !apistatus.Refused(err) {
+		t.Errorf("the granted revision's pass returned %v, want the refusal again", err)
+	}
+	expectReady(t, ns, name, lodiav1alpha1.ReasonRefused, quorum+"; the API server refuses Etcd rendered-held-etcd on certificate generation 2 with the fields of DatastoreClass rendering-held generation 2; the reason is in Lodia's log", described)
+}
+
+// A held pass whose copy of the Etcd is refused meets that refusal itself, Refused, and once the copy is applied the refusal ends.
+func TestAHeldPassMeetsARefusalOfItsCopyUntilTheCopyIsApplied(t *testing.T) {
+	t.Parallel()
+	ns := namespace(t)
+	const name = "copied-held"
+	const quorum = "Etcd copied-held-etcd has quorum, 1 of 1 members ready"
+	createClass(t, newClass("copying-held", "Retain"))
+	heldTenant(t, ns, name, "copying-held", nil)
+	writeGeneration(t, ns, name, 2)
+	binding := refuseEtcds(t, ns)
+	held := operatorAt(unpaused(k8s), revision)
+	if _, err := passOf(t, held, ns, name); !apistatus.Refused(err) {
+		t.Fatalf("a held pass whose copy is refused returned %v", err)
+	}
+	described := getControlPlane(t, ns, name).Generation
+	expectReady(t, ns, name, lodiav1alpha1.ReasonRefused, quorum+"; the API server refuses Etcd copied-held-etcd on certificate generation 2, the rest of its spec as stored; the reason is in Lodia's log", described)
+	if err := k8s.Delete(t.Context(), binding); err != nil {
+		t.Fatal(err)
+	}
+	testenv.Eventually(t, func() error {
+		if _, err := passOf(t, held, ns, name); err != nil {
+			return err
+		}
+		if c := meta.FindStatusCondition(getControlPlane(t, ns, name).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Reason != lodiav1alpha1.ReasonReady {
+			return fmt.Errorf("DatastoreReady is %+v, want the refusal ended", c)
+		}
+		return nil
+	})
+}
+
+// A held pass that keeps the Etcd and its credentials copy on the store the Etcd names, under a granted store whose copy is refused, tries the grant's copy by dry run and reports its refusal, leaving the copy as it is, and the granted revision's pass meets it again.
+func TestAHeldPassTriesTheCredentialsCopyItKeeps(t *testing.T) {
+	t.Parallel()
+	ns, credentialsNamespace := namespace(t), namespace(t)
+	const cp = "kept-copy"
+	const quorum = "Etcd kept-copy-etcd has quorum, 1 of 1 members ready"
+	create(t, credentials(credentialsNamespace))
+	createClass(t, fullClass(cp, credentialsNamespace))
+	heldTenant(t, ns, cp, cp, nil)
+	create(t, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "s3-other", Namespace: credentialsNamespace}, Data: map[string][]byte{"accessKeyID": []byte("other-access")}})
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
+		class.Spec.Backup.Store.Bucket, class.Spec.Backup.Store.SecretRef.Name = "other-bucket", "s3-other"
+	})
+	grantClass(t, ns, cp, cp)
+	refuse(t, ns, admissionregistrationv1.Rule{APIGroups: []string{""}, APIVersions: []string{"v1"}, Resources: []string{"secrets"}}, func() client.Object {
+		return &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "probe", Namespace: ns}}
+	})
+	granted, held := operatorAt(unpaused(k8s), previousRevision), operatorAt(unpaused(k8s), revision)
+	if _, err := passOf(t, granted, ns, cp); !apistatus.Refused(err) {
+		t.Fatalf("a granted pass whose credentials copy is refused returned %v", err)
+	}
+	described := getControlPlane(t, ns, cp).Generation
+	expectReady(t, ns, cp, lodiav1alpha1.ReasonRefused, quorum+"; DatastoreClass kept-copy is held: the API server refuses kept-copy-etcd-backup; the reason is in Lodia's log", described)
+	heldRefused(t, held, ns, cp, quorum+"; the grant's write of Secret kept-copy-etcd-backup would be refused: the API server refuses the dry run; the reason is in Lodia's log", described)
+	if got := string(getCopy(t, ns, cp).Data["accessKeyID"]); got != "spike-access" {
+		t.Errorf("the held pass left accessKeyID %s in the copy, want spike-access of the store the Etcd names", got)
+	}
+	if _, err := passOf(t, granted, ns, cp); !apistatus.Refused(err) {
+		t.Errorf("the granted revision's pass returned %v, want the refusal again", err)
 	}
 }

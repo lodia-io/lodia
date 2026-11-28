@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/types"
+
+	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 )
 
 // EtcdCertificateRole is a Secret of one generation of etcd certificates,
@@ -65,6 +67,20 @@ func EtcdName(controlPlane string) string { return controlPlane + "-etcd" }
 // source's etcd before it copies the Backup, and that the Datastore
 // controller requires in the restored etcd.
 func BackupSealKey(backup types.UID) string { return "/lodia.io/backups/" + string(backup) }
+
+// Refusals are the reasons of a condition Ready is built from that say a
+// refusal stands, whatever its status: an object refused or kept elsewhere,
+// the authentication configuration, a class's credentials Secret missing, or
+// a write of the grant no dry run can try. Lifecycle stops a change on one,
+// and a writer held for the running operator revision tries the grant's
+// writes by dry run while its condition holds one
+// (docs/decisions/upgrades-and-maintenance-windows.md).
+func Refusals() []string {
+	return []string{
+		lodiav1alpha1.ReasonRefused, lodiav1alpha1.ReasonObjectsControlledElsewhere, lodiav1alpha1.ReasonAuthenticationInvalid,
+		lodiav1alpha1.ReasonSecretNotFound, lodiav1alpha1.ReasonRefusedBeforeHold,
+	}
+}
 
 // The values beside the names that one controller renders and another relies
 // on.

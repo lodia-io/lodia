@@ -223,24 +223,25 @@ func (r *Reconciler) reconcile(ctx context.Context, cp *lodiav1alpha1.ControlPla
 	if out == nil {
 		return ctrl.Result{}, err
 	}
-	// The policy follows an Etcd of this ControlPlane's and is reported over
-	// the etcd's own state only when that is ready.
+	// The policy follows an Etcd of this ControlPlane's.
 	if out.etcd != nil {
-		blocked, policyErr := r.applyNetworkPolicy(ctx, cp, out.etcd)
+		blocked, policyErr := r.applyNetworkPolicy(ctx, cp, out.etcd, out.tried)
 		if blocked == nil && policyErr != nil {
 			return ctrl.Result{}, errors.Join(err, policyErr)
 		}
 		if blocked != nil {
 			out.requeueAfter = cmp.Or(out.requeueAfter, time.Minute)
-			if out.condition.Status == metav1.ConditionTrue {
-				out.condition = *blocked
-			}
+			out.condition = statusapply.Refusing(out.condition, *blocked)
+			out.condition.ObservedGeneration = statusapply.Described(cp, out.condition.Type)
 		}
 		err = errors.Join(err, policyErr)
 	}
-	ready, backup := out.condition, r.backupReady(out.etcd)
+	ready, backup := out.tried.on(out.condition), r.backupReady(out.etcd)
+	if out.tried != nil {
+		err = errors.Join(err, out.tried.refusals)
+	}
 	if r.held(cp) {
-		ready.ObservedGeneration, backup.ObservedGeneration = described(cp, ready.Type), described(cp, backup.Type)
+		ready.ObservedGeneration, backup.ObservedGeneration = statusapply.Described(cp, ready.Type), statusapply.Described(cp, backup.Type)
 	}
 	ready = r.memberRestored(cp, l, ready)
 	if statusErr := r.applyStatus(ctx, cp, l, datastoreStatus(cp, out.etcd, out.rollout, out.applied), out.restore, ready, backup); statusErr != nil || err != nil {
@@ -356,17 +357,6 @@ func granted(cp *lodiav1alpha1.ControlPlane) string {
 	return cp.Status.Target.OperatorRevision
 }
 
-// described is the generation a held pass reports a condition at: the one
-// the condition describes, read live at the pass's start, so that an owner's
-// edit does not read as reported before Lifecycle grants the running
-// revision.
-func described(cp *lodiav1alpha1.ControlPlane, conditionType string) int64 {
-	if c := meta.FindStatusCondition(cp.Status.Conditions, conditionType); c != nil {
-		return c.ObservedGeneration
-	}
-	return cp.Generation
-}
-
 // waitForTarget writes nothing but both conditions, waiting, until Lifecycle
 // grants a first operator revision.
 func (r *Reconciler) waitForTarget(ctx context.Context, cp *lodiav1alpha1.ControlPlane, l *lock) error {
@@ -386,6 +376,8 @@ type outcome struct {
 	// applied says that etcd is this pass's apply of it, not the cache's,
 	// which can predate the class the last pass reported.
 	applied bool
+	// tried is what a held pass's dry run of the grant's writes found.
+	tried *trial
 	// restore is carried into every apply: what this pass found complete, or
 	// what it read.
 	restore      lodiav1alpha1.RestoreStatus
@@ -410,6 +402,9 @@ type pass struct {
 	// applies, and keep that the Etcd keeps the fields its class gave it
 	// while the class waits for its grant or is held for its credentials.
 	copied, keep bool
+	// tried is what the pass's dry run of the grant's writes found, while
+	// DatastoreReady holds a refusal, and nil otherwise.
+	tried *trial
 	// held is the note on DatastoreReady of a class held or waiting for its
 	// generation, of a quota capped, and of a request that waits for
 	// etcd-druid. It and refusal, an apply of the credentials the API server
@@ -426,10 +421,14 @@ type pass struct {
 
 func (r *Reconciler) reconcileEtcd(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*outcome, error) {
 	p := &pass{cp: cp}
+	if trying(cp) {
+		p.tried = &trial{}
+	}
 	out, err := r.takeSteps(ctx, p)
 	if out != nil {
 		out.restore = cmp.Or(out.restore, cp.Status.Restore)
 		out.condition.Message = note(out.condition.Message, p.held)
+		out.tried = p.tried
 	}
 	return out, errors.Join(err, p.refusal)
 }
@@ -541,7 +540,13 @@ func (r *Reconciler) holdClass(ctx context.Context, p *pass) (*outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	blocked, err := r.copyCredentials(ctx, p.cp, class, p.secrets, moved)
+	// The grant's first pass copies the class's store unless the class waits
+	// for its own grant.
+	tried := p.tried
+	if waits {
+		tried = nil
+	}
+	blocked, err := r.copyCredentials(ctx, p.cp, class, p.secrets, moved, tried)
 	if blocked == nil && err != nil {
 		return nil, err
 	}
@@ -642,22 +647,19 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 	if err != nil {
 		err = fmt.Errorf("apply Etcd %s: %w", rendered.Name(), err)
 		if apistatus.Refused(err) && !replaced(err) {
-			class, _ := rendered.Class()
-			message := fmt.Sprintf("the API server refuses Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s",
-				rendered.Name(), p.generation, class, rendered.ClassGeneration())
-			held, explained, heldErr := r.Druid.HeldEmpty(ctx, r.Reader, FieldManager, rendered, err)
-			if len(held) > 0 {
-				message += ": the apply empties " + strings.Join(held, ", and ") + "; the API server leaves an object emptied while another manager holds it null, or empty without the fields it requires, and the Etcd's schema refuses either"
+			why, heldErr := r.whyRefused(ctx, rendered, err)
+			condition, readErr := r.refusing(ctx, p, p.current, notReady(lodiav1alpha1.ReasonRefused, "the API server refuses "+sent(p, rendered)+why))
+			if readErr != nil {
+				return nil, errors.Join(err, heldErr, readErr)
 			}
-			switch {
-			case len(held) == 0:
-				message += "; the reason is in Lodia's log"
-			case !explained:
-				message += "; the rest of the refusal is in Lodia's log"
-			}
-			return &outcome{etcd: p.current, restore: p.check.restored, condition: notReady(lodiav1alpha1.ReasonRefused, message)}, errors.Join(err, heldErr)
+			return &outcome{etcd: p.current, restore: p.check.restored, condition: condition}, errors.Join(err, heldErr)
 		}
 		return nil, err
+	}
+	if p.copied && p.tried != nil {
+		if err := r.tryEtcd(ctx, p, etcd); err != nil {
+			return nil, err
+		}
 	}
 	class, _ := etcd.Class()
 	if err := r.labelClaims(ctx, cp, class); err != nil {
@@ -674,7 +676,11 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		return nil, errors.Join(requestErr, err)
 	}
 	if requestErr != nil {
-		return &outcome{etcd: etcd, rollout: p.rollout, applied: true, restore: p.check.restored, condition: notReady(lodiav1alpha1.ReasonRefused, etcd.RequestRefused())}, requestErr
+		condition, readErr := r.refusing(ctx, p, etcd, notReady(lodiav1alpha1.ReasonRefused, etcd.RequestRefused()))
+		if readErr != nil {
+			return nil, errors.Join(requestErr, readErr)
+		}
+		return &outcome{etcd: etcd, rollout: p.rollout, applied: true, restore: p.check.restored, condition: condition}, requestErr
 	}
 	etcd = requested
 	absent, err := r.missingSecrets(ctx, cp, etcd, p.secrets)
@@ -693,6 +699,51 @@ func (r *Reconciler) applyEtcd(ctx context.Context, p *pass) (*outcome, error) {
 		requeueAfter = r.Druid.StatusSync
 	}
 	return &outcome{etcd: etcd, rollout: p.rollout, applied: true, restore: p.check.restored, condition: condition, requeueAfter: sooner(requeueAfter, p.check.requeueAfter)}, nil
+}
+
+// sent names the Etcd rendered as the pass sends it: the render on its
+// certificate generation with its class's fields, or a held pass's copy.
+func sent(p *pass, rendered *etcddruid.Store) string {
+	if p.copied && rendered == p.rendered {
+		return fmt.Sprintf("Etcd %s on certificate generation %d, the rest of its spec as stored", rendered.Name(), p.generation)
+	}
+	class, _ := rendered.Class()
+	return fmt.Sprintf("Etcd %s on certificate generation %d with the fields of DatastoreClass %s generation %s", rendered.Name(), p.generation, class, rendered.ClassGeneration())
+}
+
+// whyRefused is what the API server's refusal of rendered, refused, says,
+// after the refusal: the objects the apply empties while another manager
+// holds them, and where the rest of the refusal is.
+func (r *Reconciler) whyRefused(ctx context.Context, rendered *etcddruid.Store, refused error) (string, error) {
+	held, explained, err := r.Druid.HeldEmpty(ctx, r.Reader, FieldManager, rendered, refused)
+	var why string
+	if len(held) > 0 {
+		why = ": the apply empties " + strings.Join(held, ", and ") + "; the API server leaves an object emptied while another manager holds it null, or empty without the fields it requires, and the Etcd's schema refuses either"
+	}
+	switch {
+	case len(held) == 0:
+		why += "; the reason is in Lodia's log"
+	case !explained:
+		why += "; the rest of the refusal is in Lodia's log"
+	}
+	return why, err
+}
+
+// refusing is DatastoreReady while the refusal refused names stands: etcd's
+// readiness, True under the refusal's reason, with the refusal after it, at
+// the generation the condition describes, or refused itself while there is no
+// Etcd.
+func (r *Reconciler) refusing(ctx context.Context, p *pass, etcd *etcddruid.Store, refused metav1.Condition) (metav1.Condition, error) {
+	if etcd == nil {
+		return refused, nil
+	}
+	absent, err := r.missingSecrets(ctx, p.cp, etcd, p.secrets)
+	if err != nil {
+		return metav1.Condition{}, err
+	}
+	c := statusapply.Refusing(p.check.reported(p.cp, etcd.Readiness(absent)), refused)
+	c.ObservedGeneration = statusapply.Described(p.cp, c.Type)
+	return c, nil
 }
 
 // sooner is the earlier of two requeues, 0 being none.
@@ -925,9 +976,10 @@ type blocked struct {
 
 // etcd-druid mounts the store's Secret from the Etcd's namespace, and the
 // backup-restore sidecar reads the region from it. An existing copy is kept
-// while moved says the Etcd is held on another store. The first result says
-// why the copy cannot be made, the second carries a refusal for the log.
-func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata, moved bool) (*blocked, error) {
+// while moved says the Etcd is held on another store, and sent by dry run into
+// tried when that is set. The first result says why the copy cannot be made,
+// the second carries a refusal for the log.
+func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass, secrets []metav1.PartialObjectMetadata, moved bool, tried *trial) (*blocked, error) {
 	store := class.Spec.Backup.Store
 	source := &corev1.Secret{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: store.SecretRef.Namespace, Name: store.SecretRef.Name}, source); err != nil {
@@ -940,14 +992,6 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.Cont
 	existing, err := r.secret(ctx, cp, name, secrets)
 	if err != nil {
 		return nil, err
-	}
-	if existing != nil {
-		if ref := ownership.ControlledElsewhere(existing, cp); ref != nil {
-			return &blocked{lodiav1alpha1.ReasonObjectsControlledElsewhere, fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)}, nil
-		}
-		if moved {
-			return nil, nil
-		}
 	}
 	data := maps.Clone(source.Data)
 	if store.Region != "" {
@@ -966,6 +1010,17 @@ func (r *Reconciler) copyCredentials(ctx context.Context, cp *lodiav1alpha1.Cont
 			WithController(true).
 			WithBlockOwnerDeletion(true)).
 		WithData(data)
+	if existing != nil {
+		if ref := ownership.ControlledElsewhere(existing, cp); ref != nil {
+			return &blocked{lodiav1alpha1.ReasonObjectsControlledElsewhere, fmt.Sprintf("%s is controlled by %s %s with UID %s", name, ref.Kind, ref.Name, ref.UID)}, nil
+		}
+		if moved {
+			if tried == nil {
+				return nil, nil
+			}
+			return nil, tried.answer("Secret "+name, r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership, client.DryRunAll), inTheLog)
+		}
+	}
 	if err := r.Apply(ctx, secret, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		err = fmt.Errorf("apply Secret %s: %w", name, err)
 		if apistatus.Refused(err) {

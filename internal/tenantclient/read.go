@@ -9,24 +9,19 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strconv"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
+	"go.lodia.io/lodia/internal/apistatus"
 	"go.lodia.io/lodia/internal/jsonscan"
 )
 
 // MaxCauses bounds a Status's causes.
 const MaxCauses = 64
 
-var (
-	ErrNotJSON = errors.New("the response is not JSON")
-
-	// LongMessage is a Status's message past MaxMessageRaw.
-	LongMessage = "the server's message is longer than " + strconv.Itoa(MaxMessageRaw) + " bytes"
-)
+var ErrNotJSON = errors.New("the response is not JSON")
 
 // Do sends the request once, which asks for JSON, and returns the body of the
 // answer: client-go sends a request again up to ten times on a 429 or a 5xx
@@ -58,6 +53,20 @@ func (c *Client) Do(ctx context.Context, request *rest.Request) ([]byte, error) 
 }
 
 const NoStatusMessage = "the answer is no Status Lodia can read"
+
+// Refused says who in the tenant refused a request, after the object it
+// names: its admission webhook, which denied it or could not be called, or
+// its API server.
+func Refused(err error) string {
+	name, denied := apistatus.Webhook(err)
+	switch {
+	case name == "":
+		return "is refused by the tenant's API server"
+	case denied:
+		return "is refused by the tenant's admission webhook " + name
+	}
+	return "is refused by the tenant's API server: its admission webhook " + name + " cannot be called"
+}
 
 // noStatus is the error client-go built of a failed answer that is no Status
 // within the bounds, without the tenant's text: its code, reason and
@@ -93,10 +102,7 @@ func StatusFrom(data []byte) (s StatusBody, err error) {
 		case "status":
 			s.Status, err = jsonscan.Word("status", value, MaxWordRaw)
 		case "message":
-			s.Message, err = jsonscan.Text("message", value, MaxMessageRaw)
-			if tooLong := new(jsonscan.TooLong); errors.As(err, &tooLong) {
-				s.Message, err = LongMessage, nil
-			}
+			s.Message, err = jsonscan.Head("message", value, MaxMessage)
 		case "reason":
 			var reason string
 			reason, err = jsonscan.Text("reason", value, MaxReasonRaw)
