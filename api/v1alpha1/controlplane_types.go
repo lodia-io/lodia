@@ -336,8 +336,8 @@ type APIServer struct {
 	// the version it reports while it runs on. It checks the values of
 	// disable-admission-plugins, service-account-max-token-expiration,
 	// event-ttl and runtime-config. Every other flag and value is passed as
-	// written, and a flag or a value kube-apiserver refuses makes it exit.
-	// enable-admission-plugins merges: its entries follow Lodia's.
+	// written, and a flag or a value kube-apiserver refuses makes it exit,
+	// which APIServerReady names. enable-admission-plugins merges: its entries follow Lodia's.
 	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
@@ -400,7 +400,7 @@ type Component struct {
 	// sets the version it reports while it runs on. It checks the values of
 	// the node mask sizes and of controllers. Every other flag and value is
 	// passed as written, and a flag or a value the component refuses makes it
-	// exit. controllers merges: its entries follow Lodia's. featureGates sets
+	// exit, which APIServerReady names. controllers merges: its entries follow Lodia's. featureGates sets
 	// feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
@@ -439,7 +439,8 @@ type Scheduler struct {
 	// and write-config-to, which end the process; and version, which ends it
 	// or, given as vX.Y.Z, sets the version it reports while it runs on. Every
 	// other flag and value is passed as written, and a flag or a value
-	// kube-scheduler refuses makes it exit. featureGates sets feature-gates.
+	// kube-scheduler refuses makes it exit, which APIServerReady names.
+	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"

@@ -315,13 +315,14 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		flags["goaway-chance"] = "0.001"
 	}
 	container := corev1.Container{
-		Name:           apiServer,
-		Image:          r.images.APIServer,
-		Command:        command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
-		Ports:          []corev1.ContainerPort{{Name: "https", ContainerPort: kubernetesPort, Protocol: corev1.ProtocolTCP}},
-		ReadinessProbe: readinessProbe(contract.APIServerReadyzPath, intstr.FromString("https")),
-		LivenessProbe:  livenessProbe("/livez", intstr.FromString("https")),
-		StartupProbe:   startupProbe("/livez", intstr.FromString("https")),
+		Name:                     apiServer,
+		Image:                    r.images.APIServer,
+		Command:                  command(apiServer, flags, settings.ExtraArgs, settings.FeatureGates),
+		Ports:                    []corev1.ContainerPort{{Name: "https", ContainerPort: kubernetesPort, Protocol: corev1.ProtocolTCP}},
+		ReadinessProbe:           readinessProbe(contract.APIServerReadyzPath, intstr.FromString("https")),
+		LivenessProbe:            livenessProbe("/livez", intstr.FromString("https")),
+		StartupProbe:             startupProbe("/livez", intstr.FromString("https")),
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		// @todo: kube-apiserver closes its signer connection on SIGTERM (kubernetes#142980), so the shutdown delay is a preStop sleep; undo with todo.md's signer item.
 		Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: int64(shutdownDelay / time.Second)}}},
 		Resources: resources(settings.Resources, "100m", "256Mi"),
@@ -496,13 +497,14 @@ func (r rendering) controllerManager() *appsv1.Deployment {
 		"use-service-account-credentials":          "true",
 	}
 	container := corev1.Container{
-		Name:          controllerManager,
-		Image:         r.images.ControllerManager,
-		Command:       command(controllerManager, flags, settings.ExtraArgs, settings.FeatureGates),
-		LivenessProbe: livenessProbe("/healthz", intstr.FromInt32(10257)),
-		StartupProbe:  startupProbe("/healthz", intstr.FromInt32(10257)),
-		Resources:     resources(settings.Resources, "50m", "64Mi"),
-		VolumeMounts:  mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
+		Name:                     controllerManager,
+		Image:                    r.images.ControllerManager,
+		Command:                  command(controllerManager, flags, settings.ExtraArgs, settings.FeatureGates),
+		LivenessProbe:            livenessProbe("/healthz", intstr.FromInt32(10257)),
+		StartupProbe:             startupProbe("/healthz", intstr.FromInt32(10257)),
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+		Resources:                resources(settings.Resources, "50m", "64Mi"),
+		VolumeMounts:             mounts("kubeconfig", "client-ca", "front-proxy-ca", "kubelet-signer", "ca-bundle"),
 	}
 	d := r.deployment(controllerManager, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},
@@ -535,14 +537,15 @@ func (r rendering) scheduler() *appsv1.Deployment {
 		"leader-elect-resource-namespace": contract.LeaderElectionNamespace,
 	}
 	container := corev1.Container{
-		Name:           scheduler,
-		Image:          r.images.Scheduler,
-		Command:        command(scheduler, flags, settings.ExtraArgs, settings.FeatureGates),
-		ReadinessProbe: readinessProbe("/readyz", intstr.FromInt32(10259)),
-		LivenessProbe:  livenessProbe("/livez", intstr.FromInt32(10259)),
-		StartupProbe:   startupProbe("/livez", intstr.FromInt32(10259)),
-		Resources:      resources(settings.Resources, "20m", "32Mi"),
-		VolumeMounts:   mounts("kubeconfig"),
+		Name:                     scheduler,
+		Image:                    r.images.Scheduler,
+		Command:                  command(scheduler, flags, settings.ExtraArgs, settings.FeatureGates),
+		ReadinessProbe:           readinessProbe("/readyz", intstr.FromInt32(10259)),
+		LivenessProbe:            livenessProbe("/livez", intstr.FromInt32(10259)),
+		StartupProbe:             startupProbe("/livez", intstr.FromInt32(10259)),
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+		Resources:                resources(settings.Resources, "20m", "32Mi"),
+		VolumeMounts:             mounts("kubeconfig"),
 	}
 	return r.deployment(scheduler, defaultReplicas(cp), corev1.PodSpec{
 		Containers: []corev1.Container{container},

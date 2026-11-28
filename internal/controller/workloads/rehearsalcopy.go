@@ -56,7 +56,6 @@ func (r rendering) rehearsalCopy(version string, generation int64, quota resourc
 	api.VolumeMounts = slices.DeleteFunc(api.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == "etcd-ca" || m.Name == "etcd-client" })
 	api.ReadinessProbe = readinessProbe(contract.APIServerReadyzPath, intstr.FromString("https"))
 	api.LivenessProbe, api.StartupProbe, api.Lifecycle = nil, nil, nil
-	api.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
 	pod.Containers = []corev1.Container{api}
 
 	signer := pod.InitContainers[slices.IndexFunc(pod.InitContainers, func(c corev1.Container) bool { return c.Name == "lodia-signer" })]

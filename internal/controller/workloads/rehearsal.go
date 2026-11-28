@@ -373,17 +373,20 @@ func containerStatus(statuses []corev1.ContainerStatus, name string) *corev1.Con
 	return nil
 }
 
-// exited says how the container ended, its exit code, reason and termination
-// message, empty while it has never ended: the copy's API server never exits
-// on its own.
+// exited says how the container ended, its exit code, reason and the line of
+// its termination message that exitLine reads, kube-apiserver's fatal line, a
+// klog line at level F, when the message holds one, else its last line, where
+// a component that runs with FallbackToLogsOnError prints the error it exits
+// on, empty while it has never ended: the copy's API server never exits on its
+// own.
 func exited(c *corev1.ContainerStatus) string {
 	t := terminated(c)
 	if t == nil {
 		return ""
 	}
 	out := fmt.Sprintf("%d (%s)", t.ExitCode, t.Reason)
-	if m := strings.TrimSpace(t.Message); m != "" {
-		out += ": " + quoted(m)
+	if line := exitLine(t.Message); line != "" {
+		out += ": " + quoted(line)
 	}
 	return out
 }

@@ -217,7 +217,7 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 		{"a scheduler without a Deployment", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false)}, "",
 			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has no Deployment"},
 	} {
-		c := availability(row.deployments, row.held, false)
+		c := availability(row.deployments, row.held, false, nil)
 		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
 			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
 		}
@@ -239,7 +239,7 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 		{name: "a scheduler with no ready replica under a hold", deployments: []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 1, 0, false), deployment(scheduler, 2, 0, false)}, held: true,
 			want: "False Unavailable kube-controller-manager has 0 of 1 replicas ready while Health holds its leader Lease; kube-scheduler has 0 of 2 replicas ready"},
 	} {
-		c := availability(row.deployments, "", row.held)
+		c := availability(row.deployments, "", row.held, nil)
 		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
 			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
 		}

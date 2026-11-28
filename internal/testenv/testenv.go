@@ -94,6 +94,7 @@ func Start(opts Options) *Env {
 		CRDs:                  opts.CRDs,
 		UseExistingCluster:    new(false),
 	}
+	env.ControlPlane.GetAPIServer().Configure().Set("service-cluster-ip-range", "10.0.0.0/16")
 	if opts.EnforceOwnerReferences {
 		env.ControlPlane.GetAPIServer().Configure().Append("enable-admission-plugins", "OwnerReferencesPermissionEnforcement")
 	}
