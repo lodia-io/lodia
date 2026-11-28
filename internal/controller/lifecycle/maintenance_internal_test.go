@@ -25,7 +25,7 @@ var slotTaken = present.Add(-2 * time.Hour)
 func held(change ...func(*facts)) facts {
 	f := world{spec: "v1.37.1", target: "v1.37.1", revision: revisionA, reports: at("v1.37.1")}.facts()
 	f.revision, f.limit, f.settling = revisionB, 5, settling
-	f.cp.Status.Datastore = &lodiav1alpha1.DatastoreStatus{Members: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}, Updated: new(int32(1))}}
+	f.cp.Status.Datastore = lodiav1alpha1.DatastoreStatus{Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}, Members: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(1)), Ready: new(int32(1))}, Updated: new(int32(1))}}
 	reported(&f, revisionA)
 	set(&f, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: 3})
 	set(&f, metav1.Condition{Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, ObservedGeneration: 3, LastTransitionTime: metav1.NewTime(present.Add(-time.Hour))})
@@ -37,7 +37,7 @@ func held(change ...func(*facts)) facts {
 
 func reported(f *facts, revision string) {
 	c := f.cp.Status.Components
-	for _, component := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+	for _, component := range []*lodiav1alpha1.ComponentStatus{&c.APIServer, &c.ControllerManager, &c.Scheduler} {
 		component.OperatorRevision = revision
 	}
 	if f.cp.Status.Addons != nil {
@@ -77,7 +77,7 @@ func slotted(reason string, generation int64) func(*facts) {
 
 func inWindow(begin, end, zone string) func(*facts) {
 	return func(f *facts) {
-		f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: begin, End: end, TimeZone: zone}}
+		f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: begin, End: end, TimeZone: zone}}
 	}
 }
 
@@ -234,7 +234,7 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 		{"3: an owner's edit under a hold, ahead of Progressing's generation", held(closedWindow, progressingAs(lodiav1alpha1.ReasonWaitingForWindow, 2)),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
 		{"3: an owner's upgrade under way", held(closedWindow, func(f *facts) {
-			f.cp.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAddons, StartedAt: started}}
+			f.cp.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAddons, StartedAt: started}}
 			f.cp.Status.Addons.Version = "v1.37.0"
 		}), granted{revision: revisionB, reason: lodiav1alpha1.ReasonUpgrading}},
 		{"3: a token, whose grant is the owner's: no slot", held(closedWindow, requested("t1"), handled("t0")),
@@ -254,15 +254,15 @@ func TestTheGrantFollowsTheRulesInTheirOrder(t *testing.T) {
 		{"3: APIServerReady False WaitingForTarget at the object's generation", held(closedWindow, condition(heldAPI)),
 			granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
 		{"3: a restored tenant whose controller manager is not released", held(closedWindow, func(f *facts) {
-			f.cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
-			f.cp.Status.Components.ControllerManager.Total = 0
+			f.cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
+			f.cp.Status.Components.ControllerManager.Total = new(int32(0))
 		}), granted{revision: revisionB, reason: lodiav1alpha1.ReasonRollingOut}},
 		{"3: not addons that wait with their version reported", held(closedWindow, condition(waitingForAccess)),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: &nextStart, requeue: 30 * time.Minute}},
 		{"3: not WaitingForTarget at an earlier generation", held(closedWindow, condition(metav1.Condition{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForTarget, ObservedGeneration: 2})),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonLatestGenerationNotObserved, scheduledFor: &nextStart, requeue: 30 * time.Minute}},
 		{"3: not a restored tenant whose controller manager runs", held(closedWindow, func(f *facts) {
-			f.cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
+			f.cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "a-1"}}
 		}), granted{revision: revisionA, reason: lodiav1alpha1.ReasonWaitingForWindow, scheduledFor: &nextStart, requeue: 30 * time.Minute}},
 		{"4: Unsupported is the owner's to fix", held(func(f *facts) { f.cp.Spec.Version = "v1.38.0" }),
 			granted{revision: revisionA, reason: lodiav1alpha1.ReasonUnsupported, message: "spec.version v1.38.0"}},
@@ -377,7 +377,7 @@ func TestTheFleetCountsSlotsPausedOrNotAndQueuesOthersNotPaused(t *testing.T) {
 		slot, paused, deleting bool
 	}
 	tenant := func(o other) lodiav1alpha1.ControlPlane {
-		c := lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: "a", Name: o.name, Generation: 2}, Spec: lodiav1alpha1.ControlPlaneSpec{Paused: o.paused}}
+		c := lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Namespace: "a", Name: o.name, Generation: 2}, Spec: lodiav1alpha1.ControlPlaneSpec{Paused: new(o.paused)}}
 		if o.name == "dev" {
 			c.Namespace = "team"
 		}
@@ -491,7 +491,7 @@ func TestTheOriginIsKeptAcrossPassesAtOneGeneration(t *testing.T) {
 	f := held(inWindow("12:00", "13:00", ""))
 	d := expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, takesSlot: true})
 	adopt(f.cp, d)
-	f.cp.Spec.Maintenance.Window = &lodiav1alpha1.MaintenanceWindow{Begin: "13:00", End: "14:00"}
+	f.cp.Spec.Maintenance.Window = lodiav1alpha1.MaintenanceWindow{Begin: "13:00", End: "14:00"}
 	expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true})
 	reported(&f, revisionB)
 	d = expectGrant(t, f, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true, settlingSince: new(now.Rfc3339Copy().Time), requeue: settling})
@@ -513,25 +513,25 @@ func TestProgressingOrderWithMaintenance(t *testing.T) {
 		f    facts
 		want string
 	}{
-		{"Paused before Maintaining", held(inSlot, grantedB, func(f *facts) { f.cp.Spec.Paused = true }), lodiav1alpha1.ReasonPaused},
+		{"Paused before Maintaining", held(inSlot, grantedB, func(f *facts) { f.cp.Spec.Paused = new(true) }), lodiav1alpha1.ReasonPaused},
 		{"Unsupported before MaintenanceFailed", held(inSlot, grantedB, refused, func(f *facts) { f.cp.Spec.Version = "v1.38.0" }), lodiav1alpha1.ReasonUnsupported},
 		{"MaintenanceFailed before TimeZoneUnsupported", held(inSlot, grantedB, refused, inWindow("12:00", "13:00", "Mars/Olympus_Mons")), lodiav1alpha1.ReasonMaintenanceFailed},
 		{"TimeZoneUnsupported before Maintaining", held(inSlot, grantedB, inWindow("12:00", "13:00", "Mars/Olympus_Mons")), lodiav1alpha1.ReasonTimeZoneUnsupported},
 		{"Maintaining before a preflight", held(inSlot, grantedB, func(f *facts) {
 			f.cp.Status.Target.Version = "v1.36.6"
-			for _, c := range []*lodiav1alpha1.ComponentStatus{f.cp.Status.Components.APIServer, f.cp.Status.Components.ControllerManager, f.cp.Status.Components.Scheduler} {
+			for _, c := range []*lodiav1alpha1.ComponentStatus{&f.cp.Status.Components.APIServer, &f.cp.Status.Components.ControllerManager, &f.cp.Status.Components.Scheduler} {
 				c.Version = "v1.36.6"
 			}
 			f.cp.Status.Addons.Version = "v1.36.6"
-			f.cp.Status.Nodes = nil
+			f.cp.Status.Nodes = lodiav1alpha1.NodesStatus{}
 		}), lodiav1alpha1.ReasonMaintaining},
 		{"the same preflight out of a slot", held(running(revisionA), func(f *facts) {
 			f.cp.Status.Target.Version = "v1.36.6"
-			for _, c := range []*lodiav1alpha1.ComponentStatus{f.cp.Status.Components.APIServer, f.cp.Status.Components.ControllerManager, f.cp.Status.Components.Scheduler} {
+			for _, c := range []*lodiav1alpha1.ComponentStatus{&f.cp.Status.Components.APIServer, &f.cp.Status.Components.ControllerManager, &f.cp.Status.Components.Scheduler} {
 				c.Version = "v1.36.6"
 			}
 			f.cp.Status.Addons.Version = "v1.36.6"
-			f.cp.Status.Nodes = nil
+			f.cp.Status.Nodes = lodiav1alpha1.NodesStatus{}
 		}), lodiav1alpha1.ReasonWaitingForNodes},
 		{"Maintaining before LatestGenerationNotObserved", held(inSlot, grantedB, condition(metav1.Condition{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionTrue, ObservedGeneration: 2})), lodiav1alpha1.ReasonMaintaining},
 		{"RollingOut before WaitingForWindow", held(closedWindow, func(f *facts) { *f.cp.Status.Components.Scheduler.Updated = 0 }), lodiav1alpha1.ReasonRollingOut},
@@ -600,11 +600,11 @@ func TestAPausedPassKeepsTheSlotAndADeletingPassFreesIt(t *testing.T) {
 		change func(*facts)
 		want   *lodiav1alpha1.MaintenanceStatus
 	}{
-		{"paused, an edit", func(f *facts) { f.cp.Spec.Paused, f.cp.Generation = true, 4 },
+		{"paused, an edit", func(f *facts) { f.cp.Spec.Paused, f.cp.Generation = new(true), 4 },
 			&lodiav1alpha1.MaintenanceStatus{LastHandled: "t1", SettlingSince: &tenSecondsAgo, SlotSince: &metav1.Time{Time: slotTaken}}},
 		{"deleting", func(f *facts) { f.cp.DeletionTimestamp = &started },
 			&lodiav1alpha1.MaintenanceStatus{LastHandled: "t1"}},
-		{"paused and deleting", func(f *facts) { f.cp.Spec.Paused, f.cp.DeletionTimestamp = true, &started },
+		{"paused and deleting", func(f *facts) { f.cp.Spec.Paused, f.cp.DeletionTimestamp = new(true), &started },
 			&lodiav1alpha1.MaintenanceStatus{LastHandled: "t1"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -671,7 +671,7 @@ func TestAWaitForASlotUnderAnEarlierReasonIsQueued(t *testing.T) {
 
 func TestASharedWindowStartGoesByTheQueue(t *testing.T) {
 	opens := func(f *facts) {
-		f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "12:30", End: "13:30"}}
+		f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "12:30", End: "13:30"}}
 		f.cp.Status.Target.ScheduledFor = &metav1.Time{Time: present}
 		set(f, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForWindow, ObservedGeneration: 3})
 	}
@@ -697,7 +697,7 @@ func TestATenantNotReadyLeavesTheQueue(t *testing.T) {
 	reachable := condition(metav1.Condition{Type: lodiav1alpha1.ConditionReachable, Status: metav1.ConditionTrue, Reason: "Fine"})
 	t.Run("counted at its window's start until its own pass there finds it not Ready", func(t *testing.T) {
 		a := tenantIn("a", unreachable, func(f *facts) {
-			f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "12:30", End: "13:30"}}
+			f.cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "12:30", End: "13:30"}}
 			f.cp.Status.Target.ScheduledFor = &metav1.Time{Time: present}
 		})
 		z := tenantIn("z")
@@ -783,7 +783,7 @@ func TestRuleTwoKeepsTheSlotSettling(t *testing.T) {
 	tenSecondsAgo := present.Add(-10 * time.Second)
 	outside := func(f *facts) {
 		f.cp.Spec.Version, f.cp.Status.Target.Version, f.cp.Status.Target.OperatorRevision = "v1.34.9", "v1.34.9", revisionB
-		for _, c := range []*lodiav1alpha1.ComponentStatus{f.cp.Status.Components.APIServer, f.cp.Status.Components.ControllerManager, f.cp.Status.Components.Scheduler} {
+		for _, c := range []*lodiav1alpha1.ComponentStatus{&f.cp.Status.Components.APIServer, &f.cp.Status.Components.ControllerManager, &f.cp.Status.Components.Scheduler} {
 			c.Version = "v1.34.9"
 		}
 		f.cp.Status.Addons.Version = "v1.34.9"
@@ -821,19 +821,19 @@ func TestAnOwnersEditOrAPauseOfAFailedTenantKeepsTheNextReleaseReachingIt(t *tes
 	})
 	t.Run("a pause and an unpause while release B runs", func(t *testing.T) {
 		f := failedByB(t)
-		f.cp.Spec.Paused, f.cp.Generation = true, 4
+		f.cp.Spec.Paused, f.cp.Generation = new(true), 4
 		adopt(f.cp, expectGrant(t, f, paused))
-		f.cp.Spec.Paused, f.cp.Generation = false, 5
+		f.cp.Spec.Paused, f.cp.Generation = new(false), 5
 		adopt(f.cp, expectGrant(t, f, stillFailed))
 		f.revision = revisionC
 		expectGrant(t, f, fixed)
 	})
 	t.Run("release C while paused, granted at the unpause", func(t *testing.T) {
 		f := failedByB(t)
-		f.cp.Spec.Paused, f.cp.Generation = true, 4
+		f.cp.Spec.Paused, f.cp.Generation = new(true), 4
 		f.revision = revisionC
 		adopt(f.cp, expectGrant(t, f, paused))
-		f.cp.Spec.Paused, f.cp.Generation = false, 5
+		f.cp.Spec.Paused, f.cp.Generation = new(false), 5
 		expectGrant(t, f, fixed)
 	})
 }
@@ -863,13 +863,13 @@ func TestAnOwnersEditOfATenantInASlotRollsInItAndSettlesIt(t *testing.T) {
 func TestAPausedTenantInASlotCountsSoUnpausingStaysWithinTheLimit(t *testing.T) {
 	nowSecond := now.Rfc3339Copy().Time
 	x := tenantIn("x", slotted(lodiav1alpha1.ReasonMaintaining, 3), func(f *facts) { f.cp.Status.Target.OperatorRevision = revisionB })
-	x.cp.Spec.Paused, x.cp.Generation = true, 4
+	x.cp.Spec.Paused, x.cp.Generation = new(true), 4
 	adopt(x.cp, expectGrant(t, x, granted{revision: revisionB, reason: lodiav1alpha1.ReasonPaused, slot: true}))
 	y := tenantIn("y")
 	among(&y, x)
 	adopt(y.cp, expectGrant(t, y, granted{revision: revisionA, reason: lodiav1alpha1.ReasonFleetLimit, scheduledFor: &nowSecond, requeue: fleetRequeue}))
 
-	x.cp.Spec.Paused, x.cp.Generation = false, 5
+	x.cp.Spec.Paused, x.cp.Generation = new(false), 5
 	among(&x, y)
 	adopt(x.cp, expectGrant(t, x, granted{revision: revisionB, reason: lodiav1alpha1.ReasonMaintaining, slot: true}))
 	among(&y, x)

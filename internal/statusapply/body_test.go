@@ -117,10 +117,13 @@ func TestTheRequestOfAStatusApplyIsTheOneInTestdata(t *testing.T) {
 				{Type: lodiav1alpha1.ConditionCertificatesReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonIssued, Message: "issued", ObservedGeneration: 3, LastTransitionTime: earlier},
 				{Type: lodiav1alpha1.ConditionAccessReady, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonWaitingForAPIServer, Message: "", ObservedGeneration: 2, LastTransitionTime: later},
 			},
-			Components: &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: "v1.35.0"}}},
+			Components: &lodiav1alpha1.ComponentsStatus{APIServer: lodiav1alpha1.ComponentStatus{
+				RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(0)), Ready: new(int32(0))}},
+				Rendered:     lodiav1alpha1.Rendered{Version: "v1.35.0"},
+			}},
 			Credentials: &lodiav1alpha1.CredentialsStatus{
-				AdminKubeconfigSecretRef: &lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
-				CABundleSecretRef:        &lodiav1alpha1.LocalReference{Name: "dev-ca-bundle"},
+				AdminKubeconfigSecretRef: lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
+				CABundleSecretRef:        lodiav1alpha1.LocalReference{Name: "dev-ca-bundle"},
 			},
 		}, true, "")
 		return err
@@ -136,17 +139,17 @@ func TestTheRequestOfALockedApplyIsTheOneInTestdata(t *testing.T) {
 	request := &lodiav1alpha1.KubeconfigRequest{ObjectMeta: metav1.ObjectMeta{Name: "alice", Namespace: "team-a", ResourceVersion: "41"}}
 	got := sent(t, request, func(c client.Client) error {
 		return statusapply.Writer{Client: c, Manager: manager}.ApplyLocked(t.Context(), "KubeconfigRequest", request, nil, map[string]any{
-			"kubeconfig":          "a2luZDogQ29uZmlnCg==",
-			"expirationTimestamp": time.Date(2026, 11, 4, 18, 0, 0, 0, time.UTC).Format(time.RFC3339),
+			"kubeconfig":     "a2luZDogQ29uZmlnCg==",
+			"expirationTime": time.Date(2026, 11, 4, 18, 0, 0, 0, time.UTC).Format(time.RFC3339),
 		}, ready)
 	})
 	bodyIs(t, got, "testdata/locked-kubeconfigrequest.json")
 
 	backup := &lodiav1alpha1.Backup{ObjectMeta: metav1.ObjectMeta{Name: "dev-1", Namespace: "team-a", ResourceVersion: "41"}}
 	status, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&lodiav1alpha1.BackupStatus{
-		Source:            &lodiav1alpha1.UIDReference{Name: "dev", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
+		Source:            lodiav1alpha1.UIDReference{Name: "dev", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
 		KubernetesVersion: "v1.35.0",
-		Seal:              &lodiav1alpha1.BackupSeal{QuotaBackendBytes: new(resource.MustParse("8Gi"))},
+		Seal:              lodiav1alpha1.BackupSeal{Revision: 184739, QuotaBackendBytes: new(resource.MustParse("8Gi"))},
 		StartedAt:         &earlier,
 	})
 	if err != nil {

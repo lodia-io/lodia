@@ -262,7 +262,7 @@ func newRestore(t *testing.T, setup restoreSetup) *restore {
 		setup.before(r)
 	}
 	cp := controlPlane(r.ns, restoredCP, r.ns)
-	cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backupName}}
+	cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backupName}}
 	if setup.controlPlane != nil {
 		setup.controlPlane(cp)
 	}
@@ -285,14 +285,14 @@ func sealedBackup(t *testing.T, ns, name string, source lodiav1alpha1.UIDReferen
 			Type: lodiav1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonCompleted,
 			Message: "sealed at revision 5 and copied to lodia-backups/" + prefix, LastTransitionTime: now, ObservedGeneration: backup.Generation,
 		}},
-		Source:            &source,
+		Source:            source,
 		KubernetesVersion: "v1.37.1",
-		Network:           &lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}, ClusterDomain: "cluster.local"},
-		Snapshots: &lodiav1alpha1.BackupSnapshotLocation{
+		Network:           lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}, ClusterDomain: "cluster.local"},
+		Snapshots: lodiav1alpha1.BackupSnapshotLocation{
 			SnapshotLocation: lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: prefix},
 			FromSecret:       &lodiav1alpha1.StoreSecretFields{Region: new("eu-central-1")},
 		},
-		Seal:        &lodiav1alpha1.BackupSeal{Revision: 5, QuotaBackendBytes: new(resource.MustParse("2Gi"))},
+		Seal:        lodiav1alpha1.BackupSeal{Revision: 5, QuotaBackendBytes: new(resource.MustParse("2Gi"))},
 		StartedAt:   &now,
 		CompletedAt: &now,
 	}
@@ -432,7 +432,7 @@ func (r *restore) complete(t *testing.T, marker int64) *lodiav1alpha1.ControlPla
 	poke(t, r.ns)
 	waitCondition(t, r.ns, restoredCP, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
 	cp := r.controlPlane(t)
-	if cp.Status.Restore == nil {
+	if cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 		t.Fatal("DatastoreReady is True without status.restore")
 	}
 	return cp
@@ -451,7 +451,7 @@ func poke(t *testing.T, ns string) {
 func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
 	cp := r.controlPlane(t)
 	task := r.waitCopyTask(t)
@@ -579,7 +579,7 @@ func TestARestoreCopiesChecksCleansUpAndSnapshots(t *testing.T) {
 	poke(t, r.ns)
 	consistently(t, func() error {
 		cp := r.controlPlane(t)
-		if cp.Status.Restore == nil || !cp.Status.Restore.CompletedAt.Equal(&completedAt) {
+		if cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) || !cp.Status.Restore.CompletedAt.Equal(&completedAt) {
 			return fmt.Errorf("status.restore is %+v, want the restore completed at %v", cp.Status.Restore, completedAt)
 		}
 		return nil
@@ -717,7 +717,7 @@ func TestARestoreStartsOnlyFromASealedCompatibleBackupInTheClasssStore(t *testin
 			lodiav1alpha1.ReasonRestoreFailed, "names S3 https://s3.example.test lodia-backups/staging/"},
 		{"another region in the credentials", restoreSetup{class: func(c *lodiav1alpha1.DatastoreClass) { c.Spec.Backup.Store.Region = "us-east-1" }},
 			lodiav1alpha1.ReasonRestoreFailed, `Secret b-etcd-backup's region is "us-east-1", while Backup a-1 was sealed with "eu-central-1": point DatastoreClass `},
-		{"no store in the class", restoreSetup{class: func(c *lodiav1alpha1.DatastoreClass) { c.Spec.Backup = nil }},
+		{"no store in the class", restoreSetup{class: func(c *lodiav1alpha1.DatastoreClass) { c.Spec.Backup = lodiav1alpha1.EtcdBackup{} }},
 			lodiav1alpha1.ReasonRestoreFailed, "has no backup store, while Backup a-1 was sealed in S3 https://s3.example.test lodia-backups/prod/"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1316,7 +1316,7 @@ func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
 	})
 	t.Run("the scale-up refused", func(t *testing.T) {
 		r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-			cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+			cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 		}})
 		r.copied(t)
 		marker := r.cleanedUp(t)
@@ -1325,7 +1325,7 @@ func TestARestoreSurvivesAFailureAtEachStep(t *testing.T) {
 		poke(t, r.ns)
 		waitCondition(t, r.ns, restoredCP, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Etcd b-etcd")
 		testenv.Eventually(t, func() error {
-			if cp := r.controlPlane(t); cp.Status.Restore == nil {
+			if cp := r.controlPlane(t); cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 				return errors.New("a complete restore whose scale-up is refused has no status")
 			}
 			return nil
@@ -1356,7 +1356,7 @@ func TestARestoreStatusRemovedComesBackFromTheMarker(t *testing.T) {
 	}
 	testenv.Eventually(t, func() error {
 		cp := r.controlPlane(t)
-		if cp.Status.Restore == nil {
+		if cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 			return errors.New("status.restore is not back")
 		}
 		if got := cp.Status.Restore; got.Backup.UID != r.backup.UID || got.Source != r.source {
@@ -1426,7 +1426,7 @@ func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
 	}{{"the Backup gone", true}, {"the Backup kept", false}} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-				cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+				cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 			}})
 			r.copied(t)
 			marker := r.cleanedUp(t)
@@ -1481,13 +1481,13 @@ func TestACompletedRestoreNeedsItsBackupNoMore(t *testing.T) {
 
 func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 	t.Parallel()
-	completed := func(t *testing.T) (*restore, *lodiav1alpha1.RestoreStatus) {
+	completed := func(t *testing.T) (*restore, lodiav1alpha1.RestoreStatus) {
 		t.Helper()
 		r := newRestore(t, restoreSetup{})
 		r.copied(t)
 		return r, r.complete(t, r.cleanedUp(t)).Status.Restore
 	}
-	kept := func(t *testing.T, r *restore, want *lodiav1alpha1.RestoreStatus, reason string) func() error {
+	kept := func(t *testing.T, r *restore, want lodiav1alpha1.RestoreStatus, reason string) func() error {
 		return func() error {
 			cp := r.controlPlane(t)
 			if !reflect.DeepEqual(cp.Status.Restore, want) {
@@ -1590,7 +1590,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 
 		before := r.controlPlane(t)
 		before.Status = *done.Status.DeepCopy()
-		before.Status.Restore = nil
+		before.Status.Restore = lodiav1alpha1.RestoreStatus{}
 		stale := interceptor.NewClient(k8s, interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
@@ -1618,7 +1618,7 @@ func TestACompletedRestoreKeepsItsRecordWithoutAnEtcd(t *testing.T) {
 		if err := kept(t, r, record, lodiav1alpha1.ReasonDeleting)(); err != nil {
 			t.Error(err)
 		}
-		if cp := r.controlPlane(t); cp.Status.Datastore != nil {
+		if cp := r.controlPlane(t); len(cp.Status.Datastore.Endpoints) > 0 {
 			t.Errorf("status.datastore is %+v once the Etcd is gone", cp.Status.Datastore)
 		}
 		release(t, done)
@@ -1702,7 +1702,7 @@ func TestAnEtcdCreatedAgainFromAStaleCacheNeedsNoBackup(t *testing.T) {
 func TestAnEtcdDeletedMidRestoreComesBackOverItsClaims(t *testing.T) {
 	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
 	r.etcd.unreachable.Store(true)
 	first := r.copied(t)
@@ -1746,7 +1746,7 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-				cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+				cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 			}})
 			r.copied(t)
 			r.complete(t, r.cleanedUp(t))
@@ -1774,7 +1774,7 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 				testenv.Eventually(t, func() error {
 					return gone(cached.Get(t.Context(), client.ObjectKey{Namespace: r.ns, Name: restoredCP + "-etcd"}, &druidv1alpha1.Etcd{}))
 				})
-				if restore := r.controlPlane(t).Status.Restore; restore != nil {
+				if restore := r.controlPlane(t).Status.Restore; restore != (lodiav1alpha1.RestoreStatus{}) {
 					t.Fatalf("status.restore came back as %+v while the ControlPlane is paused", restore)
 				}
 				setPaused(t, r.ns, restoredCP, false)
@@ -1802,7 +1802,7 @@ func TestACompletedRestoreComesBackOverItsClaimsWithTheirMembers(t *testing.T) {
 func TestAStalePassWhoseCheckCannotRunKeepsTheMembers(t *testing.T) {
 	t.Parallel()
 	r := newRestore(t, restoreSetup{controlPlane: func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	}})
 	r.copied(t)
 	marker := r.cleanedUp(t)

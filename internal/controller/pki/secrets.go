@@ -73,7 +73,7 @@ func caBundles(cp *lodiav1alpha1.ControlPlane) []caBundle {
 		{frontProxyCA, lodiav1alpha1.FrontProxyCASecret},
 		{etcdCA, lodiav1alpha1.EtcdCASecret},
 	}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		bundles = append(bundles, caBundle{tunnelCA, lodiav1alpha1.TunnelCASecret})
 	}
 	return bundles
@@ -99,7 +99,7 @@ func names(cp *lodiav1alpha1.ControlPlane) []string {
 	for _, s := range written {
 		names = append(names, string(s))
 	}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		names = append(names, "cakey-"+tunnelCA, string(lodiav1alpha1.TunnelCASecret), string(lodiav1alpha1.TunnelServingSecret), string(lodiav1alpha1.TunnelClientSecret))
 	}
 	return names
@@ -199,10 +199,10 @@ func (e *endpoint) url() string {
 
 func newTenant(cp *lodiav1alpha1.ControlPlane, now time.Time) *tenant {
 	t := &tenant{cp: cp, existing: map[string]*corev1.Secret{}, generations: map[int]bool{}, now: now, cas: map[string]*certs.Certificate{}, caCerts: map[string]*x509.Certificate{}}
-	if e := cp.Status.Endpoint; e != nil {
+	if e := cp.Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		t.endpoint = &endpoint{host: e.APIServer.Host, port: e.APIServer.Port}
 		t.konnectivityHost = e.Konnectivity.Host
-		if cp.Spec.Endpoint.Gateway != nil && e.Tunnel != nil {
+		if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) && e.Tunnel != (lodiav1alpha1.HostPort{}) {
 			t.tunnelHost = e.Tunnel.Host
 		}
 	}
@@ -280,7 +280,7 @@ func (t *tenant) held(obj metav1.Object) bool {
 		t.foreign = append(t.foreign, foreign{name: obj.GetName(), owner: *owner})
 		return true
 	}
-	if t.cp.Spec.RestoreFrom != nil && !metav1.IsControlledBy(obj, t.cp) {
+	if t.cp.Spec.RestoreFrom != (lodiav1alpha1.RestoreFrom{}) && !metav1.IsControlledBy(obj, t.cp) {
 		t.unadopted = append(t.unadopted, obj.GetName())
 		return true
 	}
@@ -330,11 +330,11 @@ func (t *tenant) foreignRequeue() time.Duration {
 }
 
 func (t *tenant) credentials() *lodiav1alpha1.CredentialsStatus {
-	ref := func(secret lodiav1alpha1.Secret) *lodiav1alpha1.LocalReference {
+	ref := func(secret lodiav1alpha1.Secret) lodiav1alpha1.LocalReference {
 		if name := t.secret(secret); t.existing[name] != nil {
-			return &lodiav1alpha1.LocalReference{Name: name}
+			return lodiav1alpha1.LocalReference{Name: name}
 		}
-		return nil
+		return lodiav1alpha1.LocalReference{}
 	}
 	return credentialRefs(&lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: ref(lodiav1alpha1.AdminKubeconfigSecret), CABundleSecretRef: ref(lodiav1alpha1.CABundleSecret), NotAfter: t.notAfter()})
 }
@@ -965,8 +965,10 @@ func isServiceAccountKey(pem []byte) bool {
 	return err == nil && ok && rsaKey.N.BitLen() >= serviceAccountKeyBits
 }
 
-// encryptionConfig puts a changed provider first with a new key, and keeps
-// the previous providers so that what they encrypted stays readable, their
+// encryptionConfig puts the spec's provider first with a new key when the
+// configuration's first provider is another, which only a hand edit of the
+// Secret gives, since the schema keeps a ControlPlane's provider, and keeps
+// the providers it found so that what they encrypted stays readable, their
 // keys under the names the API server wrote into every value they encrypted
 // (kubernetes@v1.37.0 staging/src/k8s.io/apiserver/pkg/server/options/encryptionconfig/config.go#L645-L661,
 // #L695-L711). A configuration it cannot read is never replaced: the data its
@@ -994,7 +996,7 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 			r.applySecret(ctx, t, name, corev1.SecretTypeOpaque, map[string][]byte{lodiav1alpha1.EncryptionConfigKey: s.Data[lodiav1alpha1.EncryptionConfigKey]}, labels, false)
 			return nil
 		}
-	case t.cp.Spec.RestoreFrom != nil:
+	case t.cp.Spec.RestoreFrom != (lodiav1alpha1.RestoreFrom{}):
 		if t.backupProviders == nil {
 			return nil
 		}
@@ -1030,7 +1032,7 @@ func (r *Reconciler) encryptionConfig(ctx context.Context, t *tenant) error {
 // reconciler holds them until this restore has them.
 func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	from := t.cp.Spec.RestoreFrom
-	if from == nil {
+	if from == (lodiav1alpha1.RestoreFrom{}) {
 		return nil
 	}
 	name := from.BackupRef.Name
@@ -1042,7 +1044,7 @@ func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 		if !ok {
 			return nil
 		}
-		if restored != nil {
+		if restored != (lodiav1alpha1.RestoreStatus{}) {
 			if uid != string(restored.Backup.UID) {
 				t.waitingForBackup = fmt.Sprintf("%s holds the keys of Backup %s with UID %s, and the restore was of UID %s, whose keys the restored data needs; restore another Backup",
 					s.Name, name, uid, restored.Backup.UID)
@@ -1064,10 +1066,10 @@ func (r *Reconciler) backupKeys(ctx context.Context, t *tenant) error {
 	}
 	ready := meta.FindStatusCondition(backup.Status.Conditions, lodiav1alpha1.ConditionReady)
 	switch {
-	case restored != nil && backup.UID == "":
+	case restored != (lodiav1alpha1.RestoreStatus{}) && backup.UID == "":
 		t.waitingForBackup = fmt.Sprintf("Backup %s with UID %s, which the restore was of, is gone, and its keys with it; restore another Backup", name, restored.Backup.UID)
 		return nil
-	case restored != nil && backup.UID != restored.Backup.UID:
+	case restored != (lodiav1alpha1.RestoreStatus{}) && backup.UID != restored.Backup.UID:
 		t.waitingForBackup = fmt.Sprintf("Backup %s has UID %s, and the restore was of UID %s, whose keys the restored data needs; restore another Backup", name, backup.UID, restored.Backup.UID)
 		return nil
 	case restore.Failed(backup, ready):

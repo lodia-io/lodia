@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -195,18 +196,35 @@ func (h *holdRun) expectSilent(message string) {
 
 func (h *holdRun) expectHealth(silent, counted int32) {
 	h.t.Helper()
+	h.expectHold(new(silent), new(counted))
+}
+
+func (h *holdRun) expectUncountedHealth() {
+	h.t.Helper()
+	h.expectHold(nil, nil)
+}
+
+func (h *holdRun) expectHold(silent, counted *int32) {
+	h.t.Helper()
 	status := get(h.t, h.cp).Status.Health
 	if status == nil || status.ControllerManagerHold == nil {
 		h.t.Fatalf("status.health is %+v, want a hold", status)
 	}
 	hold := status.ControllerManagerHold
 	lease := h.lease()
-	if hold.SilentNodes != silent || hold.CountedNodes != counted {
-		h.t.Fatalf("status.health counts %d silent of %d, want %d of %d", hold.SilentNodes, hold.CountedNodes, silent, counted)
+	if !ptr.Equal(hold.SilentNodes, silent) || !ptr.Equal(hold.CountedNodes, counted) {
+		h.t.Fatalf("status.health counts %s silent of %s, want %s of %s", counts(hold.SilentNodes), counts(hold.CountedNodes), counts(silent), counts(counted))
 	}
 	if lease.Spec.AcquireTime == nil || hold.Since == nil || !hold.Since.Equal(new(metav1.NewTime(lease.Spec.AcquireTime.Time).Rfc3339Copy())) {
 		h.t.Fatalf("status.health says since %v, the Lease %v", hold.Since, lease.Spec.AcquireTime)
 	}
+}
+
+func counts(n *int32) string {
+	if n == nil {
+		return "none"
+	}
+	return strconv.Itoa(int(*n))
 }
 
 func (h *holdRun) expectNoHealth() {
@@ -336,7 +354,7 @@ func TestRow7WithoutAccessAHoldRenews(t *testing.T) {
 	setAccessAt(t, h.cp, metav1.ConditionFalse, lodiav1alpha1.ReasonBinding, get(t, h.cp).Generation)
 	h.at(25)
 	h.expectSilent(notTrue + keepsHolding)
-	h.expectHealth(0, 0)
+	h.expectUncountedHealth()
 	h.renewedAt(25)
 	if lease := h.lease(); !lease.Spec.AcquireTime.Equal(acquired) || ptr.Deref(lease.Spec.LeaseTransitions, 0) != 1 {
 		t.Errorf("a renewal changed acquireTime to %v and transitions to %d", lease.Spec.AcquireTime, ptr.Deref(lease.Spec.LeaseTransitions, 0))
@@ -359,7 +377,7 @@ func TestRow9AFailedLeaseListRenewsAHold(t *testing.T) {
 	h.fail(leaseListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
 	h.expectSilent(failedLeaseMsg + keepsHolding)
-	h.expectHealth(0, 0)
+	h.expectUncountedHealth()
 	h.renewedAt(25)
 }
 
@@ -380,7 +398,7 @@ func TestRow11WithNoNodeListAHoldRenews(t *testing.T) {
 	h.fail(nodeListPath, http.MethodGet, http.StatusInternalServerError, metav1.StatusReasonInternalError)
 	h.at(25)
 	h.expectSilent(notListed + keepsHolding)
-	h.expectHealth(0, 0)
+	h.expectUncountedHealth()
 	h.renewedAt(25)
 }
 
@@ -593,7 +611,7 @@ func TestAStatusApplyFailingAfterATakeIsRepairedByTheNextPass(t *testing.T) {
 func TestAPausedTenantWritesNothingAndItsHoldLapses(t *testing.T) {
 	h := holding(t, "a", "b", "c")
 	before := h.lease()
-	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	updateSpec(t, h.cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) })
 	h.r.Client = noControlPlaneWrite(t, k8s)
 	h.now.SetTime(h.start.Add(25 * time.Second))
 	result, err := h.r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(h.cp)})
@@ -1052,7 +1070,7 @@ func TestALeaseListFailingLongerThan60SecondsKeepsRenewing(t *testing.T) {
 		h.at(at)
 		h.expectSilent(failedLeaseMsg + keepsHolding)
 		h.renewedAt(at)
-		h.expectHealth(0, 0)
+		h.expectUncountedHealth()
 	}
 }
 

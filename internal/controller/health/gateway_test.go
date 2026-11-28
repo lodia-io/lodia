@@ -229,7 +229,7 @@ func deadAddress(t *testing.T) string {
 
 func gatewayControlPlane(t *testing.T) *lodiav1alpha1.ControlPlane {
 	t.Helper()
-	return controlPlaneWith(t, lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+	return controlPlaneWith(t, lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 		ParentRef: lodiav1alpha1.ParentReference{Name: "tenants", Namespace: "gateway", SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.lodia.test", Konnectivity: "konnectivity.dev.lodia.test", Tunnel: "tunnel.dev.lodia.test"},
 	}})
@@ -313,7 +313,7 @@ func (f *gatewayFixture) probeAt(t *testing.T, timeout time.Duration, tunnel, ko
 				return err
 			}
 			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-				cp.Status.Endpoint.Tunnel, cp.Status.Endpoint.Konnectivity = &tunnelAt, konnectivityAt
+				cp.Status.Endpoint.Tunnel, cp.Status.Endpoint.Konnectivity = tunnelAt, konnectivityAt
 			}
 			return nil
 		},

@@ -86,7 +86,7 @@ func (r *reads) Get(ctx context.Context, key client.ObjectKey, obj client.Object
 			r.etcdReady[key] = *ready
 		}
 	case *lodiav1alpha1.ControlPlane:
-		if read.Spec.Paused {
+		if ptr.Deref(read.Spec.Paused, false) {
 			r.paused[key] = max(r.paused[key], read.Generation)
 		}
 	}
@@ -195,8 +195,8 @@ func grant(t *testing.T, cp *lodiav1alpha1.ControlPlane, operatorRevision string
 		t.Fatal(err)
 	}
 	var class *lodiav1alpha1.DatastoreClassGeneration
-	if current.Status.Target != nil {
-		class = current.Status.Target.DatastoreClass
+	if target := current.Status.Target; target != nil && target.DatastoreClass != (lodiav1alpha1.DatastoreClassGeneration{}) {
+		class = &target.DatastoreClass
 	}
 	applyTarget(t, cp, cp.Spec.Version, operatorRevision, class)
 }
@@ -286,25 +286,25 @@ func fullClass(name, credentialsNamespace string) *lodiav1alpha1.DatastoreClass 
 			Etcd: &lodiav1alpha1.EtcdSettings{
 				QuotaBackendBytes: new(resource.MustParse("2Gi")),
 				AutoCompaction:    &lodiav1alpha1.AutoCompaction{Mode: "revision", Retention: "1000"},
-				Defragmentation:   &lodiav1alpha1.Defragmentation{Schedule: "0 3 * * *"},
-				Resources: &corev1.ResourceRequirements{
+				Defragmentation:   lodiav1alpha1.Defragmentation{Schedule: "0 3 * * *"},
+				Resources: &lodiav1alpha1.Resources{
 					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m"), corev1.ResourceMemory: resource.MustParse("150M")},
 					Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("2Gi")},
 				},
 			},
 			Storage: lodiav1alpha1.EtcdStorage{ClassName: "fast", Size: resource.MustParse("20Gi"), ReclaimPolicy: "Retain"},
-			Backup: &lodiav1alpha1.EtcdBackup{
+			Backup: lodiav1alpha1.EtcdBackup{
 				Store: lodiav1alpha1.BackupStore{
 					Provider: "S3", Bucket: "lodia-backups", Prefix: "prod", Region: "eu-central-1", Endpoint: "https://s3.example.test",
 					SecretRef: lodiav1alpha1.SecretReference{Name: "s3", Namespace: credentialsNamespace},
 				},
-				FullSnapshotSchedule: "0 2 * * *",
-				DeltaSnapshotPeriod:  &metav1.Duration{Duration: 5 * time.Minute},
-				Retention:            &lodiav1alpha1.BackupRetention{FullSnapshots: 30},
+				FullSnapshotSchedule:       "0 2 * * *",
+				DeltaSnapshotPeriodSeconds: new(int32(300)),
+				Retention:                  &lodiav1alpha1.BackupRetention{FullSnapshots: 30},
 			},
 			Placement: &lodiav1alpha1.Placement{
-				NodeSelector:      map[string]string{"node-role.example.com/control-planes": "true"},
-				Tolerations:       []corev1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
+				NodeSelector:      map[string]lodiav1alpha1.LabelValue{"node-role.example.com/control-planes": "true"},
+				Tolerations:       []lodiav1alpha1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
 				PriorityClassName: "control-plane",
 			},
 		},
@@ -384,7 +384,7 @@ func setPaused(t *testing.T, ns, name string, paused bool) {
 	t.Helper()
 	cp := getControlPlane(t, ns, name)
 	patch := client.MergeFrom(cp.DeepCopy())
-	cp.Spec.Paused = paused
+	cp.Spec.Paused = new(paused)
 	if err := k8s.Patch(t.Context(), cp, patch); err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 	etcd := waitEtcd(t, ns, "dev", namesGeneration(1))
 	var cp *lodiav1alpha1.ControlPlane
 	testenv.Eventually(t, func() error {
-		if cp = getControlPlane(t, ns, "dev"); cp.Status.Datastore == nil {
+		if cp = getControlPlane(t, ns, "dev"); len(cp.Status.Datastore.Endpoints) == 0 {
 			return errors.New("status.datastore is not written yet")
 		}
 		return nil
@@ -609,11 +609,11 @@ func TestFinalizerAndEtcdFromClass(t *testing.T) {
 		{"the ControlPlane → metadata.ownerReferences", etcd.OwnerReferences, []metav1.OwnerReference{{
 			APIVersion: "lodia.io/v1alpha1", Kind: "ControlPlane", Name: "dev", UID: cp.UID, Controller: new(true), BlockOwnerDeletion: new(true),
 		}}},
-		{"the Etcd → status.datastore", ptr.Deref(cp.Status.Datastore, lodiav1alpha1.DatastoreStatus{}), lodiav1alpha1.DatastoreStatus{
+		{"the Etcd → status.datastore", cp.Status.Datastore, lodiav1alpha1.DatastoreStatus{
 			Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client." + ns + ".svc", Port: 2379}},
-			Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "mapped", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: mapped.UID, Generation: 1}},
-			Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1}},
-			Snapshots: &lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: store.Prefix},
+			Class:     lodiav1alpha1.DatastoreClassStatus{Name: "mapped", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: mapped.UID, Generation: 1}},
+			Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(1)), Ready: new(int32(0))}},
+			Snapshots: lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: store.Prefix},
 		}},
 		{"the class → metadata.annotations[" + lodiav1alpha1.DatastoreClassAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation], "mapped"},
 		{"the class's UID → metadata.annotations[" + lodiav1alpha1.DatastoreClassUIDAnnotation + "]", etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation], string(mapped.UID)},
@@ -701,7 +701,7 @@ func TestARefusedApplyKeepsTheDatastoreThatRuns(t *testing.T) {
 	waitEtcd(t, ns, cp, namesGeneration(1))
 	readyOn(t, ns, cp, 1)
 	running := getControlPlane(t, ns, cp).Status.Datastore
-	if running == nil || len(running.Endpoints) != 1 {
+	if len(running.Endpoints) == 0 || len(running.Endpoints) != 1 {
 		t.Fatalf("a running Etcd left status.datastore %+v", running)
 	}
 
@@ -709,7 +709,7 @@ func TestARefusedApplyKeepsTheDatastoreThatRuns(t *testing.T) {
 	writeGeneration(t, ns, cp, 2)
 	waitCondition(t, ns, cp, metav1.ConditionFalse, lodiav1alpha1.ReasonRefused, "the API server refuses Etcd "+cp+"-etcd on certificate generation 2")
 	got := getControlPlane(t, ns, cp)
-	if got.Status.Datastore == nil || !reflect.DeepEqual(got.Status.Datastore.Endpoints, running.Endpoints) {
+	if len(got.Status.Datastore.Endpoints) == 0 || !reflect.DeepEqual(got.Status.Datastore.Endpoints, running.Endpoints) {
 		t.Errorf("a refused apply left status.datastore %+v, want the running Etcd's endpoints %+v", got.Status.Datastore, running.Endpoints)
 	}
 	if backup := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionBackupReady); backup == nil || backup.Reason != lodiav1alpha1.ReasonNoBackupStore {
@@ -814,7 +814,7 @@ func TestPaused(t *testing.T) {
 	ns := namespace(t)
 	createClass(t, newClass("paused", "Delete"))
 	paused := controlPlane(ns, "dev", "paused")
-	paused.Spec.Paused = true
+	paused.Spec.Paused = new(true)
 	create(t, paused)
 	writeGeneration(t, ns, "dev", 1)
 	consistently(t, func() error {
@@ -1248,7 +1248,7 @@ func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
 				return fmt.Errorf("the Etcd's store names bucket %q, want %q", got, bucket)
 			}
 			location = lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: bucket, Prefix: store.Prefix}
-			if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || !reflect.DeepEqual(status.Snapshots, &location) {
+			if status := getControlPlane(t, ns, cp).Status.Datastore; len(status.Endpoints) == 0 || !reflect.DeepEqual(status.Snapshots, location) {
 				return fmt.Errorf("status.datastore is %+v, want snapshots %+v", status, location)
 			}
 			return nil
@@ -1291,9 +1291,9 @@ func TestSnapshotsFollowTheEtcdsStore(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		status := getControlPlane(t, ns, "storeless").Status.Datastore
 		switch {
-		case status == nil:
+		case len(status.Endpoints) == 0:
 			return errors.New("no status.datastore yet")
-		case status.Snapshots != nil:
+		case status.Snapshots != (lodiav1alpha1.SnapshotLocation{}):
 			return fmt.Errorf("a class without a store reports snapshots %+v", status.Snapshots)
 		}
 		return nil
@@ -1535,10 +1535,10 @@ func TestDatastoreReadyIsQuorum(t *testing.T) {
 		}
 		return nil
 	})
-	if got, want := ptr.Deref(getControlPlane(t, ns, cp).Status.Datastore, lodiav1alpha1.DatastoreStatus{}), (lodiav1alpha1.DatastoreStatus{
+	if got, want := getControlPlane(t, ns, cp).Status.Datastore, (lodiav1alpha1.DatastoreStatus{
 		Endpoints: []lodiav1alpha1.HostPort{{Host: "reported-etcd-client." + ns + ".svc", Port: 2379}},
-		Class:     &lodiav1alpha1.DatastoreClassStatus{Name: "reported", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: 1}},
-		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}, Updated: new(int32(1))},
+		Class:     lodiav1alpha1.DatastoreClassStatus{Name: "reported", DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: class.UID, Generation: 1}},
+		Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(1)), Ready: new(int32(1))}, Updated: new(int32(1))},
 	}); !reflect.DeepEqual(got, want) {
 		t.Errorf("status.datastore %+v, want %+v", got, want)
 	}
@@ -1696,7 +1696,7 @@ func TestAFinalizingPassFromAStaleReadTouchesNoOtherEtcd(t *testing.T) {
 				return err
 			}
 			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-				plane.Spec.Paused = false
+				plane.Spec.Paused = new(false)
 			}
 			return nil
 		},
@@ -1760,7 +1760,7 @@ func TestReclaimingFromAStaleListDeletesNoOtherClaim(t *testing.T) {
 				return err
 			}
 			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-				plane.Spec.Paused = false
+				plane.Spec.Paused = new(false)
 			}
 			return nil
 		},
@@ -1788,7 +1788,7 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	const cp = "ha"
 	createClass(t, newClass("ha", "Retain"))
 	ha := controlPlane(ns, cp, "ha")
-	ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+	ha.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	create(t, ha)
 	writeGeneration(t, ns, cp, 1)
 	etcd := waitEtcd(t, ns, cp, nil)
@@ -1843,7 +1843,9 @@ func TestThreeMembersWithHighAvailability(t *testing.T) {
 	}
 	setEtcdStatus(t, ns, cp, druidtest.Members(3, 1), druidtest.Scale(druidv1alpha1.ScaleOperationReasonScalingOut))
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd ha-etcd has quorum, 1 of 3 members ready, while etcd-druid scales it")
-	update(func(fresh *lodiav1alpha1.ControlPlane) { fresh.Spec.HighAvailability = nil })
+	update(func(fresh *lodiav1alpha1.ControlPlane) {
+		fresh.Spec.HighAvailability = lodiav1alpha1.HighAvailability{}
+	})
 	settle(t, ns, cp)
 	if etcd := getEtcd(t, ns, cp); etcd.Spec.Replicas != 3 {
 		t.Errorf("the Etcd asks for %d members while etcd-druid scales it, want the 3 it scales to", etcd.Spec.Replicas)
@@ -1879,7 +1881,7 @@ func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
 	}
 	druid(1, 1, 1, "")
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd growing-etcd has quorum, 1 of 1 members ready")
-	highAvailability := func(ha *lodiav1alpha1.HighAvailability) {
+	highAvailability := func(ha lodiav1alpha1.HighAvailability) {
 		t.Helper()
 		testenv.Eventually(t, func() error {
 			fresh := getControlPlane(t, ns, cp)
@@ -1888,7 +1890,7 @@ func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
 		})
 	}
 
-	highAvailability(&lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
+	highAvailability(lodiav1alpha1.HighAvailability{FailureTolerance: "Node"})
 	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
 		if etcd.Spec.Replicas != 3 {
 			return fmt.Errorf("the Etcd asks for %d members", etcd.Spec.Replicas)
@@ -1917,7 +1919,7 @@ func TestHighAvailabilityOnAFormedEtcd(t *testing.T) {
 		})
 	}
 
-	highAvailability(nil)
+	highAvailability(lodiav1alpha1.HighAvailability{})
 	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
 		if etcd.Spec.Replicas != 1 {
 			return fmt.Errorf("the Etcd asks for %d members", etcd.Spec.Replicas)
@@ -1950,7 +1952,7 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 	const cp = "shrinking"
 	createClass(t, newClass("shrinking", "Retain"))
 	ha := controlPlane(ns, cp, "shrinking")
-	ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	ha.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	create(t, ha)
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
@@ -1971,7 +1973,7 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 
 	testenv.Eventually(t, func() error {
 		fresh := getControlPlane(t, ns, cp)
-		fresh.Spec.HighAvailability = nil
+		fresh.Spec.HighAvailability = lodiav1alpha1.HighAvailability{}
 		return k8s.Update(t.Context(), fresh)
 	})
 	waitEtcd(t, ns, cp, func(etcd *druidv1alpha1.Etcd) error {
@@ -1995,8 +1997,8 @@ func TestEtcdDruidKeepsTheClientPortThroughAScaleIn(t *testing.T) {
 			settle(t, ns, cp)
 			waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum")
 			sameSpec(t, getPolicy(t, ns, cp).Spec, policySpec(cp, false))
-			if m := getControlPlane(t, ns, cp).Status.Datastore.Members; m.Ready > m.Total {
-				t.Errorf("status.datastore.members counts %d ready of %d", m.Ready, m.Total)
+			if m := getControlPlane(t, ns, cp).Status.Datastore.Members; ptr.Deref(m.Ready, 0) > ptr.Deref(m.Total, 0) {
+				t.Errorf("status.datastore.members counts %v ready of %v", m.Ready, m.Total)
 			}
 			if etcd := getEtcd(t, ns, cp); etcd.Spec.Replicas != 1 {
 				t.Errorf("the Etcd asks for %d members, want the 1 etcd-druid scales it to", etcd.Spec.Replicas)
@@ -2021,7 +2023,7 @@ func TestAddingHighAvailabilityWaitsForASettledEtcd(t *testing.T) {
 		setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 			s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.CurrentRevision = 0, 0, 0, "old"
 		})
-		setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"})
+		setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"})
 		expectMembers(t, ns, cp, 1, false)
 	})
 	t.Run("a held highAvailability lets a certificate generation through", func(t *testing.T) {
@@ -2050,7 +2052,7 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 	const cp = "stuck"
 	createClass(t, newClass("stuck", "Retain"))
 	ha := controlPlane(ns, cp, "stuck")
-	ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+	ha.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	create(t, ha)
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
@@ -2066,7 +2068,7 @@ func TestRemovingHighAvailabilityBacksOutOfAMemberThatNeverComesUp(t *testing.T)
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "has quorum, 2 of 3 members ready, while etcd-druid scales it")
 
 	t.Run("etcd-druid's scale in progress holds the removal", func(t *testing.T) {
-		setHighAvailability(t, ns, cp, nil)
+		setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{})
 		expectMembers(t, ns, cp, 3, true)
 		c := meta.FindStatusCondition(getControlPlane(t, ns, cp).Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
 		if want := "Etcd stuck-etcd has quorum, 2 of 3 members ready, while etcd-druid scales it"; c == nil || c.Status != metav1.ConditionTrue || c.Reason != lodiav1alpha1.ReasonReady || c.Message != want {
@@ -2085,7 +2087,7 @@ func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
 	const cp = "kept"
 	createClass(t, newClass("kept", "Retain"))
 	ha := controlPlane(ns, cp, "kept")
-	ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+	ha.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	create(t, ha)
 	writeGeneration(t, ns, cp, 1)
 	waitEtcd(t, ns, cp, nil)
@@ -2108,12 +2110,12 @@ func TestRemovingHighAvailabilityWaitsForTheMemberEtcdDruidKeeps(t *testing.T) {
 	waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "Etcd kept-etcd has quorum, 2 of 3 members ready")
 
 	t.Run("the member etcd-druid keeps, not ready, holds the removal", func(t *testing.T) {
-		setHighAvailability(t, ns, cp, nil)
+		setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{})
 		expectMembers(t, ns, cp, 3, true)
 		waitCondition(t, ns, cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady,
 			"Etcd kept-etcd has quorum, 2 of 3 members ready; removing highAvailability waits for etcd-druid to list member kept-etcd-0, the one it keeps, as ready")
-		if m := getControlPlane(t, ns, cp).Status.Datastore.Members; m.Total != 3 || m.Ready != 2 {
-			t.Errorf("status.datastore.members counts %d ready of %d, want 2 of 3", m.Ready, m.Total)
+		if m := getControlPlane(t, ns, cp).Status.Datastore.Members; ptr.Deref(m.Total, 0) != 3 || ptr.Deref(m.Ready, 0) != 2 {
+			t.Errorf("status.datastore.members counts %v ready of %v, want 2 of 3", m.Ready, m.Total)
 		}
 	})
 	t.Run("missing from etcd-druid's member list, it holds it", func(t *testing.T) {
@@ -2150,7 +2152,7 @@ func TestAHeldScaleOutResumesOnceTheStatefulSetSettles(t *testing.T) {
 	setStatefulSetStatus(t, ns, cp, func(s *appsv1.StatefulSetStatus) {
 		s.ReadyReplicas, s.AvailableReplicas, s.CurrentReplicas, s.CurrentRevision = 0, 0, 0, "old"
 	})
-	setHighAvailability(t, ns, cp, &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"})
+	setHighAvailability(t, ns, cp, lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"})
 	expectMembers(t, ns, cp, 1, false)
 
 	setStatefulSetStatus(t, ns, cp, nil)
@@ -2162,7 +2164,7 @@ func TestAHeldScaleOutResumesOnceTheStatefulSetSettles(t *testing.T) {
 	})
 }
 
-func setHighAvailability(t *testing.T, ns, cp string, ha *lodiav1alpha1.HighAvailability) {
+func setHighAvailability(t *testing.T, ns, cp string, ha lodiav1alpha1.HighAvailability) {
 	t.Helper()
 	testenv.Eventually(t, func() error {
 		fresh := getControlPlane(t, ns, cp)
@@ -2181,7 +2183,7 @@ func expectMembers(t *testing.T, ns, cp string, want int32, spread bool) {
 	}
 	fresh := getControlPlane(t, ns, cp)
 	asked := int32(1)
-	if fresh.Spec.HighAvailability != nil {
+	if fresh.Spec.HighAvailability != (lodiav1alpha1.HighAvailability{}) {
 		asked = 3
 	}
 	condition := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady)
@@ -2331,7 +2333,7 @@ func TestForeignEtcd(t *testing.T) {
 				t.Errorf("a foreign Etcd requeues after %s, want a minute: nothing reports its deletion", after)
 			}
 			settle(t, ns, row.cp)
-			if datastore := getControlPlane(t, ns, row.cp).Status.Datastore; datastore != nil {
+			if datastore := getControlPlane(t, ns, row.cp).Status.Datastore; len(datastore.Endpoints) > 0 {
 				t.Errorf("status.datastore %+v describes an Etcd of another ControlPlane", datastore)
 			}
 			if again := getEtcd(t, ns, row.cp); again.ResourceVersion != etcd.ResourceVersion {
@@ -2403,7 +2405,7 @@ func TestQuotaFitsTheVolume(t *testing.T) {
 			t.Fatal(err)
 		}
 		class.Spec.Storage.Size = resource.MustParse("24Gi")
-		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse(quota)), Defragmentation: &lodiav1alpha1.Defragmentation{Schedule: "0 4 * * *"}}
+		class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{QuotaBackendBytes: new(resource.MustParse(quota)), Defragmentation: lodiav1alpha1.Defragmentation{Schedule: "0 4 * * *"}}
 		if err := k8s.Update(t.Context(), class); err != nil {
 			t.Fatal(err)
 		}
@@ -2967,7 +2969,7 @@ func TestNetworkPolicy(t *testing.T) {
 	create(t, controlPlane(ns, "plain", "isolating-plain"))
 	for name, class := range map[string]string{"backed-ha": "isolating", "plain-ha": "isolating-plain"} {
 		ha := controlPlane(ns, name, class)
-		ha.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		ha.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 		create(t, ha)
 	}
 	waitCondition(t, ns, "plain", metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForCertificates, "waiting for a complete generation")

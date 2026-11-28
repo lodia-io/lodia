@@ -125,7 +125,7 @@ func TestAJWTEditReloadsAndAnInvalidOneIsNeverWritten(t *testing.T) {
 
 	update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
 		withJWT(oidc("user.nope == 'x'"))(s)
-		s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"}
+		s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
 	})
 	testenv.Eventually(t, func() error {
 		if err := expectAuthenticationInvalid(cp, "the authentication configuration of spec.apiServer.authentication is not written: kube-apiserver 1.37 refuses it: jwt[0].userValidationRules[0].expression: Invalid value: \"user.nope == 'x'\": compilation failed"); err != nil {
@@ -226,7 +226,7 @@ func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns string, probe fun
 
 func reportedAPIServer(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
 	t.Helper()
-	if c := get(t, cp).Status.Components; c != nil && c.APIServer != nil {
+	if c := get(t, cp).Status.Components; c != nil && c.APIServer != (lodiav1alpha1.ComponentStatus{}) {
 		return c.APIServer.Version
 	}
 	return ""
@@ -676,7 +676,9 @@ func TestARefusalBehindAFalseCountIsNotCountedReadyAtALaterGeneration(t *testing
 				return g
 			},
 			later: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+				changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+					s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
+				})
 				setDeploymentStatus(t, cp, "kube-apiserver", func(s *appsv1.DeploymentStatus) { s.ReadyReplicas, s.AvailableReplicas = 0, 0 })
 			},
 			running: next,
@@ -684,7 +686,9 @@ func TestARefusalBehindAFalseCountIsNotCountedReadyAtALaterGeneration(t *testing
 		"refused while Unavailable, then a wait at the next generation": {
 			refuse: refusedWhileUnavailable,
 			later: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
-				changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+				changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+					s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
+				})
 			},
 			running: next,
 		},
@@ -692,7 +696,9 @@ func TestARefusalBehindAFalseCountIsNotCountedReadyAtALaterGeneration(t *testing
 			refuse: refusedWhileUnavailable,
 			later: func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 				setTargetAt(t, cp, version, next)
-				update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+				update(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+					s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
+				})
 			},
 			running: revision,
 		},
@@ -747,7 +753,7 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 
 			setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
 			testenv.Eventually(t, func() error {
-				if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != moved {
+				if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != moved {
 					return fmt.Errorf("status.endpoint is %+v", e)
 				}
 				return nil
@@ -803,7 +809,7 @@ func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing
 			reconcileNow(t, cp)
 			setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
 			testenv.Eventually(t, func() error {
-				if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != moved {
+				if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != moved {
 					return fmt.Errorf("status.endpoint is %+v", e)
 				}
 				return nil
@@ -850,7 +856,9 @@ func TestAWaitAtALaterGenerationCountsUnderTheRefusalOfTheGenerationItNames(t *t
 	testenv.Eventually(t, func() error { return expectAuthenticationInvalid(cp, "Invalid value: \"user.nope == 'x'\"") })
 	refused := *condition(t, cp)
 
-	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) { s.APIServer.ExtraArgs = map[string]string{"event-ttl": "2h"} })
+	changeSpec(t, cp, func(s *lodiav1alpha1.ControlPlaneSpec) {
+		s.APIServer.ExtraArgs = map[string]lodiav1alpha1.FlagValue{"event-ttl": "2h"}
+	})
 	reconcileNow(t, cp)
 	if err := expectAt(cp, g, metav1.ConditionFalse, lodiav1alpha1.ReasonAuthenticationInvalid, refused.Message); err != nil {
 		t.Errorf("a wait at generation %d: %v", g+1, err)

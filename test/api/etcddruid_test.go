@@ -28,7 +28,6 @@ var etcdFields = []struct{ class, etcd string }{
 	{"spec.backup.store.bucket", "spec.backup.store.container"},
 	{"spec.backup.store.endpoint", "spec.backup.store.endpointOverride"},
 	{"spec.backup.fullSnapshotSchedule", "spec.backup.fullSnapshotSchedule"},
-	{"spec.backup.deltaSnapshotPeriod", "spec.backup.deltaSnapshotPeriod"},
 	{"spec.backup.retention.fullSnapshots", "spec.backup.maxBackupsLimitBasedGC"},
 	{"spec.placement.tolerations", "spec.schedulingConstraints.tolerations"},
 	{"spec.placement.priorityClassName", "spec.priorityClassName"},

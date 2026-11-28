@@ -104,7 +104,7 @@ func TestControllerManagerHold(t *testing.T) {
 				return nil
 			})
 			createTenant(ctx, t, k8s, key, holdClass, behindTheGateway(key.Namespace), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-				spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+				spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 			})
 			until(ctx, t, 8*time.Minute, "Ready=True", func(ctx context.Context) error {
 				return controlPlaneReady(ctx, k8s, key, &lodiav1alpha1.ControlPlane{})
@@ -218,12 +218,12 @@ func TestControllerManagerHold(t *testing.T) {
 				}
 				return nil
 			})
-			t.Logf("ControllerManagerHeld turned True at %s: %s; status.health counts %d of %d nodes silent since %v", stamp(reported.at), reported.message, reported.hold.SilentNodes, reported.hold.CountedNodes, reported.hold.Since)
+			t.Logf("ControllerManagerHeld turned True at %s: %s; status.health counts %d of %d nodes silent since %v", stamp(reported.at), reported.message, ptr.Deref(reported.hold.SilentNodes, 0), ptr.Deref(reported.hold.CountedNodes, 0), reported.hold.Since)
 			if late := reported.at.Sub(taken.at); late > healthPeriod {
 				t.Errorf("ControllerManagerHeld came %s after the holder changed, want at most one period, %s", late, healthPeriod)
 			}
-			if h := reported.hold; h.SilentNodes != 2 || h.CountedNodes != 2 || h.Since == nil {
-				t.Errorf("status.health.controllerManagerHold counts %d of %d nodes silent since %v, want 2 of 2 since the Lease was taken", h.SilentNodes, h.CountedNodes, h.Since)
+			if h := reported.hold; ptr.Deref(h.SilentNodes, 0) != 2 || ptr.Deref(h.CountedNodes, 0) != 2 || h.Since == nil {
+				t.Errorf("status.health.controllerManagerHold counts %v of %v nodes silent since %v, want 2 of 2 since the Lease was taken", h.SilentNodes, h.CountedNodes, h.Since)
 			}
 
 			var finished time.Time
@@ -253,7 +253,7 @@ func TestControllerManagerHold(t *testing.T) {
 			until(ctx, t, 5*time.Minute, "fewer silent nodes than the fraction: the first node renews its Lease again", func(ctx context.Context) error {
 				var ok bool
 				back, ok = seen.firstHeld(reconnected, func(s heldSample) bool {
-					return s.hold != nil && s.hold.CountedNodes > 0 && s.hold.SilentNodes*10 < 6*s.hold.CountedNodes
+					return s.hold != nil && ptr.Deref(s.hold.CountedNodes, 0) > 0 && ptr.Deref(s.hold.SilentNodes, 0)*10 < 6*ptr.Deref(s.hold.CountedNodes, 0)
 				})
 				if !ok {
 					return errors.New("not yet reported")
@@ -662,12 +662,12 @@ type target struct {
 func cutTargets(ctx context.Context, t *testing.T, node string, cp *lodiav1alpha1.ControlPlane) ([]target, []string) {
 	t.Helper()
 	e := cp.Status.Endpoint
-	if e == nil || e.Tunnel == nil {
+	if e == (lodiav1alpha1.EndpointStatus{}) || e.Tunnel == (lodiav1alpha1.HostPort{}) {
 		t.Fatalf("status.endpoint is %+v, want the Gateway's three hostnames", e)
 	}
 	var targets []target
 	var ips []string
-	for _, path := range []lodiav1alpha1.HostPort{e.APIServer, e.Konnectivity, *e.Tunnel} {
+	for _, path := range []lodiav1alpha1.HostPort{e.APIServer, e.Konnectivity, e.Tunnel} {
 		resolved := resolve(ctx, t, node, path.Host)
 		targets = append(targets, target{host: path.Host, port: path.Port, ip: resolved[0]})
 		for _, ip := range resolved {
@@ -958,7 +958,7 @@ func (r *holdRecord) observeControlPlane(cp *lodiav1alpha1.ControlPlane, at time
 }
 
 func sameHold(a, b *lodiav1alpha1.ControllerManagerHold) bool {
-	return (a == nil) == (b == nil) && (a == nil || a.SilentNodes == b.SilentNodes && a.CountedNodes == b.CountedNodes)
+	return (a == nil) == (b == nil) && (a == nil || ptr.Equal(a.SilentNodes, b.SilentNodes) && ptr.Equal(a.CountedNodes, b.CountedNodes))
 }
 
 func (r *holdRecord) observePod(event watch.EventType, pod *corev1.Pod, at time.Time) {

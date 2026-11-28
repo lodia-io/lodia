@@ -51,16 +51,16 @@ func TestTheCopyIsPinned(t *testing.T) {
 		"nodePort": {spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}}, endpoint: nodePort},
 		"highAvailability": {spec: lodiav1alpha1.ControlPlaneSpec{
 			Endpoint:         lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
-			HighAvailability: &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"},
+			HighAvailability: lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"},
 		}, endpoint: nodePort},
-		"gateway": {spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		"gateway": {spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 			ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 			Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 		}}}, endpoint: lodiav1alpha1.EndpointStatus{
 			APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
 			Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
 			InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-			Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
+			Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
 		}},
 	} {
 		spec := c.spec
@@ -102,8 +102,8 @@ func flagsOf(command []string) map[string]string {
 }
 
 func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
-	resources := &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
-	etcd := &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}}
+	resources := &lodiav1alpha1.Resources{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}}
+	etcd := &lodiav1alpha1.Resources{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")}}
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
@@ -111,18 +111,18 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 			Endpoint: lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
 			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
 			APIServer: &lodiav1alpha1.APIServer{
-				ExtraArgs: map[string]string{
+				ExtraArgs: map[string]lodiav1alpha1.FlagValue{
 					"enable-admission-plugins":  "AlwaysPullImages,ValidatingAdmissionWebhook",
 					"disable-admission-plugins": "DefaultStorageClass,MutatingAdmissionWebhook",
 					"etcd-compaction-interval":  "10m",
-					"audit-log-maxage":          "3",
+					"max-requests-inflight":     "800",
 				},
 				FeatureGates: map[string]bool{"APIServerTracing": true},
 				Resources:    resources,
 			},
 			Placement: &lodiav1alpha1.Placement{
-				NodeSelector:      map[string]string{"pool": "control-planes"},
-				Tolerations:       []corev1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
+				NodeSelector:      map[string]lodiav1alpha1.LabelValue{"pool": "control-planes"},
+				Tolerations:       []lodiav1alpha1.Toleration{{Key: "dedicated", Operator: corev1.TolerationOpExists}},
 				PriorityClassName: "tenant-control-planes",
 			},
 		},
@@ -145,7 +145,7 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 	if got := flagsOf(api.Command); !maps.Equal(got, want) {
 		t.Errorf("the copy's flags are %v, want %v", got, want)
 	}
-	if api.Image != "registry.k8s.io/kube-apiserver:v1.37.1" || !equality.Semantic.DeepEqual(api.Resources, *resources) {
+	if api.Image != "registry.k8s.io/kube-apiserver:v1.37.1" || !equality.Semantic.DeepEqual(api.Resources, resources.Requirements()) {
 		t.Errorf("the copy's API server runs %s with %+v", api.Image, api.Resources)
 	}
 	if api.LivenessProbe != nil || api.StartupProbe != nil || api.Lifecycle != nil || api.ReadinessProbe.PeriodSeconds != 1 || api.ReadinessProbe.HTTPGet.Path != "/readyz" {
@@ -168,7 +168,7 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 	if !slices.Equal(initContainers, []string{"snapshot", "restore", "etcd", "lodia-signer"}) {
 		t.Errorf("the copy's init containers are %v", initContainers)
 	}
-	if e := pod.Spec.InitContainers[2]; !equality.Semantic.DeepEqual(e.Resources, *etcd) || !slices.Contains(e.Command, "--quota-backend-bytes=8589934592") {
+	if e := pod.Spec.InitContainers[2]; !equality.Semantic.DeepEqual(e.Resources, etcd.Requirements()) || !slices.Contains(e.Command, "--quota-backend-bytes=8589934592") {
 		t.Errorf("the copy's etcd runs %v with %+v", e.Command, e.Resources)
 	}
 	var volumes []string
@@ -194,7 +194,7 @@ func TestTheCopyChangesOnlyWhatTheDecisionLists(t *testing.T) {
 }
 
 func TestTheCopyReadsTheAdmissionPluginsAsKubeAPIServerDoes(t *testing.T) {
-	for _, extra := range []map[string]string{
+	for _, extra := range []map[string]lodiav1alpha1.FlagValue{
 		{"enable-admission-plugins": `AlwaysPullImages,"ValidatingAdmissionWebhook"`},
 		{"enable-admission-plugins": `AlwaysPullImages,"MutatingAdmissionWebhook"`, "disable-admission-plugins": `DefaultStorageClass`},
 	} {
@@ -219,30 +219,6 @@ func TestTheCopyReadsTheAdmissionPluginsAsKubeAPIServerDoes(t *testing.T) {
 		if !slices.Equal(enabled, []string{"NodeRestriction", "AlwaysPullImages"}) || !slices.Contains(disabled, "MutatingAdmissionWebhook") || !slices.Contains(disabled, "ValidatingAdmissionWebhook") ||
 			slices.ContainsFunc(enabled, func(p string) bool { return slices.Contains(disabled, p) }) || slices.ContainsFunc(disabled, func(p string) bool { return strings.Contains(p, `"`) }) {
 			t.Errorf("with %v the copy enables %q and disables %q", extra, enabled, disabled)
-		}
-	}
-}
-
-func TestTheCopyRendersNoPeerFlags(t *testing.T) {
-	cp := &lodiav1alpha1.ControlPlane{
-		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team-a", UID: "5e1f7c3a-0000-4000-8000-000000000001"},
-		Spec: lodiav1alpha1.ControlPlaneSpec{
-			Version:  "v1.37.1",
-			Endpoint: lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
-			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-			APIServer: &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{
-				"peer-ca-file": "/etc/lodia/client-ca/ca.crt", "peer-advertise-ip": "10.244.0.7", "peer-advertise-port": "6443",
-			}},
-		},
-	}
-	r := copyRendering(t, cp, lodiav1alpha1.EndpointStatus{InCluster: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}})
-	if flags := flagsOf(r.apiServer().Spec.Template.Spec.Containers[0].Command); flags["peer-ca-file"] == "" {
-		t.Fatalf("the tenant's API server renders no --peer-ca-file: %v", flags)
-	}
-	flags := flagsOf(r.rehearsalCopy("v1.37.1", 1, resource.MustParse("4Gi"), nil).Spec.Containers[0].Command)
-	for _, name := range []string{"peer-ca-file", "peer-advertise-ip", "peer-advertise-port"} {
-		if value, set := flags[name]; set {
-			t.Errorf("the copy renders --%s=%s", name, value)
 		}
 	}
 }

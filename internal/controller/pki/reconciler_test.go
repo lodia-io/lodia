@@ -161,8 +161,7 @@ func TestALoadBalancerControlPlaneWaitsForItsEndpoint(t *testing.T) {
 	}
 	waitFor(t, 30*time.Second, trusted(parseTLS(t, lost).Cert))
 	creds := fresh.Status.Credentials
-	if creds == nil || creds.AdminKubeconfigSecretRef == nil || creds.AdminKubeconfigSecretRef.Name != "dev-admin-kubeconfig" ||
-		creds.CABundleSecretRef == nil || creds.CABundleSecretRef.Name != "dev-ca-bundle" {
+	if creds == nil || creds.AdminKubeconfigSecretRef.Name != "dev-admin-kubeconfig" || creds.CABundleSecretRef.Name != "dev-ca-bundle" {
 		t.Errorf("status.credentials is %+v", creds)
 	}
 
@@ -450,6 +449,17 @@ func TestEverySecretCarriesTheHashOfItsData(t *testing.T) {
 		if got, want := s.Annotations[lodiav1alpha1.DataHashAnnotation], lodiav1alpha1.DataHash(s.Data); got != want {
 			t.Errorf("%s carries %s %q, want %q", name, lodiav1alpha1.DataHashAnnotation, got, want)
 		}
+	}
+}
+
+// TestAControlPlaneNotPausedInItsSpecGetsItsSecrets issues every Secret of a ControlPlane whose spec says paused: false.
+func TestAControlPlaneNotPausedInItsSpecGetsItsSecrets(t *testing.T) {
+	r := newReconciler(time.Hour)
+	cp := controlPlane(t, "pki-unpaused", func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = new(false) })
+	publishEndpoint(t, cp)
+	reconcileOnce(t, r, cp)
+	if got, want := len(secretsOf(t, cp)), len(secretTable(cp.Name)); got != want {
+		t.Errorf("%d Secrets after a pass, want %d", got, want)
 	}
 }
 

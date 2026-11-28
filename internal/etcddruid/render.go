@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	druidv1alpha1 "github.com/gardener/etcd-druid/api/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -94,7 +95,7 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 		if value, ok := current.Annotations[allowUnhealthyPodEviction]; ok {
 			metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, value)
 		}
-	case ha != nil:
+	case ha != (lodiav1alpha1.HighAvailability{}):
 		metav1.SetMetaDataAnnotation(&etcd.ObjectMeta, allowUnhealthyPodEviction, "")
 		etcd.Spec.SchedulingConstraints.TopologySpreadConstraints = spread(ha.FailureTolerance, memberLabels(etcd))
 	}
@@ -138,8 +139,10 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 	quota, capped := cappedQuota(class, volume, etcd.Name)
 	etcd.Spec.Etcd.Quota = &quota
 	if settings := spec.Etcd; settings != nil {
-		etcd.Spec.Etcd.Resources = settings.Resources
-		if settings.Defragmentation != nil {
+		if settings.Resources != nil {
+			etcd.Spec.Etcd.Resources = new(settings.Resources.Requirements())
+		}
+		if settings.Defragmentation != (lodiav1alpha1.Defragmentation{}) {
 			etcd.Spec.Etcd.DefragmentationSchedule = new(string(settings.Defragmentation.Schedule))
 		}
 		if compaction := settings.AutoCompaction; compaction != nil {
@@ -151,24 +154,26 @@ func render(cp *lodiav1alpha1.ControlPlane, class *lodiav1alpha1.DatastoreClass,
 			}
 		}
 	}
-	if backup := spec.Backup; backup != nil {
+	if backup := spec.Backup; backup != (lodiav1alpha1.EtcdBackup{}) {
 		etcd.Spec.Backup.Store = store(cp, backup, namespaceUID)
 		if backup.FullSnapshotSchedule != "" {
 			etcd.Spec.Backup.FullSnapshotSchedule = new(string(backup.FullSnapshotSchedule))
 		}
-		etcd.Spec.Backup.DeltaSnapshotPeriod = backup.DeltaSnapshotPeriod
+		if seconds := backup.DeltaSnapshotPeriodSeconds; seconds != nil {
+			etcd.Spec.Backup.DeltaSnapshotPeriod = &metav1.Duration{Duration: time.Duration(*seconds) * time.Second}
+		}
 		if backup.Retention != nil {
 			etcd.Spec.Backup.GarbageCollectionPolicy = new(druidv1alpha1.GarbageCollectionPolicy(druidv1alpha1.GarbageCollectionPolicyLimitBased))
 			etcd.Spec.Backup.MaxBackupsLimitBasedGC = new(backup.Retention.FullSnapshots)
 		}
 	}
 	if placement := spec.Placement; placement != nil {
-		etcd.Spec.SchedulingConstraints.Tolerations = placement.Tolerations
+		etcd.Spec.SchedulingConstraints.Tolerations = placement.PodTolerations()
 		if placement.PriorityClassName != "" {
 			etcd.Spec.PriorityClassName = new(placement.PriorityClassName)
 		}
 		if len(placement.NodeSelector) > 0 {
-			etcd.Spec.SchedulingConstraints.Affinity = nodeAffinity(placement.NodeSelector)
+			etcd.Spec.SchedulingConstraints.Affinity = nodeAffinity(placement.PodNodeSelector())
 		}
 	}
 	return etcd, capped
@@ -191,7 +196,7 @@ func cappedQuota(class *lodiav1alpha1.DatastoreClass, volume resource.Quantity, 
 		class.Name, quota.String(), half.String(), twice.String(), etcd, volume.String())
 }
 
-func store(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.EtcdBackup, namespaceUID types.UID) *druidv1alpha1.StoreSpec {
+func store(cp *lodiav1alpha1.ControlPlane, backup lodiav1alpha1.EtcdBackup, namespaceUID types.UID) *druidv1alpha1.StoreSpec {
 	spec := &druidv1alpha1.StoreSpec{
 		Provider:  new(druidv1alpha1.StorageProvider(backup.Store.Provider)),
 		Container: new(backup.Store.Bucket),

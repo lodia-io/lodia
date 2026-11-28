@@ -43,7 +43,7 @@ func (c unpaused) Get(ctx context.Context, key client.ObjectKey, obj client.Obje
 		return err
 	}
 	if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-		cp.Spec.Paused = false
+		cp.Spec.Paused = new(false)
 	}
 	return nil
 }

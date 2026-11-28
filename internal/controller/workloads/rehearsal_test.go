@@ -437,7 +437,7 @@ func rehearsed(t *testing.T, cp *lodiav1alpha1.ControlPlane) (*metav1.Condition,
 	t.Helper()
 	fresh := get(t, cp)
 	rehearsalVersion := ""
-	if fresh.Status.Rehearsal != nil {
+	if fresh.Status.Rehearsal != (lodiav1alpha1.RehearsalStatus{}) {
 		rehearsalVersion = fresh.Status.Rehearsal.Version
 	}
 	return meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionRehearsed), rehearsalVersion
@@ -670,7 +670,7 @@ func endedCopyHoldsNoPlaceWhilePaused(t *testing.T, ended corev1.PodStatus) {
 			return err
 		}
 		patch := client.MergeFrom(fresh.DeepCopy())
-		fresh.Spec.Paused = on
+		fresh.Spec.Paused = new(on)
 		return k8s.Patch(ctx, fresh, patch)
 	}
 	if err := pause(t.Context(), true); err != nil {

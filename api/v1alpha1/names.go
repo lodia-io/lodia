@@ -152,7 +152,7 @@ const (
 // address. The schema spells it from the spec in apiServer.advertiseAddress's
 // rules.
 func (e Endpoint) NodeProxy() bool {
-	if e.Gateway != nil {
+	if e.Gateway != (GatewayEndpoint{}) {
 		return true
 	}
 	if e.LoadBalancer == nil {

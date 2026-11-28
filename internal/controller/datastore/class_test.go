@@ -34,7 +34,7 @@ import (
 func classTenant(t *testing.T, ns, name, class string) *datastore.Reconciler {
 	t.Helper()
 	cp := controlPlane(ns, name, class)
-	cp.Spec.Paused = true
+	cp.Spec.Paused = new(true)
 	create(t, cp)
 	writeGeneration(t, ns, name, 1)
 	r := operatorAt(unpaused(k8s), revision)
@@ -60,7 +60,7 @@ func runsClass(t *testing.T, ns, cp, quota, generation string) {
 		Name:                     etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation],
 		DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: types.UID(etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]), Generation: g},
 	}
-	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class == nil || *status.Class != want || want.UID == "" {
+	if status := getControlPlane(t, ns, cp).Status.Datastore; len(status.Endpoints) == 0 || status.Class == (lodiav1alpha1.DatastoreClassStatus{}) || status.Class != want || want.UID == "" {
 		t.Errorf("status.datastore is %+v, want class %+v", status, want)
 	}
 }
@@ -174,7 +174,7 @@ func TestAGrantedClassEditThatEmptiesAnObjectOfTheEtcdRemovesIt(t *testing.T) {
 			func(settings *lodiav1alpha1.EtcdSettings) { settings.AutoCompaction = nil },
 			func(etcd *druidv1alpha1.Etcd) bool { return etcd.Spec.Common == druidv1alpha1.SharedConfig{} }},
 		{"resources emptied", "emptied-resources",
-			func(settings *lodiav1alpha1.EtcdSettings) { settings.Resources = &corev1.ResourceRequirements{} },
+			func(settings *lodiav1alpha1.EtcdSettings) { settings.Resources = &lodiav1alpha1.Resources{} },
 			func(etcd *druidv1alpha1.Etcd) bool { return etcd.Spec.Etcd.Resources == nil }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -182,7 +182,7 @@ func TestAGrantedClassEditThatEmptiesAnObjectOfTheEtcdRemovesIt(t *testing.T) {
 			class := newClass(c.cp, "Retain")
 			class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{
 				AutoCompaction: &lodiav1alpha1.AutoCompaction{Mode: "revision", Retention: "1000"},
-				Resources:      &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m")}},
+				Resources:      &lodiav1alpha1.Resources{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("30m")}},
 			}
 			createClass(t, class)
 			r := classTenant(t, ns, c.cp, c.cp)
@@ -241,17 +241,17 @@ func TestAnObjectTheClassEmptiesWhileAnotherManagerHoldsItNamesThatManager(t *te
 		{"held-compaction-and-more", "spec.sharedConfig", "kubectl", false, true, compaction, noCompaction},
 		{"held-resources", "spec.etcd.resources", "kubectl", false, false,
 			func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &corev1.ResourceRequirements{Requests: cpu}}
+				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &lodiav1alpha1.Resources{Requests: cpu}}
 			},
-			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.Resources = &corev1.ResourceRequirements{} }},
+			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.Resources = &lodiav1alpha1.Resources{} }},
 		{"held-requests", "spec.etcd.resources.requests", "kubectl", false, false,
 			func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &corev1.ResourceRequirements{Requests: cpu, Limits: cpu}}
+				class.Spec.Etcd = &lodiav1alpha1.EtcdSettings{Resources: &lodiav1alpha1.Resources{Requests: cpu, Limits: cpu}}
 			},
 			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Etcd.Resources.Requests = nil }},
 		{"held-placement", "spec.schedulingConstraints", "kubectl", false, false,
 			func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Placement = &lodiav1alpha1.Placement{Tolerations: []corev1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists}}}
+				class.Spec.Placement = &lodiav1alpha1.Placement{Tolerations: []lodiav1alpha1.Toleration{{Key: "control-planes", Operator: corev1.TolerationOpExists}}}
 			},
 			func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Placement = nil }},
 	} {
@@ -380,7 +380,7 @@ func TestAStoreTheClassDropsWhileAnotherManagerHoldsItNamesThatManager(t *testin
 	}
 	apply(map[string]any{"backup": map[string]any{"store": map[string]any{}}})
 
-	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Backup = nil })
+	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) { class.Spec.Backup = lodiav1alpha1.EtcdBackup{} })
 	grantClass(t, ns, cp, cp)
 	if _, err := passOf(t, r, ns, cp); !apierrors.IsInvalid(err) {
 		t.Fatalf("the pass that drops a store another manager holds returned %v, want the API server's refusal", err)
@@ -446,7 +446,7 @@ func TestAClassCreatedAgainUnderItsNameWaitsForItsGrant(t *testing.T) {
 		grantClass(t, ns, cp, cp)
 		mustPass(t, r, ns, cp)
 		recordsUID(t, ns, cp, again)
-		if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || got.UID != replaced.UID {
+		if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == (lodiav1alpha1.DatastoreClassStatus{}) || got.UID != replaced.UID {
 			t.Errorf("while the class created again rolls status.datastore.class is %+v, want UID %s kept", got, replaced.UID)
 		}
 		rollOut(t, r, ns, cp)
@@ -589,7 +589,7 @@ func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 	keeps := func(t *testing.T, r *datastore.Reconciler) {
 		t.Helper()
 		mustPass(t, r, ns, cp)
-		if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || got.Generation != 1 {
+		if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == (lodiav1alpha1.DatastoreClassStatus{}) || got.Generation != 1 {
 			t.Errorf("status.datastore.class is %+v, want generation 1 kept", got)
 		}
 	}
@@ -608,8 +608,8 @@ func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 				if err := c.Get(ctx, key, obj, opts...); err != nil {
 					return err
 				}
-				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok && plane.Status.Datastore != nil {
-					plane.Status.Datastore.Class = nil
+				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok && len(plane.Status.Datastore.Endpoints) > 0 {
+					plane.Status.Datastore.Class = lodiav1alpha1.DatastoreClassStatus{}
 				}
 				return nil
 			},
@@ -633,7 +633,7 @@ func TestTheClassIsReportedOnceEtcdDruidRolledItOut(t *testing.T) {
 func unrolledTenant(t *testing.T, ns, name string) *datastore.Reconciler {
 	t.Helper()
 	cp := controlPlane(ns, name, name)
-	cp.Spec.Paused = true
+	cp.Spec.Paused = new(true)
 	create(t, cp)
 	writeGeneration(t, ns, name, 1)
 	r := operatorAt(unpaused(k8s), revision)
@@ -675,7 +675,7 @@ func TestARefusedRequestReportsTheClassOfAnEtcdThatNeverRolledOut(t *testing.T) 
 	const cp = "refused-unrolled"
 	createClass(t, newClass(cp, "Retain"))
 	plane := controlPlane(ns, cp, cp)
-	plane.Spec.Paused = true
+	plane.Spec.Paused = new(true)
 	create(t, plane)
 	writeGeneration(t, ns, cp, 1)
 	refusing, refused := refusingRequests(cp)
@@ -688,7 +688,7 @@ func TestARefusedRequestReportsTheClassOfAnEtcdThatNeverRolledOut(t *testing.T) 
 func reportedClass(t *testing.T, ns, cp string) int64 {
 	t.Helper()
 	status := getControlPlane(t, ns, cp).Status.Datastore
-	if status == nil || status.Class == nil {
+	if len(status.Endpoints) == 0 || status.Class == (lodiav1alpha1.DatastoreClassStatus{}) {
 		t.Fatalf("status.datastore is %+v, want a class", status)
 	}
 	return status.Class.Generation
@@ -834,7 +834,7 @@ func TestAnEtcdCreatedAgainFromAnotherClassReportsItsOwnClass(t *testing.T) {
 	if _, err := passOf(t, operatorAt(stale, revision), ns, cp); !errors.Is(err, refused) {
 		t.Fatalf("a pass whose apply the API server refuses returned %v, want the refusal", err)
 	}
-	if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || got.Name != second.Name {
+	if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == (lodiav1alpha1.DatastoreClassStatus{}) || got.Name != second.Name {
 		t.Errorf("a refused pass on a cache that holds the Etcd's predecessor reports class %+v, want %s kept", got, second.Name)
 	}
 
@@ -869,7 +869,7 @@ func TestAnEtcdCreatedAgainOverAReportOfNoClassReportsItsClass(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustPass(t, r, ns, cp)
-	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil || status.OperatorRevision != revision {
+	if status := getControlPlane(t, ns, cp).Status.Datastore; len(status.Endpoints) == 0 || status.Class != (lodiav1alpha1.DatastoreClassStatus{}) || status.OperatorRevision != revision {
 		t.Fatalf("an Etcd that rolled out without its class UID reports status.datastore %+v, want no class and operator revision %s", status, revision)
 	}
 
@@ -1031,7 +1031,7 @@ func TestTheCapNoteStaysWhileAClassEditWaits(t *testing.T) {
 	}
 
 	editClass(t, cp, func(class *lodiav1alpha1.DatastoreClass) {
-		class.Spec.Etcd.Defragmentation = &lodiav1alpha1.Defragmentation{Schedule: "0 4 * * *"}
+		class.Spec.Etcd.Defragmentation = lodiav1alpha1.Defragmentation{Schedule: "0 4 * * *"}
 	})
 	mustPass(t, r, ns, cp)
 	want := "; DatastoreClass " + cp + " generation 3 waits for status.target.datastoreClass; " + capped
@@ -1074,7 +1074,7 @@ func TestAnEtcdWhoseClassAnnotationsAPersonEditedReportsNoClass(t *testing.T) {
 					t.Fatal(err)
 				}
 				mustPass(t, r, ns, cp)
-				if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil {
+				if status := getControlPlane(t, ns, cp).Status.Datastore; len(status.Endpoints) == 0 || status.Class != (lodiav1alpha1.DatastoreClassStatus{}) {
 					t.Errorf("an Etcd annotated %s reports status.datastore %+v, want no class", edit, status)
 				}
 			})
@@ -1098,7 +1098,7 @@ func TestAnEtcdAPersonAnnotatedWhileItRollsKeepsTheClassReportedUntilItRolledOut
 	}
 	setStatefulSetStatus(t, ns, cp, nil)
 	mustPass(t, r, ns, cp)
-	if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class != nil {
+	if status := getControlPlane(t, ns, cp).Status.Datastore; len(status.Endpoints) == 0 || status.Class != (lodiav1alpha1.DatastoreClassStatus{}) {
 		t.Errorf("once it rolled out an Etcd annotated by hand reports status.datastore %+v, want no class", status)
 	}
 }
@@ -1121,7 +1121,7 @@ func TestAClassNameAPersonEditsIsReportedAtOnce(t *testing.T) {
 	}
 	mustPass(t, r, ns, cp)
 	want := lodiav1alpha1.DatastoreClassStatus{Name: second.Name, DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: first.UID, Generation: 1}}
-	if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == nil || *got != want {
+	if got := getControlPlane(t, ns, cp).Status.Datastore.Class; got == (lodiav1alpha1.DatastoreClassStatus{}) || got != want {
 		t.Errorf("while a member is not updated an Etcd whose class name a person edited reports class %+v, want %+v", got, want)
 	}
 
@@ -1155,7 +1155,7 @@ func TestAClassAnnotationTheSchemaTakesIsReportedAsItIs(t *testing.T) {
 				Name:                     etcd.Annotations[lodiav1alpha1.DatastoreClassAnnotation],
 				DatastoreClassGeneration: lodiav1alpha1.DatastoreClassGeneration{UID: types.UID(etcd.Annotations[lodiav1alpha1.DatastoreClassUIDAnnotation]), Generation: 1},
 			}
-			if status := getControlPlane(t, ns, cp).Status.Datastore; status == nil || status.Class == nil || *status.Class != want {
+			if status := getControlPlane(t, ns, cp).Status.Datastore; len(status.Endpoints) == 0 || status.Class == (lodiav1alpha1.DatastoreClassStatus{}) || status.Class != want {
 				t.Errorf("an Etcd whose %s holds %d characters of two bytes reports status.datastore %+v, want class %+v", row.annotation, len([]rune(row.value)), status, want)
 			}
 		})

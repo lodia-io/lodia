@@ -138,7 +138,7 @@ func TestASecretAnotherOwnerKeepsBlocksEveryWrite(t *testing.T) {
 			if result.RequeueAfter != c.requeue {
 				t.Errorf("requeue after %s, want %s", result.RequeueAfter, c.requeue)
 			}
-			if fresh := freshControlPlane(t, cp).Status.Credentials; fresh == nil || *fresh.AdminKubeconfigSecretRef != *credentials.AdminKubeconfigSecretRef || *fresh.CABundleSecretRef != *credentials.CABundleSecretRef {
+			if fresh := freshControlPlane(t, cp).Status.Credentials; fresh == nil || fresh.AdminKubeconfigSecretRef != credentials.AdminKubeconfigSecretRef || fresh.CABundleSecretRef != credentials.CABundleSecretRef {
 				t.Errorf("status.credentials moved from %+v to %+v", credentials, fresh)
 			}
 
@@ -506,7 +506,7 @@ func TestABlockedPassOnAStaleCacheLeavesTheCredentialsAsTheServerHoldsThem(t *te
 	stale := freshControlPlane(t, cp)
 	reconcile(t, r, cp)
 	credentials := freshControlPlane(t, cp).Status.Credentials
-	if credentials == nil || credentials.AdminKubeconfigSecretRef == nil || credentials.CABundleSecretRef == nil {
+	if credentials == nil || credentials.AdminKubeconfigSecretRef == (lodiav1alpha1.LocalReference{}) || credentials.CABundleSecretRef == (lodiav1alpha1.LocalReference{}) {
 		t.Fatalf("a full pass left status.credentials %+v", credentials)
 	}
 

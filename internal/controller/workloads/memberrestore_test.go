@@ -48,8 +48,8 @@ func rollsOf(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
 
 func rolledFor(c *lodiav1alpha1.ComponentsStatus) string {
 	var got []string
-	for _, s := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
-		if s == nil || s.MemberRestoreDetectedAt == nil {
+	for _, s := range []lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+		if s == (lodiav1alpha1.ComponentStatus{}) || s.MemberRestoreDetectedAt == nil {
 			got = append(got, "none")
 		} else {
 			got = append(got, s.MemberRestoreDetectedAt.UTC().Format(time.RFC3339))
@@ -214,7 +214,7 @@ func TestACacheThatLacksTheRecordRollsNothing(t *testing.T) {
 	before := objectsOf(t, cp)
 	reconcileThrough(t, cp, unpaused(func(_ client.ObjectKey, obj client.Object) {
 		if cached, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-			cached.Status.MemberRestore, cached.Status.Components = nil, nil
+			cached.Status.MemberRestore, cached.Status.Components = lodiav1alpha1.MemberRestoreStatus{}, nil
 		}
 	}))
 	expectNoWrites(t, cp, before, "a pass whose cache lacks the record")

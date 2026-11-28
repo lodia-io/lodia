@@ -30,7 +30,7 @@ type ControlPlane struct {
 
 	// spec is the desired state of the control plane.
 	// +required
-	Spec ControlPlaneSpec `json:"spec"`
+	Spec ControlPlaneSpec `json:"spec,omitzero"`
 
 	// status is what Lodia observed and did.
 	// +optional
@@ -55,26 +55,32 @@ type ControlPlaneList struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.endpoint.loadBalancer) || !has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host) || !isCIDR(self.network.serviceCIDRs[0]) || ip(self.endpoint.loadBalancer.host).family() == cidr(self.network.serviceCIDRs[0]).ip().family()",message="endpoint.loadBalancer.host, an IP address, must be of the family of the first service range"
 // +kubebuilder:validation:XValidation:rule="!has(self.endpoint.loadBalancer) || !has(self.endpoint.loadBalancer.host) || !isIP(self.endpoint.loadBalancer.host) || !(self.network.serviceCIDRs + self.network.podCIDRs).exists(c, isCIDR(c) && cidr(c).containsIP(self.endpoint.loadBalancer.host))",message="endpoint.loadBalancer.host, an IP address, must lie outside the service and pod ranges"
 // +kubebuilder:validation:XValidation:rule="has(self.restoreFrom) == has(oldSelf.restoreFrom)",message="restoreFrom can be set only when the ControlPlane is created, and never removed"
-// +kubebuilder:validation:XValidation:rule="has(self.datastore) && has(self.datastore.className) && size(self.datastore.className) > 0 ? has(oldSelf.datastore) && has(oldSelf.datastore.className) && oldSelf.datastore.className == self.datastore.className : !has(oldSelf.datastore) || !has(oldSelf.datastore.className) || size(oldSelf.datastore.className) == 0",message="datastore.className is immutable in v1alpha1"
+// +kubebuilder:validation:XValidation:rule="has(self.datastore) == has(oldSelf.datastore) && (!has(self.datastore) || self.datastore.className == oldSelf.datastore.className)",message="datastore.className is immutable in v1alpha1"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) == 1",message="kube-controller-manager refuses node-cidr-mask-size with two pod ranges: use node-cidr-mask-size-ipv4 and node-cidr-mask-size-ipv6"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 4",message="kube-controller-manager refuses node-cidr-mask-size-ipv4 with an IPv6 pod range alone"
 // +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs) || size(self.network.podCIDRs) != 1 || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 6",message="kube-controller-manager refuses node-cidr-mask-size-ipv6 with an IPv4 pod range alone"
+// +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.extraArgs) || !('node-cidr-mask-size' in self.controllerManager.extraArgs) || !isCIDR(self.network.podCIDRs[0]) || cidr(self.network.podCIDRs[0]).ip().family() == 6 || int(self.controllerManager.extraArgs['node-cidr-mask-size']) <= 32",message="node-cidr-mask-size beside an IPv4 pod range is at most 32, the length of an IPv4 address: kube-controller-manager allocates no node range from a longer mask, and says nothing"
 // +kubebuilder:validation:XValidation:rule="self.network.podCIDRs.all(c, !isCIDR(c) || (cidr(c).ip().family() == 4 ? cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv4' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv4']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 24) : cidr(c).prefixLength() <= (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) && (has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size-ipv6' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size-ipv6']) : has(self.controllerManager) && has(self.controllerManager.extraArgs) && 'node-cidr-mask-size' in self.controllerManager.extraArgs ? int(self.controllerManager.extraArgs['node-cidr-mask-size']) : 64) - cidr(c).prefixLength() <= 16))",message="kube-controller-manager refuses a pod range narrower than the node mask of its family, 24 for IPv4 and 64 for IPv6 unless controllerManager.extraArgs sets it, and an IPv6 range more than 16 bits wider than it"
+// +kubebuilder:validation:XValidation:rule="(has(self.apiServer) && has(self.apiServer.encryption) && has(self.apiServer.encryption.provider) ? self.apiServer.encryption.provider : 'secretbox') == (has(oldSelf.apiServer) && has(oldSelf.apiServer.encryption) && has(oldSelf.apiServer.encryption.provider) ? oldSelf.apiServer.encryption.provider : 'secretbox')",message="apiServer.encryption.provider is immutable, an absent one counting as secretbox: with another provider first, an API server that has not reloaded the configuration cannot read what one that has writes"
 // +kubebuilder:validation:XValidation:rule="!has(self.serviceAccount) || !has(self.serviceAccount.issuer) || !has(self.apiServer) || !has(self.apiServer.authentication) || !has(self.apiServer.authentication.jwt) || !self.apiServer.authentication.jwt.exists(a, a.issuer.url == self.serviceAccount.issuer)",message="kube-apiserver refuses a JWT issuer.url equal to serviceAccount.issuer"
+// +kubebuilder:validation:XValidation:rule="!has(self.controllerManager) || !has(self.controllerManager.featureGates) || self.controllerManager.featureGates.all(g, has(self.apiServer) && has(self.apiServer.featureGates) && g in self.apiServer.featureGates && self.apiServer.featureGates[g] == self.controllerManager.featureGates[g])",message="controllerManager.featureGates sets a gate that apiServer.featureGates does not set to the same value: a feature needs its gate on every component it spans, and kube-apiserver serves the APIs the controller manager reads",messageExpression="'controllerManager.featureGates sets ' + self.controllerManager.featureGates.filter(g, (!has(self.apiServer) || !has(self.apiServer.featureGates) || !(g in self.apiServer.featureGates) || self.apiServer.featureGates[g] != self.controllerManager.featureGates[g]) && !self.controllerManager.featureGates.exists(h, h < g && (!has(self.apiServer) || !has(self.apiServer.featureGates) || !(h in self.apiServer.featureGates) || self.apiServer.featureGates[h] != self.controllerManager.featureGates[h])))[0] + ', which apiServer.featureGates must set to the same value: a feature needs its gate on every component it spans, and kube-apiserver serves the APIs the controller manager reads'"
+// +kubebuilder:validation:XValidation:rule="!(has(self.scheduler) && has(self.scheduler.featureGates) && 'CoordinatedLeaderElection' in self.scheduler.featureGates && self.scheduler.featureGates['CoordinatedLeaderElection']) || has(self.apiServer) && has(self.apiServer.featureGates) && 'CoordinatedLeaderElection' in self.apiServer.featureGates && self.apiServer.featureGates['CoordinatedLeaderElection']",message="CoordinatedLeaderElection on the scheduler needs it on kube-apiserver too: a component with the gate only renews a Lease that kube-apiserver's election gives it, which kube-apiserver without the gate never does, so the component never leads"
+// +kubebuilder:validation:XValidation:rule="!(has(self.apiServer) && has(self.apiServer.featureGates) && 'CoordinatedLeaderElection' in self.apiServer.featureGates && self.apiServer.featureGates['CoordinatedLeaderElection']) || has(self.apiServer.extraArgs) && 'runtime-config' in self.apiServer.extraArgs && self.apiServer.extraArgs['runtime-config'].matches('(^|,)coordination[.]k8s[.]io/v1beta1=true(,|$)') && !self.apiServer.extraArgs['runtime-config'].matches('(^|,)coordination[.]k8s[.]io/v1beta1(/leasecandidates)?=false(,|$)')",message="CoordinatedLeaderElection on kube-apiserver needs apiServer.extraArgs' runtime-config to hold coordination.k8s.io/v1beta1=true and to turn neither it nor its leasecandidates off: kube-apiserver waits for its informer of LeaseCandidates, which that group version serves, and is never ready without it"
 type ControlPlaneSpec struct {
 	// version is the Kubernetes version, vMAJOR.MINOR.PATCH, any patch of a
 	// minor Lodia runs. The minor never decreases; Lodia upgrades one minor
 	// at a time towards it.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
 	// +kubebuilder:validation:Pattern=`^v1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`
 	// +kubebuilder:validation:XValidation:rule="int(self.split('.')[1]) >= int(oldSelf.split('.')[1])",message="the Kubernetes minor version cannot decrease"
-	Version string `json:"version"`
+	Version string `json:"version,omitempty"`
 
 	// highAvailability runs every component with more than one replica,
 	// spread by FailureTolerance, and etcd with three members.
 	// +optional
-	HighAvailability *HighAvailability `json:"highAvailability,omitempty"`
+	HighAvailability HighAvailability `json:"highAvailability,omitzero"`
 
 	// datastore is where the cluster's data lives: an etcd of the tenant's
 	// own.
@@ -83,12 +89,12 @@ type ControlPlaneSpec struct {
 
 	// endpoint is how nodes, people and pods reach the API server.
 	// +required
-	Endpoint Endpoint `json:"endpoint"`
+	Endpoint Endpoint `json:"endpoint,omitzero"`
 
 	// network holds the tenant cluster's address ranges.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="network is immutable"
-	Network Network `json:"network"`
+	Network Network `json:"network,omitzero"`
 
 	// apiServer configures kube-apiserver.
 	// +optional
@@ -125,13 +131,13 @@ type ControlPlaneSpec struct {
 	// restoreFrom starts the datastore from a Backup, whose source this
 	// ControlPlane replaces; set only at creation.
 	// +optional
-	RestoreFrom *RestoreFrom `json:"restoreFrom,omitempty"`
+	RestoreFrom RestoreFrom `json:"restoreFrom,omitzero"`
 
 	// paused stops reconciliation; everything keeps running. In gateway mode
 	// nothing renews the tunnel's client certificate meanwhile: 30 days after
 	// its renewal time every pod of the tenant loses its API.
 	// +optional
-	Paused bool `json:"paused,omitempty"`
+	Paused *bool `json:"paused,omitempty"`
 }
 
 // HighAvailability is the failure a control plane survives.
@@ -143,7 +149,7 @@ type HighAvailability struct {
 	// removed.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="failureTolerance is immutable once set"
-	FailureTolerance FailureTolerance `json:"failureTolerance"`
+	FailureTolerance FailureTolerance `json:"failureTolerance,omitempty"`
 }
 
 // FailureTolerance is the failure domain replicas are spread across.
@@ -151,22 +157,24 @@ type HighAvailability struct {
 type FailureTolerance string
 
 // DatastoreSettings is how the tenant's etcd is built.
+// +kubebuilder:validation:MinProperties=1
 type DatastoreSettings struct {
-	// className names the DatastoreClass the etcd is built from; empty
-	// means the default class.
+	// className names the DatastoreClass the etcd is built from.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	ClassName string `json:"className,omitempty"`
 }
 
 // Endpoint is exactly one of Gateway, LoadBalancer and NodePort. It cannot
 // change but for the load balancer's annotations and source ranges.
+// +kubebuilder:validation:MinProperties=1
 // +kubebuilder:validation:XValidation:rule="[has(self.gateway), has(self.loadBalancer), has(self.nodePort)].filter(x, x).size() == 1",message="set exactly one of gateway, loadBalancer and nodePort"
 // +kubebuilder:validation:XValidation:rule="[has(self.gateway), has(self.loadBalancer), has(self.nodePort), has(self.certSANs)] == [has(oldSelf.gateway), has(oldSelf.loadBalancer), has(oldSelf.nodePort), has(oldSelf.certSANs)] && (!has(self.gateway) || self.gateway == oldSelf.gateway) && (!has(self.loadBalancer) || [has(self.loadBalancer.host), has(self.loadBalancer.class)] == [has(oldSelf.loadBalancer.host), has(oldSelf.loadBalancer.class)] && (!has(self.loadBalancer.host) || self.loadBalancer.host == oldSelf.loadBalancer.host) && (!has(self.loadBalancer.class) || self.loadBalancer.class == oldSelf.loadBalancer.class)) && (!has(self.certSANs) || self.certSANs == oldSelf.certSANs)",message="endpoint is immutable in v1alpha1 but for loadBalancer.annotations and loadBalancer.sourceRanges"
 type Endpoint struct {
 	// gateway attaches routes to a shared Gateway that routes by SNI.
 	// +optional
-	Gateway *GatewayEndpoint `json:"gateway,omitempty"`
+	Gateway GatewayEndpoint `json:"gateway,omitzero"`
 
 	// loadBalancer creates a Service of type LoadBalancer for this control plane.
 	// +optional
@@ -187,11 +195,11 @@ type Endpoint struct {
 type GatewayEndpoint struct {
 	// parentRef is the Gateway with a TLS passthrough listener.
 	// +required
-	ParentRef ParentReference `json:"parentRef"`
+	ParentRef ParentReference `json:"parentRef,omitzero"`
 
 	// hostnames are the names routed to this control plane.
 	// +required
-	Hostnames GatewayHostnames `json:"hostnames"`
+	Hostnames GatewayHostnames `json:"hostnames,omitzero"`
 }
 
 // ParentReference names a Gateway and one of its listeners.
@@ -200,13 +208,13 @@ type ParentReference struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// namespace of the Gateway.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
-	Namespace string `json:"namespace"`
+	Namespace string `json:"namespace,omitempty"`
 
 	// sectionName is the listener's name, required since a route without it
 	// lands on every listener its hostname fits.
@@ -214,7 +222,7 @@ type ParentReference struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
-	SectionName string `json:"sectionName"`
+	SectionName string `json:"sectionName,omitempty"`
 }
 
 // GatewayHostnames are the SNI names of one control plane.
@@ -222,16 +230,16 @@ type ParentReference struct {
 type GatewayHostnames struct {
 	// apiServer is the public API hostname.
 	// +required
-	APIServer Hostname `json:"apiServer"`
+	APIServer Hostname `json:"apiServer,omitempty"`
 
 	// konnectivity is where konnectivity agents connect.
 	// +required
-	Konnectivity Hostname `json:"konnectivity"`
+	Konnectivity Hostname `json:"konnectivity,omitempty"`
 
 	// tunnel is the hostname apiserver-proxy on every node dials, inside
 	// TLS, for the tenant's pods to reach their API server.
 	// +required
-	Tunnel Hostname `json:"tunnel"`
+	Tunnel Hostname `json:"tunnel,omitempty"`
 }
 
 // LoadBalancerEndpoint configures the control plane's LoadBalancer Service.
@@ -245,6 +253,7 @@ type LoadBalancerEndpoint struct {
 
 	// class is the Service's loadBalancerClass.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	Class string `json:"class,omitempty"`
 
@@ -278,14 +287,14 @@ type Network struct {
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
-	ServiceCIDRs []CIDR `json:"serviceCIDRs"`
+	ServiceCIDRs []CIDR `json:"serviceCIDRs,omitempty"`
 
 	// podCIDRs are the ranges node CIDRs are allocated from.
 	// +required
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=2
-	PodCIDRs []CIDR `json:"podCIDRs"`
+	PodCIDRs []CIDR `json:"podCIDRs,omitempty"`
 
 	// clusterDomain is the cluster's DNS domain.
 	// +optional
@@ -299,7 +308,7 @@ type APIServer struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=5
-	Replicas *int32 `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas,omitempty"`
 
 	// advertiseAddress is the address apiserver-proxy owns on every node,
 	// which it does in gateway mode and in loadBalancer mode unless
@@ -307,6 +316,7 @@ type APIServer struct {
 	// 240.0.0.1 by default when the first service range is IPv4, and required
 	// when it is IPv6. It cannot change.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=45
 	// +kubebuilder:validation:XValidation:rule="isIP(self) && ip.isCanonical(self) && ip(self).isGlobalUnicast()",message="must be a unicast IP address in canonical form, neither loopback nor link-local"
 	AdvertiseAddress string `json:"advertiseAddress,omitempty"`
@@ -316,27 +326,32 @@ type APIServer struct {
 	// +optional
 	Authentication *Authentication `json:"authentication,omitempty"`
 
-	// encryption configures encryption of Secrets at rest.
+	// encryption configures encryption of Secrets at rest; its provider
+	// cannot change, an absent one counting as secretbox.
 	// +optional
 	Encryption *Encryption `json:"encryption,omitempty"`
 
 	// extraArgs are flags passed to kube-apiserver, each under its name as
-	// kube-apiserver spells it. The schema refuses the flags Lodia sets;
-	// bind-address, etcd-prefix, etcd-servers-overrides and
-	// shutdown-send-retry-after, whose defaults it relies on; the flags that
-	// conflict with one Lodia sets; help, which ends the process; and version,
-	// which ends it or, given as vX.Y.Z, sets the version it reports while it
-	// runs on. It checks the values of disable-admission-plugins,
-	// service-account-max-token-expiration and event-ttl. Every other flag and
-	// value is passed as written, and a flag or a value kube-apiserver refuses
-	// makes it exit. enable-admission-plugins merges: its entries follow
-	// Lodia's. featureGates sets feature-gates.
+	// kube-apiserver spells it. The schema refuses the flags Lodia sets; those
+	// whose defaults it relies on; the flags that conflict with one Lodia
+	// sets; those that name a file, which no tenant can put in the pod, or act
+	// only with one; the mixed-version proxy's, which would reach every
+	// replica at the one address Lodia advertises for all of them; help, which
+	// ends the process; and version, which ends it or, given as vX.Y.Z, sets
+	// the version it reports while it runs on. It checks the values of
+	// disable-admission-plugins, service-account-max-token-expiration,
+	// event-ttl and runtime-config. Every other flag and value is passed as
+	// written, and a flag or a value kube-apiserver refuses makes it exit,
+	// which APIServerReady names. enable-admission-plugins merges: its entries follow Lodia's.
+	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['advertise-address', 'allow-privileged', 'authentication-config', 'authorization-mode', 'client-ca-file', 'egress-selector-config-file', 'enable-bootstrap-token-auth', 'encryption-provider-config', 'encryption-provider-config-automatic-reload', 'endpoint-reconciler-type', 'etcd-cafile', 'etcd-certfile', 'etcd-keyfile', 'etcd-servers', 'feature-gates', 'goaway-chance', 'kubelet-client-certificate', 'kubelet-client-key', 'kubelet-preferred-address-types', 'proxy-client-cert-file', 'proxy-client-key-file', 'requestheader-allowed-names', 'requestheader-client-ca-file', 'requestheader-extra-headers-prefix', 'requestheader-group-headers', 'requestheader-username-headers', 'secure-port', 'service-account-issuer', 'service-account-jwks-uri', 'service-account-signing-endpoint', 'service-cluster-ip-range', 'shutdown-delay-duration', 'shutdown-watch-termination-grace-period', 'tls-cert-file', 'tls-private-key-file'])",message="Lodia sets this flag"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['bind-address', 'etcd-prefix', 'etcd-servers-overrides', 'shutdown-send-retry-after'])",message="Lodia relies on this flag's default"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['admission-control', 'anonymous-auth', 'authorization-config', 'authorization-policy-file', 'authorization-webhook-cache-authorized-ttl', 'authorization-webhook-cache-unauthorized-ttl', 'authorization-webhook-config-file', 'authorization-webhook-version', 'cert-dir', 'service-account-key-file', 'service-account-signing-key-file'] || k.startsWith('oidc-'))",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['bind-address', 'emulated-version', 'emulation-forward-compatible', 'etcd-prefix', 'etcd-servers-overrides', 'min-compatibility-version', 'request-timeout', 'runtime-config-emulation-forward-compatible', 'shutdown-send-retry-after'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['admission-control', 'anonymous-auth', 'apiserver-count', 'authorization-config', 'authorization-policy-file', 'authorization-webhook-cache-authorized-ttl', 'authorization-webhook-cache-unauthorized-ttl', 'authorization-webhook-config-file', 'authorization-webhook-version', 'cert-dir', 'service-account-key-file', 'service-account-signing-key-file'] || k.startsWith('oidc-'))",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['admission-control-config-file', 'allow-metric-labels-manifest', 'kubelet-certificate-authority', 'tls-sni-cert-key', 'token-auth-file', 'tracing-config-file'] || k.startsWith('audit-') || k.startsWith('authentication-token-webhook-'))",message="this flag names a file, or acts only with one, and the pod holds no file a tenant chooses"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['peer-advertise-ip', 'peer-advertise-port', 'peer-ca-file'])",message="the mixed-version proxy would reach every replica of the API server at the one address Lodia advertises for all of them"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version'])",message="this flag makes the component exit, or report another version than the one it runs"
 	// +kubebuilder:validation:XValidation:rule="!('disable-admission-plugins' in self) || self['disable-admission-plugins'].matches('^[A-Za-z0-9]+(,[A-Za-z0-9]+)*$')",message="disable-admission-plugins is plugin names of letters and digits joined by commas, and nothing else, since kube-apiserver reads it as CSV"
 	// +kubebuilder:validation:XValidation:rule="!('disable-admission-plugins' in self) || !self['disable-admission-plugins'].matches('(^|,)NodeRestriction(,|$)')",message="disable-admission-plugins cannot name NodeRestriction, which Lodia enables"
@@ -344,18 +359,24 @@ type APIServer struct {
 	// +kubebuilder:validation:XValidation:rule="!('service-account-max-token-expiration' in self) || duration(self['service-account-max-token-expiration']) >= duration('1h') && duration(self['service-account-max-token-expiration']) <= duration('8760h')",message="kube-apiserver refuses a service-account-max-token-expiration other than 0 under 1h, and one above 8760h, the longest token lodia-signer signs; 0 means 8760h, so leave the flag out instead"
 	// +kubebuilder:validation:XValidation:rule="!('event-ttl' in self) || self['event-ttl'].matches('^[-+]?(0|(([0-9]+([.][0-9]*)?|[.][0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$')",message="event-ttl is a duration as Go's time.ParseDuration reads it, such as 1h30m0s or 3600s"
 	// +kubebuilder:validation:XValidation:rule="!('event-ttl' in self) || duration(self['event-ttl']) >= duration('1h')",message="event-ttl is at least 1h, kube-apiserver's default: with 0 Events never expire and fill the tenant's etcd to its quota, and an Event's lease that expires during a restore through deltas aborts it or drops a write (etcd-backup-restore#1045, #1046)"
-	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="!('runtime-config' in self) || self['runtime-config'].matches('^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?){0,2}=(true|false)(,[a-z0-9]([-a-z0-9.]*[a-z0-9])?(/[a-z0-9]([-a-z0-9.]*[a-z0-9])?){0,2}=(true|false))*$')",message="runtime-config is pairs of an API or api/all, api/ga, api/beta or api/alpha and true or false, joined by commas, and nothing else, since kube-apiserver trims spaces and reads an empty value, 1 and t as true"
+	// +kubebuilder:validation:XValidation:rule="!('runtime-config' in self) || !self['runtime-config'].matches('(^|,)(api/(all|ga)|((api/)?v1|(apps|rbac[.]authorization[.]k8s[.]io|discovery[.]k8s[.]io|coordination[.]k8s[.]io|certificates[.]k8s[.]io|authentication[.]k8s[.]io|authorization[.]k8s[.]io|apiregistration[.]k8s[.]io)/v1)(/[^,=]+)?)=false(,|$)')",message="runtime-config cannot turn off api/all, api/ga, or a group version Lodia's controllers use or a resource of one: v1, apps/v1, rbac.authorization.k8s.io/v1, discovery.k8s.io/v1, coordination.k8s.io/v1, certificates.k8s.io/v1, authentication.k8s.io/v1, authorization.k8s.io/v1 and apiregistration.k8s.io/v1"
+	// +kubebuilder:validation:XValidation:rule="!('runtime-config' in self) || !self['runtime-config'].matches('(^|,)(admissionregistration[.]k8s[.]io|apiextensions[.]k8s[.]io|networking[.]k8s[.]io|node[.]k8s[.]io|resource[.]k8s[.]io|scheduling[.]k8s[.]io|storage[.]k8s[.]io)/v1(/[^,=]+)?=false(,|$)')",message="runtime-config cannot turn off a group version kube-apiserver needs to become ready, or a resource of one: admissionregistration.k8s.io/v1, apiextensions.k8s.io/v1, networking.k8s.io/v1, node.k8s.io/v1, resource.k8s.io/v1, scheduling.k8s.io/v1 and storage.k8s.io/v1"
+	ExtraArgs map[string]FlagValue `json:"extraArgs,omitempty"`
 
-	// featureGates are passed to kube-apiserver.
+	// featureGates are passed to kube-apiserver, each under its gate's bare
+	// name.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="!('ExternalServiceAccountTokenSigner' in self) || self['ExternalServiceAccountTokenSigner']",message="kube-apiserver refuses service-account-signing-endpoint, which Lodia sets, without ExternalServiceAccountTokenSigner"
 	// +kubebuilder:validation:XValidation:rule="!('StructuredAuthenticationConfigurationEgressSelector' in self) || self['StructuredAuthenticationConfigurationEgressSelector']",message="kube-apiserver refuses the egressSelectorType Lodia renders for every JWT authenticator without StructuredAuthenticationConfigurationEgressSelector"
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))",message="a key must be a gate's bare name, a capital letter then letters and digits, with no component prefix and no spaces: the component reads kube:<gate> and a name with spaces around it as the gate, which the rules that name a gate would miss"
+	// +kubebuilder:validation:XValidation:rule="!('AllAlpha' in self) && !('AllBeta' in self)",message="AllAlpha and AllBeta are refused, true or false: each sets every alpha or beta gate the map does not name, a set that changes with every minor, true turning on gates that need an API kube-apiserver does not serve by default and AllBeta: false turning off those on by default; name each gate instead"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// resources override the operator's defaults.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // Encryption is how Secrets are encrypted in the datastore.
@@ -370,64 +391,82 @@ type Encryption struct {
 // +kubebuilder:validation:Enum=None;secretbox;aescbc
 type EncryptionProvider string
 
+// FlagValue is a flag's value as a component reads it.
+// +kubebuilder:validation:MaxLength=4096
+type FlagValue string
+
 // Component configures kube-controller-manager.
 type Component struct {
 	// extraArgs are flags passed to the component, each under its name as the
-	// component spells it. The schema refuses the flags Lodia sets;
-	// authorization-always-allow-paths and secure-port, whose defaults it
-	// relies on; the flags that conflict with one Lodia sets; help, which ends
-	// the process; and version, which ends it or, given as vX.Y.Z, sets the
-	// version it reports while it runs on. It checks the values of the node
-	// mask sizes. Every other flag and value is passed as written, and a flag
-	// or a value the component refuses makes it exit. controllers merges: its
-	// entries follow Lodia's. featureGates sets feature-gates.
+	// component spells it. The schema refuses the flags Lodia sets; those
+	// whose defaults it relies on; the flags that conflict with one Lodia
+	// sets; those that name a file, which no tenant can put in the pod; help,
+	// which ends the process; and version, which ends it or, given as vX.Y.Z,
+	// sets the version it reports while it runs on. It checks the values of
+	// the node mask sizes and of controllers. Every other flag and value is
+	// passed as written, and a flag or a value the component refuses makes it
+	// exit, which APIServerReady names. controllers merges: its entries follow Lodia's. featureGates sets
+	// feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allocate-node-cidrs', 'authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'client-ca-file', 'cluster-cidr', 'cluster-name', 'cluster-signing-duration', 'cluster-signing-kubelet-client-cert-file', 'cluster-signing-kubelet-client-key-file', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-lease-duration', 'leader-elect-renew-deadline', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace', 'leader-elect-retry-period', 'node-monitor-grace-period', 'node-monitor-period', 'requestheader-client-ca-file', 'root-ca-file', 'service-cluster-ip-range', 'use-service-account-credentials'])",message="Lodia sets this flag"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'secure-port'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'cidr-allocator-type', 'emulated-version', 'min-compatibility-version', 'secure-port'])",message="Lodia relies on this flag's default"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['cluster-signing-cert-file', 'cluster-signing-key-file', 'master', 'service-account-private-key-file'])",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allow-metric-labels-manifest', 'cloud-config', 'cluster-signing-kube-apiserver-client-cert-file', 'cluster-signing-kube-apiserver-client-key-file', 'cluster-signing-kubelet-serving-cert-file', 'cluster-signing-kubelet-serving-key-file', 'cluster-signing-legacy-unknown-cert-file', 'cluster-signing-legacy-unknown-key-file', 'leader-migration-config', 'pv-recycler-pod-template-filepath-hostpath', 'pv-recycler-pod-template-filepath-nfs', 'tls-cert-file', 'tls-private-key-file', 'tls-sni-cert-key'])",message="this flag names a file, and the pod holds no file a tenant chooses"
 	// +kubebuilder:validation:XValidation:rule="['node-cidr-mask-size', 'node-cidr-mask-size-ipv4', 'node-cidr-mask-size-ipv6'].all(k, !(k in self) || self[k].matches('^[1-9][0-9]*$'))",message="a node mask size is a positive decimal number without a sign or a leading zero, since kube-controller-manager reads 024 as octal and 0 as unset"
+	// +kubebuilder:validation:XValidation:rule="!('node-cidr-mask-size-ipv4' in self) || int(self['node-cidr-mask-size-ipv4']) <= 32",message="node-cidr-mask-size-ipv4 is at most 32, the length of an IPv4 address: kube-controller-manager allocates no node range from a longer mask, and says nothing"
+	// +kubebuilder:validation:XValidation:rule="['node-cidr-mask-size', 'node-cidr-mask-size-ipv6'].all(k, !(k in self) || int(self[k]) <= 128)",message="a node mask size is at most 128, the length of an IPv6 address: kube-controller-manager allocates no node range from a longer mask, and says nothing"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version'])",message="this flag makes the component exit, or report another version than the one it runs"
-	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="!('controllers' in self) || self['controllers'].matches('^([*]|-?[a-z0-9]+(-[a-z0-9]+)*)(,([*]|-?[a-z0-9]+(-[a-z0-9]+)*))*$')",message="controllers is names of controllers, each perhaps after a dash, or *, joined by commas, and nothing else, since kube-controller-manager reads it as CSV"
+	// +kubebuilder:validation:XValidation:rule="!('controllers' in self) || !self['controllers'].matches('(^|,)-(certificatesigningrequest-signing-controller|csrsigning|certificatesigningrequest-approving-controller|csrapproving|bootstrap-signer-controller|bootstrapsigner|token-cleaner-controller|tokencleaner|root-ca-certificate-publisher-controller|root-ca-cert-publisher)(,|$)')",message="controllers cannot turn off a controller nodes join by: the CSR signer and approver, the bootstrap signer, the token cleaner and the root CA publisher"
+	ExtraArgs map[string]FlagValue `json:"extraArgs,omitempty"`
 
-	// featureGates are passed to the component.
+	// featureGates are passed to the component, each under its gate's bare
+	// name and set to the same value in apiServer.featureGates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))",message="a key must be a gate's bare name, a capital letter then letters and digits, with no component prefix and no spaces: the component reads kube:<gate> and a name with spaces around it as the gate, which the rules that name a gate would miss"
+	// +kubebuilder:validation:XValidation:rule="!('AllAlpha' in self) && !('AllBeta' in self)",message="AllAlpha and AllBeta are refused, true or false: each sets every alpha or beta gate the map does not name, a set that changes with every minor, true turning on gates that need an API kube-apiserver does not serve by default and AllBeta: false turning off those on by default; name each gate instead"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// resources override the operator's defaults.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // Scheduler configures kube-scheduler.
 type Scheduler struct {
 	// extraArgs are flags passed to kube-scheduler, each under its name as
-	// kube-scheduler spells it. The schema refuses the flags Lodia sets;
-	// authorization-always-allow-paths and secure-port, whose defaults it
-	// relies on; the flags that conflict with one Lodia sets; help and
-	// write-config-to, which end the process; and version, which ends it or,
-	// given as vX.Y.Z, sets the version it reports while it runs on. Every
+	// kube-scheduler spells it. The schema refuses the flags Lodia sets; those
+	// whose defaults it relies on; the flags that conflict with one Lodia
+	// sets; those that name a file, which no tenant can put in the pod; help
+	// and write-config-to, which end the process; and version, which ends it
+	// or, given as vX.Y.Z, sets the version it reports while it runs on. Every
 	// other flag and value is passed as written, and a flag or a value
-	// kube-scheduler refuses makes it exit. featureGates sets feature-gates.
+	// kube-scheduler refuses makes it exit, which APIServerReady names.
+	// featureGates sets feature-gates.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[a-z0-9]+(-[a-z0-9]+)*$'))",message="a key must be a flag's name as the component spells it: lowercase letters and digits in words joined by single dashes"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authentication-kubeconfig', 'authorization-kubeconfig', 'bind-address', 'feature-gates', 'kubeconfig', 'leader-elect', 'leader-elect-resource-lock', 'leader-elect-resource-name', 'leader-elect-resource-namespace'])",message="Lodia sets this flag"
-	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'secure-port'])",message="Lodia relies on this flag's default"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['authorization-always-allow-paths', 'emulated-version', 'min-compatibility-version', 'secure-port'])",message="Lodia relies on this flag's default"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['config', 'master'])",message="this flag conflicts with one Lodia sets"
+	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['allow-metric-labels-manifest', 'client-ca-file', 'requestheader-client-ca-file', 'tls-cert-file', 'tls-private-key-file', 'tls-sni-cert-key'])",message="this flag names a file, and the pod holds no file a tenant chooses"
 	// +kubebuilder:validation:XValidation:rule="!self.exists(k, k in ['help', 'version', 'write-config-to'])",message="this flag makes the component exit, or report another version than the one it runs"
-	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
+	ExtraArgs map[string]FlagValue `json:"extraArgs,omitempty"`
 
-	// featureGates are passed to kube-scheduler.
+	// featureGates are passed to kube-scheduler, each under its gate's bare
+	// name.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k.matches('^[A-Z][A-Za-z0-9]*$'))",message="a key must be a gate's bare name, a capital letter then letters and digits, with no component prefix and no spaces: the component reads kube:<gate> and a name with spaces around it as the gate, which the rules that name a gate would miss"
+	// +kubebuilder:validation:XValidation:rule="!('AllAlpha' in self) && !('AllBeta' in self)",message="AllAlpha and AllBeta are refused, true or false: each sets every alpha or beta gate the map does not name, a set that changes with every minor, true turning on gates that need an API kube-apiserver does not serve by default and AllBeta: false turning off those on by default; name each gate instead"
 	FeatureGates map[string]bool `json:"featureGates,omitempty"`
 
 	// resources override the operator's defaults.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // Addons are the components Lodia runs inside the tenant cluster.
@@ -448,9 +487,10 @@ type Addons struct {
 // Konnectivity configures konnectivity-server and its agents.
 type Konnectivity struct {
 	// version pins the konnectivity version across a Kubernetes upgrade;
-	// empty follows the version table.
+	// absent follows the version table.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^v0\.[0-9]+\.[0-9]+$`
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
@@ -470,7 +510,7 @@ type KonnectivityAgent struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=10
-	Replicas *int32 `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas,omitempty"`
 }
 
 // AgentMode is how konnectivity agents run.
@@ -492,6 +532,7 @@ type KubeProxy struct {
 	// healthzBindAddress is the IP address kube-proxy serves its health port,
 	// 10256, on: beyond loopback for cloud load balancers; loopback by default.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=45
 	// +kubebuilder:validation:XValidation:rule="isIP(self)",message="must be an IP address"
 	HealthzBindAddress string `json:"healthzBindAddress,omitempty"`
@@ -527,33 +568,61 @@ type CoreDNS struct {
 	// +kubebuilder:default=2
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=10
-	Replicas *int32 `json:"replicas,omitempty"`
+	Replicas int32 `json:"replicas,omitempty"`
 }
 
-// Placement says where a control plane's pods run.
+// Placement says where pods run, as pod validation takes it.
 type Placement struct {
-	// nodeSelector for every control plane pod.
+	// nodeSelector for every pod: label names and values.
 	// +optional
 	// +kubebuilder:validation:MaxProperties=16
-	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	// +kubebuilder:validation:XValidation:rule="self.all(k, size(k) <= 317 && k.matches('^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$') && (k.contains('/') ? size(k.split('/')[0]) <= 253 && size(k.split('/')[1]) <= 63 : size(k) <= 63))",message="a key must be a label's name: at most 63 alphanumerics, dashes, underscores and dots that begin and end with an alphanumeric, after a lowercase DNS subdomain of at most 253 characters and a slash"
+	NodeSelector map[string]LabelValue `json:"nodeSelector,omitempty"`
 
-	// tolerations for every control plane pod.
+	// tolerations for every pod.
 	// +optional
 	// +listType=atomic
 	// +kubebuilder:validation:MaxItems=16
-	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+	Tolerations []Toleration `json:"tolerations,omitempty"`
 
-	// priorityClassName for every control plane pod.
+	// priorityClassName for every pod, a lowercase DNS subdomain.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:XValidation:rule="self.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*$')",message="must be a lowercase DNS subdomain"
 	PriorityClassName string `json:"priorityClassName,omitempty"`
+}
+
+// PodNodeSelector is p's node selector as a pod takes it.
+func (p *Placement) PodNodeSelector() map[string]string {
+	if len(p.NodeSelector) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(p.NodeSelector))
+	for k, v := range p.NodeSelector {
+		out[k] = string(v)
+	}
+	return out
+}
+
+// PodTolerations are p's tolerations as a pod takes them.
+func (p *Placement) PodTolerations() []corev1.Toleration {
+	var out []corev1.Toleration
+	for _, t := range p.Tolerations {
+		toleration := corev1.Toleration{Key: t.Key, Operator: t.Operator, Value: string(t.Value), Effect: t.Effect}
+		if t.TolerationSeconds != nil {
+			toleration.TolerationSeconds = new(*t.TolerationSeconds)
+		}
+		out = append(out, toleration)
+	}
+	return out
 }
 
 // Maintenance is when Lodia may roll the changes it initiates.
 type Maintenance struct {
 	// window is the daily maintenance window; without one, any time.
 	// +optional
-	Window *MaintenanceWindow `json:"window,omitempty"`
+	Window MaintenanceWindow `json:"window,omitzero"`
 
 	// autoUpdate opts into updates Lodia applies in the window.
 	// +optional
@@ -566,17 +635,20 @@ type Maintenance struct {
 type MaintenanceWindow struct {
 	// begin is HH:MM.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
-	Begin string `json:"begin"`
+	Begin string `json:"begin,omitempty"`
 
 	// end is HH:MM.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
-	End string `json:"end"`
+	End string `json:"end,omitempty"`
 
 	// timeZone is an IANA time zone; UTC by default. One the operator's
 	// embedded zone database lacks is TimeZoneUnsupported.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	TimeZone string `json:"timeZone,omitempty"`
 }
@@ -586,7 +658,7 @@ type AutoUpdate struct {
 	// kubernetesPatch moves to the newest patch of the running minor that
 	// the operator's version table names, in the window.
 	// +optional
-	KubernetesPatch bool `json:"kubernetesPatch,omitempty"`
+	KubernetesPatch *bool `json:"kubernetesPatch,omitempty"`
 }
 
 // Health configures the protection of the tenant's workloads.
@@ -603,6 +675,7 @@ type ServiceAccount struct {
 	// issuer is the tokens' issuer and the OIDC discovery URL; the public API
 	// URL by default.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://')",message="must be an https URL"
 	Issuer string `json:"issuer,omitempty"`
@@ -617,7 +690,7 @@ type RestoreFrom struct {
 	// tenant's.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="restoreFrom.backupRef is immutable"
-	BackupRef LocalReference `json:"backupRef"`
+	BackupRef LocalReference `json:"backupRef,omitzero"`
 
 	// release is Pending until the owner has made sure nothing outside the
 	// cluster acts on the restored objects, then Released, for good.
@@ -640,6 +713,7 @@ const (
 )
 
 // ControlPlaneStatus is what Lodia observed and did.
+// +kubebuilder:validation:MinProperties=1
 // +kubebuilder:validation:XValidation:rule="!has(oldSelf.memberRestore) || has(self.memberRestore)",message="memberRestore cannot be removed once set"
 // +kubebuilder:validation:XValidation:rule="!oldSelf.?components.?apiServer.?memberRestoreDetectedAt.hasValue() || self.?components.?apiServer.?memberRestoreDetectedAt.hasValue()",message="components.apiServer.memberRestoreDetectedAt cannot be removed once set"
 // +kubebuilder:validation:XValidation:rule="!oldSelf.?components.?controllerManager.?memberRestoreDetectedAt.hasValue() || self.?components.?controllerManager.?memberRestoreDetectedAt.hasValue()",message="components.controllerManager.memberRestoreDetectedAt cannot be removed once set"
@@ -656,7 +730,7 @@ type ControlPlaneStatus struct {
 	// observedGeneration is the newest generation every readiness condition
 	// has been reported for.
 	// +optional
-	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	ObservedGeneration *int64 `json:"observedGeneration,omitempty"`
 
 	// target is what Lifecycle rolls now.
 	// +optional
@@ -668,7 +742,7 @@ type ControlPlaneStatus struct {
 
 	// rehearsal is the minor step the condition Rehearsed is about.
 	// +optional
-	Rehearsal *RehearsalStatus `json:"rehearsal,omitempty"`
+	Rehearsal RehearsalStatus `json:"rehearsal,omitzero"`
 
 	// components are the rollouts of the API server, the controller manager
 	// and the scheduler.
@@ -681,7 +755,7 @@ type ControlPlaneStatus struct {
 
 	// endpoint is where the control plane is reachable.
 	// +optional
-	Endpoint *EndpointStatus `json:"endpoint,omitempty"`
+	Endpoint EndpointStatus `json:"endpoint,omitzero"`
 
 	// credentials are the Secrets clients need.
 	// +optional
@@ -689,13 +763,13 @@ type ControlPlaneStatus struct {
 
 	// datastore is the store in use.
 	// +optional
-	Datastore *DatastoreStatus `json:"datastore,omitempty"`
+	Datastore DatastoreStatus `json:"datastore,omitzero"`
 
 	// restore is the restore this ControlPlane's data came from. The Datastore
 	// controller writes it and keeps it for the ControlPlane's life, with or
 	// without a store.
 	// +optional
-	Restore *RestoreStatus `json:"restore,omitempty"`
+	Restore RestoreStatus `json:"restore,omitzero"`
 
 	// memberRestore is the last member of the dedicated etcd that the
 	// Datastore controller found restored from the store's snapshots or
@@ -704,11 +778,11 @@ type ControlPlaneStatus struct {
 	// the scheduler, once for each. The next one replaces it, and it is kept
 	// for the ControlPlane's life, with or without a store.
 	// +optional
-	MemberRestore *MemberRestoreStatus `json:"memberRestore,omitempty"`
+	MemberRestore MemberRestoreStatus `json:"memberRestore,omitzero"`
 
 	// nodes summarise the tenant's nodes.
 	// +optional
-	Nodes *NodesStatus `json:"nodes,omitempty"`
+	Nodes NodesStatus `json:"nodes,omitzero"`
 
 	// health is present while Lodia holds the controller manager.
 	// +optional
@@ -726,6 +800,7 @@ type Target struct {
 	// maintenance.autoUpdate.kubernetesPatch the newest patch of that minor,
 	// moved in the window.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
@@ -733,6 +808,7 @@ type Target struct {
 	// with: the operator's build version and a digest of its rendering
 	// configuration, compared for equality only.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
 
@@ -741,7 +817,7 @@ type Target struct {
 	// class, or a class created again under its name, reaches the Etcd once
 	// Lifecycle grants it, in the window.
 	// +optional
-	DatastoreClass *DatastoreClassGeneration `json:"datastoreClass,omitempty"`
+	DatastoreClass DatastoreClassGeneration `json:"datastoreClass,omitzero"`
 
 	// scheduledFor is when a change Lodia initiates may roll: while it waits
 	// for the window, the window's next start; while it waits for a slot of
@@ -756,6 +832,7 @@ type KubernetesStatus struct {
 	// version is the oldest of the versions the components and the addons
 	// report, and absent until all of them do.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
@@ -763,7 +840,7 @@ type KubernetesStatus struct {
 	// moving the target or a minor step passing its preflight, until every
 	// component and the addons run target.version.
 	// +optional
-	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
+	Upgrade UpgradeStatus `json:"upgrade,omitzero"`
 }
 
 // RehearsalStatus names the minor step a rehearsal ran for.
@@ -772,7 +849,7 @@ type RehearsalStatus struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
-	Version string `json:"version"`
+	Version string `json:"version,omitempty"`
 }
 
 // UpgradeStatus is the version change in progress.
@@ -782,11 +859,11 @@ type UpgradeStatus struct {
 	// before the target moves, then the first of the others not at the
 	// target yet.
 	// +required
-	Step UpgradeStep `json:"step"`
+	Step UpgradeStep `json:"step,omitempty"`
 
 	// startedAt is when the version change started.
 	// +required
-	StartedAt metav1.Time `json:"startedAt"`
+	StartedAt metav1.Time `json:"startedAt,omitzero"`
 }
 
 // UpgradeStep is a step of a version change, in their order: the rehearsal
@@ -808,13 +885,13 @@ const (
 type ComponentsStatus struct {
 	// apiServer is the rollout of the API server.
 	// +optional
-	APIServer *ComponentStatus `json:"apiServer,omitempty"`
+	APIServer ComponentStatus `json:"apiServer,omitzero"`
 	// controllerManager is the rollout of the controller manager.
 	// +optional
-	ControllerManager *ComponentStatus `json:"controllerManager,omitempty"`
+	ControllerManager ComponentStatus `json:"controllerManager,omitzero"`
 	// scheduler is the rollout of the scheduler.
 	// +optional
-	Scheduler *ComponentStatus `json:"scheduler,omitempty"`
+	Scheduler ComponentStatus `json:"scheduler,omitzero"`
 }
 
 // ComponentStatus counts one component's replicas, those its Deployment asks
@@ -842,12 +919,14 @@ type ComponentStatus struct {
 type Rendered struct {
 	// version is the Kubernetes version of that render.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=16
 	Version string `json:"version,omitempty"`
 
 	// operatorRevision is the operator revision of that render, which the
 	// annotation lodia.io/operator-revision on its objects records.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
 }
@@ -858,23 +937,23 @@ type Rendered struct {
 type EndpointStatus struct {
 	// apiServer is the API server's public endpoint.
 	// +required
-	APIServer HostPort `json:"apiServer"`
+	APIServer HostPort `json:"apiServer,omitzero"`
 
 	// konnectivity is where konnectivity agents reach the konnectivity
 	// server.
 	// +required
-	Konnectivity HostPort `json:"konnectivity"`
+	Konnectivity HostPort `json:"konnectivity,omitzero"`
 
 	// inCluster is where the tenant's pods reach the API server: the
 	// endpoint of its kubernetes Service, which Tenant writes.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="isIP(self.host)",message="must be an IP address"
-	InCluster HostPort `json:"inCluster"`
+	InCluster HostPort `json:"inCluster,omitzero"`
 
 	// tunnel is where apiserver-proxy reaches the API server for the
 	// tenant's pods; in gateway mode only.
 	// +optional
-	Tunnel *HostPort `json:"tunnel,omitempty"`
+	Tunnel HostPort `json:"tunnel,omitzero"`
 }
 
 // HostPort is a host and a port.
@@ -885,24 +964,24 @@ type HostPort struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:XValidation:rule="isIP(self) || self.matches('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?([.][a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*$') && !self.matches('^[0-9.]+$')",message="must be an IP address or a lowercase DNS name"
-	Host string `json:"host"`
+	Host string `json:"host,omitempty"`
 
 	// port is a TCP port.
 	// +required
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port"`
+	Port int32 `json:"port,omitempty"`
 }
 
 // CredentialsStatus names the Secrets clients need.
 type CredentialsStatus struct {
 	// adminKubeconfigSecretRef names the admin kubeconfig Secret.
 	// +optional
-	AdminKubeconfigSecretRef *LocalReference `json:"adminKubeconfigSecretRef,omitempty"`
+	AdminKubeconfigSecretRef LocalReference `json:"adminKubeconfigSecretRef,omitzero"`
 
 	// caBundleSecretRef names the CAs a client must trust now.
 	// +optional
-	CABundleSecretRef *LocalReference `json:"caBundleSecretRef,omitempty"`
+	CABundleSecretRef LocalReference `json:"caBundleSecretRef,omitzero"`
 
 	// notAfter is the earliest expiry among the certificates PKI's Secrets
 	// hold for this ControlPlane, its CAs among them. It counts each Secret's
@@ -921,22 +1000,23 @@ type DatastoreStatus struct {
 	// +listType=atomic
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=9
-	Endpoints []HostPort `json:"endpoints"`
+	Endpoints []HostPort `json:"endpoints,omitempty"`
 
 	// class is the DatastoreClass a dedicated etcd was built from.
 	// +optional
-	Class *DatastoreClassStatus `json:"class,omitempty"`
+	Class DatastoreClassStatus `json:"class,omitzero"`
 
 	// members counts the etcd members.
 	// +required
-	Members RolloutCount `json:"members"`
+	Members RolloutCount `json:"members,omitzero"`
 
 	// snapshots is where the etcd's continuous snapshots go.
 	// +optional
-	Snapshots *SnapshotLocation `json:"snapshots,omitempty"`
+	Snapshots SnapshotLocation `json:"snapshots,omitzero"`
 
 	// operatorRevision is the operator revision the Etcd was rendered with.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=128
 	OperatorRevision string `json:"operatorRevision,omitempty"`
 }
@@ -946,10 +1026,11 @@ type DatastoreStatus struct {
 type SnapshotLocation struct {
 	// provider is the object store's kind.
 	// +required
-	Provider StoreProvider `json:"provider"`
+	Provider StoreProvider `json:"provider,omitempty"`
 
-	// endpoint of an S3-compatible store; empty for the provider's own.
+	// endpoint of an S3-compatible store; absent for the provider's own.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	Endpoint string `json:"endpoint,omitempty"`
 
@@ -957,13 +1038,13 @@ type SnapshotLocation struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
-	Bucket string `json:"bucket"`
+	Bucket string `json:"bucket,omitempty"`
 
 	// prefix is the prefix in the bucket.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
-	Prefix string `json:"prefix"`
+	Prefix string `json:"prefix,omitempty"`
 }
 
 // RestoreStatus is a completed restore from a Backup: the Datastore
@@ -972,17 +1053,17 @@ type SnapshotLocation struct {
 type RestoreStatus struct {
 	// backup is the Backup restored.
 	// +required
-	Backup UIDReference `json:"backup"`
+	Backup UIDReference `json:"backup,omitzero"`
 
 	// source is the ControlPlane the Backup was taken of, which this one
 	// replaces: while one with its UID exists in the namespace, the
 	// controller manager does not run.
 	// +required
-	Source UIDReference `json:"source"`
+	Source UIDReference `json:"source,omitzero"`
 
 	// completedAt is when the restored data was cleaned up and snapshotted.
 	// +required
-	CompletedAt metav1.Time `json:"completedAt"`
+	CompletedAt metav1.Time `json:"completedAt,omitzero"`
 }
 
 // MemberRestoreStatus is a member of the dedicated etcd that came back with a
@@ -993,19 +1074,19 @@ type MemberRestoreStatus struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Member string `json:"member"`
+	Member string `json:"member,omitempty"`
 
 	// detectedAt is when an operator replica found the new data life, up to
 	// about two minutes after it began, or one second after the detectedAt of
 	// the record it replaced when that is not earlier.
 	// +required
 	// +kubebuilder:validation:XValidation:rule="self >= oldSelf",message="memberRestore.detectedAt cannot move back"
-	DetectedAt metav1.Time `json:"detectedAt"`
+	DetectedAt metav1.Time `json:"detectedAt,omitzero"`
 
 	// from is Snapshots for a member restored from the store's snapshots, and
 	// Empty for one that started empty.
 	// +required
-	From MemberRestoreFrom `json:"from"`
+	From MemberRestoreFrom `json:"from,omitempty"`
 
 	// reportedAt is when DatastoreReady first reported it, as MemberRestored.
 	// +optional
@@ -1046,7 +1127,7 @@ type DatastoreClassStatus struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	DatastoreClassGeneration `json:",inline"`
 }
@@ -1060,12 +1141,12 @@ type DatastoreClassGeneration struct {
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=36
-	UID types.UID `json:"uid"`
+	UID types.UID `json:"uid,omitempty"`
 
 	// generation is the class's generation.
 	// +required
 	// +kubebuilder:validation:Minimum=1
-	Generation int64 `json:"generation"`
+	Generation int64 `json:"generation,omitempty"`
 }
 
 // Count is how many there are and how many of them are ready.
@@ -1073,12 +1154,12 @@ type Count struct {
 	// total is how many there are.
 	// +required
 	// +kubebuilder:validation:Minimum=0
-	Total int32 `json:"total"`
+	Total *int32 `json:"total,omitempty"`
 
 	// ready never exceeds Total.
 	// +required
 	// +kubebuilder:validation:Minimum=0
-	Ready int32 `json:"ready"`
+	Ready *int32 `json:"ready,omitempty"`
 }
 
 // NodesStatus summarises the tenant's nodes.
@@ -1087,10 +1168,11 @@ type NodesStatus struct {
 
 	// outdatedKubelets run an older minor than the control plane.
 	// +optional
-	OutdatedKubelets int32 `json:"outdatedKubelets,omitempty"`
+	OutdatedKubelets *int32 `json:"outdatedKubelets,omitempty"`
 
 	// oldestKubelet is the oldest version a node's kubelet reports.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	OldestKubelet string `json:"oldestKubelet,omitempty"`
 
@@ -1098,7 +1180,7 @@ type NodesStatus struct {
 	// and ready count what it read, and outdatedKubelets and oldestKubelet are
 	// absent.
 	// +optional
-	Truncated bool `json:"truncated,omitempty"`
+	Truncated *bool `json:"truncated,omitempty"`
 }
 
 // HealthStatus reports the controller manager hold.
@@ -1114,6 +1196,7 @@ type MaintenanceStatus struct {
 	// lodia.io/maintain-requested-at that Lifecycle acted on last; a value
 	// longer than this field holds is not handled.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=256
 	LastHandled string `json:"lastHandled,omitempty"`
 
@@ -1137,8 +1220,8 @@ type ControllerManagerHold struct {
 	Since *metav1.Time `json:"since,omitempty"`
 	// silentNodes is how many of the counted nodes are silent.
 	// +optional
-	SilentNodes int32 `json:"silentNodes,omitempty"`
+	SilentNodes *int32 `json:"silentNodes,omitempty"`
 	// countedNodes is how many nodes the hold counts.
 	// +optional
-	CountedNodes int32 `json:"countedNodes,omitempty"`
+	CountedNodes *int32 `json:"countedNodes,omitempty"`
 }

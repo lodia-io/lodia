@@ -260,7 +260,7 @@ func holdStatus(chosen row, lease *leaderLease) *lodiav1alpha1.HealthStatus {
 	}
 	hold := &lodiav1alpha1.ControllerManagerHold{}
 	if chosen.counts {
-		hold.SilentNodes, hold.CountedNodes = int32(chosen.silent), int32(chosen.counted)
+		hold.SilentNodes, hold.CountedNodes = new(int32(chosen.silent)), new(int32(chosen.counted))
 	}
 	if lease.Spec.AcquireTime != nil {
 		hold.Since = new(metav1.NewTime(lease.Spec.AcquireTime.Time).Rfc3339Copy())

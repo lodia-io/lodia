@@ -7,7 +7,7 @@ Installation is in [`README.md`](README.md#installation).
 
 | task | how |
 |---|---|
-| Get access as a person | create a `KubeconfigRequest` for a key of your own ([steps](#access-as-a-person)); its `status.kubeconfig` works with that key until `status.expirationTimestamp` |
+| Get access as a person | create a `KubeconfigRequest` for a key of your own ([steps](#access-as-a-person)); its `status.kubeconfig` works with that key until `status.expirationTime` |
 | Get access for automation | grant `get` on the Secret `<cp>-admin-kubeconfig` by `resourceNames`, never on the namespace's Secrets, which hold the class's backup credentials in `<cp>-etcd-backup`; read it; every copy is revoked by the client CA rotation (phase 3), not by deleting the ClusterRoleBinding `lodia:cluster-admins` in the tenant, which PKI applies again on its next pass |
 | Let people log in with an OIDC provider's tokens | set `spec.apiServer.authentication.jwt` ([example](api/examples/controlplane-oidc.yaml)) and bind the users and groups it maps inside the tenant ([steps](#logging-in-with-an-oidc-provider)); an edit reloads without a restart |
 | Join a node | with an admin kubeconfig: `kubeadm token create --print-join-command --kubeconfig admin.kubeconfig`; run the printed `kubeadm join …` on the machine; it needs outbound 443 to the endpoint and nothing inbound |
@@ -191,7 +191,7 @@ kubectl get nodes --kubeconfig=prod-eu.kubeconfig
 
 Without `access` the certificate carries no group, and the tenant's RBAC on `lodia:user:<user>` decides.
 `ClusterAdmin` needs `create` on `controlplanes/adminkubeconfig` for that `ControlPlane`; a request that is not `Ready` says why in its condition ([reasons](api/controlplane.md#kubeconfigrequest)).
-The request is deleted at its deadline; deleting it earlier revokes nothing, the certificate works until `status.expirationTimestamp`.
+The request is deleted at its deadline; deleting it earlier revokes nothing, the certificate works until `status.expirationTime`.
 
 ### Logging in with an OIDC provider
 
@@ -674,7 +674,7 @@ A [CA rotation](#forced-ca-rotation) mends it, from phase 3.
 ### LodiaBackupStale
 
 Warning, after 5 minutes of `BackupReady` reading `BackupFailed`, which etcd-druid reports once the last delta snapshot is three delta snapshot periods old ([check_backup_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/health/condition/check_backup_ready.go#L101-L120)), or `Unknown` for more than three periods since its last transition, as a store that never worked reads: 20 minutes after the last snapshot at the class's default period.
-A class without a backup store (`NoBackupStore`), an `Etcd` whose store its status cannot hold (`StoreUnsupported`) and a class whose `deltaSnapshotPeriod` is below a second, which takes no delta snapshots, never fire it.
+A class without a backup store (`NoBackupStore`), an `Etcd` whose store its status cannot hold (`StoreUnsupported`) and a class whose `deltaSnapshotPeriodSeconds` is 0, which takes no delta snapshots, never fire it.
 Look at the backup sidecar's log in the etcd's pods and at the class's bucket credentials; etcd-druid's message is in the condition.
 
 ### LodiaEtcdSpaceNearQuota
@@ -697,7 +697,7 @@ etcd compares those hashes only when its config turns a check on ([server.go](ht
 ### LodiaEtcdMemberRestored
 
 Warning, for 24 hours after `status.memberRestore.detectedAt` and 4 minutes more, a paused tenant included, from the first scrape after the record of a member of the tenant's etcd that etcd-backup-restore restored from the store's snapshots (`from: Snapshots`), which `DatastoreReady` reports as `MemberRestored` until the roll is done ([upgrades-and-maintenance-windows](decisions/upgrades-and-maintenance-windows.md)).
-The member lost the writes etcd acknowledged after the last delta snapshot: at most about two of the class's `deltaSnapshotPeriod` before the loss while `BackupReady` was True, since etcd-druid reads it True only while the delta snapshot Lease was renewed within two periods ([check_backup_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/health/condition/check_backup_ready.go#L91-L98)), and more while it was not.
+The member lost the writes etcd acknowledged after the last delta snapshot: at most about two of the class's `deltaSnapshotPeriodSeconds` before the loss while `BackupReady` was True, since etcd-druid reads it True only while the delta snapshot Lease was renewed within two periods ([check_backup_ready.go](https://github.com/gardener/etcd-druid/blob/v0.39.2/internal/health/condition/check_backup_ready.go#L91-L98)), and more while it was not.
 The last `Applying first delta snapshot` or `Applying delta snapshot` line of the restored pod's `backup-restore` log names the last delta snapshot applied, `Incr-<first revision>-<last revision>-<unix time>` ([restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L428), [restorer.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/snapshot/restorer/restorer.go#L481), [snapstore.go](https://github.com/gardener/etcd-backup-restore/blob/v0.45.3/pkg/types/snapstore.go#L119-L121)).
 What those writes started outside etcd stays without the object that asked for it, such as a volume a provisioner created or a load balancer a cloud controller made, as OpenShift's restore documentation describes for storage ([dr-scenario-cluster-state-issues.adoc](https://github.com/openshift/openshift-docs/blob/0ad55b22ddf5a7a7311e2521acbf6d3a65563c71/modules/dr-scenario-cluster-state-issues.adoc#L12-L20)).
 Lodia rolls the API server, then the controller manager and the scheduler, at once, on a held tenant too, but not while the tenant is paused: step 4 of [Lost etcd quorum](#lost-etcd-quorum) checks that the record came and the roll finished, and says how to roll by hand.

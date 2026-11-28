@@ -217,7 +217,7 @@ func TestARestoreLeadsOnceReleasedWithItsSourceGone(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: cp.Namespace, Finalizers: []string{"test.lodia.io/keep"}},
 		Spec:       *cp.Spec.DeepCopy(),
 	}
-	prod.Spec.RestoreFrom, prod.Spec.Paused = nil, true
+	prod.Spec.RestoreFrom, prod.Spec.Paused = lodiav1alpha1.RestoreFrom{}, new(true)
 	if err := k8s.Create(t.Context(), prod); err != nil {
 		t.Fatal(err)
 	}
@@ -265,7 +265,7 @@ func TestARestoreWhoseServiceHangsListsNothingAndStillNamesItsSource(t *testing.
 	cp := restoredControlPlane(t, lodiav1alpha1.RestorePending)
 	pause(t, cp)
 	prod := &lodiav1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "prod", Namespace: cp.Namespace}, Spec: *cp.Spec.DeepCopy()}
-	prod.Spec.RestoreFrom, prod.Spec.Paused = nil, true
+	prod.Spec.RestoreFrom, prod.Spec.Paused = lodiav1alpha1.RestoreFrom{}, new(true)
 	if err := k8s.Create(t.Context(), prod); err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func restoredControlPlane(t *testing.T, release lodiav1alpha1.RestoreRelease) *l
 			Version:     "v1.35.0",
 			Endpoint:    lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}},
 			Network:     lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-			RestoreFrom: &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: release},
+			RestoreFrom: lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: release},
 		},
 	}
 	if err := k8s.Create(t.Context(), cp); err != nil {

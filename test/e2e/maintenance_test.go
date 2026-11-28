@@ -78,7 +78,7 @@ func TestOperatorUpgradeInWindows(t *testing.T) {
 				window := windows[key]
 				createTenant(ctx, t, k8s, key, "e2e-"+key.Namespace, func(spec *lodiav1alpha1.ControlPlaneSpec) {
 					if window != nil {
-						spec.Maintenance = &lodiav1alpha1.Maintenance{Window: window}
+						spec.Maintenance = &lodiav1alpha1.Maintenance{Window: *window}
 					}
 				})
 				t.Logf("ControlPlane %s has the maintenance window %+v", key, window)
@@ -180,7 +180,7 @@ func TestOperatorUpgradeInWindows(t *testing.T) {
 		Assess("an edit of closed's spec renders it at once with revision B and signer B, never Maintaining", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			cp := getTenant(ctx, t, k8s, closed)
 			patch := client.MergeFrom(cp.DeepCopy())
-			cp.Spec.Addons.CoreDNS = &lodiav1alpha1.CoreDNS{Replicas: new(int32(1))}
+			cp.Spec.Addons.CoreDNS = &lodiav1alpha1.CoreDNS{Replicas: 1}
 			if err := k8s.Patch(ctx, cp, patch); err != nil {
 				t.Fatal(err)
 			}
@@ -199,7 +199,7 @@ func TestOperatorUpgradeInWindows(t *testing.T) {
 				if err := k8s.Get(ctx, closed, fresh); err != nil {
 					return err
 				}
-				if c := fresh.Status.Components; c == nil || c.APIServer == nil || c.APIServer.OperatorRevision != revisionB {
+				if c := fresh.Status.Components; c == nil || c.APIServer == (lodiav1alpha1.ComponentStatus{}) || c.APIServer.OperatorRevision != revisionB {
 					return fmt.Errorf("status.components is %+v", c)
 				}
 				return signerIs(ctx, k8s, closed, b.signer)
@@ -358,8 +358,8 @@ func reportsRevision(cp *lodiav1alpha1.ControlPlane, revision string) error {
 func revisions(cp *lodiav1alpha1.ControlPlane) map[string]string {
 	parts := map[string]string{}
 	if c := cp.Status.Components; c != nil {
-		for part, s := range map[string]*lodiav1alpha1.ComponentStatus{"kube-apiserver": c.APIServer, "kube-controller-manager": c.ControllerManager, "kube-scheduler": c.Scheduler} {
-			if s != nil {
+		for part, s := range map[string]lodiav1alpha1.ComponentStatus{"kube-apiserver": c.APIServer, "kube-controller-manager": c.ControllerManager, "kube-scheduler": c.Scheduler} {
+			if s != (lodiav1alpha1.ComponentStatus{}) {
 				parts[part] = s.OperatorRevision
 			}
 		}
@@ -367,7 +367,7 @@ func revisions(cp *lodiav1alpha1.ControlPlane) map[string]string {
 	if a := cp.Status.Addons; a != nil {
 		parts["the addons"] = a.OperatorRevision
 	}
-	if d := cp.Status.Datastore; d != nil {
+	if d := cp.Status.Datastore; len(d.Endpoints) > 0 {
 		parts["etcd"] = d.OperatorRevision
 	}
 	return parts

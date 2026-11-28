@@ -41,25 +41,25 @@ type latch struct {
 	// based says that a pass took the latch and kept base, the record its
 	// live read showed, none included.
 	based bool
-	base  *lodiav1alpha1.MemberRestoreStatus
+	base  lodiav1alpha1.MemberRestoreStatus
 }
 
 // is compares by identity, never by time: detectedAt is read from the clock
 // of the replica that told the restore.
 func (l *latch) is(other latch) bool {
-	return l.uid == other.uid && same(&l.told, &other.told)
+	return l.uid == other.uid && same(l.told, other.told)
 }
 
 // record is the latch as it is written over base: one second past base's
 // detectedAt when its own is not after it, so that every record that lands
 // is after the one it replaces, whatever the replicas' clocks, and its
 // annotation moves.
-func (l latch) record(base *lodiav1alpha1.MemberRestoreStatus) *lodiav1alpha1.MemberRestoreStatus {
+func (l latch) record(base lodiav1alpha1.MemberRestoreStatus) lodiav1alpha1.MemberRestoreStatus {
 	record := l.told
-	if base != nil && !record.DetectedAt.After(base.DetectedAt.Time) {
+	if base != (lodiav1alpha1.MemberRestoreStatus{}) && !record.DetectedAt.After(base.DetectedAt.Time) {
 		record.DetectedAt = metav1.NewTime(base.DetectedAt.Add(time.Second))
 	}
-	return &record
+	return record
 }
 
 func (s *Latches) tell(key types.NamespacedName, uid types.UID, told lodiav1alpha1.MemberRestoreStatus) {
@@ -98,7 +98,7 @@ func (s *Latches) take(key types.NamespacedName) (latch, bool) {
 // setBase keeps base beside taken while taken is still the key's latch, so
 // that a latch the sampler replaced since gets the base of the pass that
 // takes it.
-func (s *Latches) setBase(key types.NamespacedName, taken latch, base *lodiav1alpha1.MemberRestoreStatus) {
+func (s *Latches) setBase(key types.NamespacedName, taken latch, base lodiav1alpha1.MemberRestoreStatus) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if l := s.held[key]; l != nil && l.is(taken) {
@@ -136,9 +136,6 @@ func (s *Latches) send(ctx context.Context, cp client.Object) {
 
 // same says whether two records name one restore: member, detectedAt and
 // from, reportedAt aside.
-func same(a, b *lodiav1alpha1.MemberRestoreStatus) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
+func same(a, b lodiav1alpha1.MemberRestoreStatus) bool {
 	return a.Member == b.Member && a.DetectedAt.Equal(&b.DetectedAt) && a.From == b.From
 }

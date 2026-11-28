@@ -60,7 +60,7 @@ var healthy = map[string]state{
 func conditions(cp *lodiav1alpha1.ControlPlane, changed map[string]state) []metav1.Condition {
 	var out []metav1.Condition
 	for i, conditionType := range conditionTypes {
-		if conditionType == lodiav1alpha1.ConditionRoutesReady && cp.Spec.Endpoint.Gateway == nil || conditionType == lodiav1alpha1.ConditionLoadBalancerReady && cp.Spec.Endpoint.LoadBalancer == nil {
+		if conditionType == lodiav1alpha1.ConditionRoutesReady && cp.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) || conditionType == lodiav1alpha1.ConditionLoadBalancerReady && cp.Spec.Endpoint.LoadBalancer == nil {
 			continue
 		}
 		s, ok := changed[conditionType]
@@ -87,7 +87,7 @@ func controlPlane(name string, uid int) *lodiav1alpha1.ControlPlane {
 }
 
 func count(total, ready int32, updated ...int32) lodiav1alpha1.RolloutCount {
-	c := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: total, Ready: ready}}
+	c := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(total), Ready: new(ready)}}
 	if len(updated) > 0 {
 		c.Updated = &updated[0]
 	}
@@ -96,32 +96,32 @@ func count(total, ready int32, updated ...int32) lodiav1alpha1.RolloutCount {
 
 func components(apiServer, controllerManager, scheduler lodiav1alpha1.RolloutCount) *lodiav1alpha1.ComponentsStatus {
 	return &lodiav1alpha1.ComponentsStatus{
-		APIServer:         &lodiav1alpha1.ComponentStatus{RolloutCount: apiServer},
-		ControllerManager: &lodiav1alpha1.ComponentStatus{RolloutCount: controllerManager},
-		Scheduler:         &lodiav1alpha1.ComponentStatus{RolloutCount: scheduler},
+		APIServer:         lodiav1alpha1.ComponentStatus{RolloutCount: apiServer},
+		ControllerManager: lodiav1alpha1.ComponentStatus{RolloutCount: controllerManager},
+		Scheduler:         lodiav1alpha1.ComponentStatus{RolloutCount: scheduler},
 	}
 }
 
-func datastore(members lodiav1alpha1.RolloutCount) *lodiav1alpha1.DatastoreStatus {
-	return &lodiav1alpha1.DatastoreStatus{Endpoints: []lodiav1alpha1.HostPort{{Host: "etcd-client", Port: 2379}}, Members: members}
+func datastore(members lodiav1alpha1.RolloutCount) lodiav1alpha1.DatastoreStatus {
+	return lodiav1alpha1.DatastoreStatus{Endpoints: []lodiav1alpha1.HostPort{{Host: "etcd-client", Port: 2379}}, Members: members}
 }
 
 func steady(cp *lodiav1alpha1.ControlPlane, version string) {
-	cp.Status.ObservedGeneration = cp.Generation
+	cp.Status.ObservedGeneration = new(cp.Generation)
 	cp.Status.Conditions = conditions(cp, nil)
 	cp.Status.Target = &lodiav1alpha1.Target{Version: version, OperatorRevision: running}
 	cp.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Version: version}
 	cp.Status.Components = components(count(1, 1, 1), count(1, 1, 1), count(1, 1, 1))
 	cp.Status.Datastore = datastore(count(1, 1, 1))
-	cp.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 2, Ready: 2}}
+	cp.Status.Nodes = lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(2)), Ready: new(int32(2))}}
 	cp.Status.Credentials = &lodiav1alpha1.CredentialsStatus{NotAfter: &metav1.Time{Time: now.Add(90 * 24 * time.Hour)}}
 }
 
 func gatewayHA(name string, uid int) *lodiav1alpha1.ControlPlane {
 	cp := controlPlane(name, uid)
 	cp.Generation = 3
-	cp.Spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
-	cp.Spec.Endpoint = lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+	cp.Spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+	cp.Spec.Endpoint = lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: lodiav1alpha1.Hostname("api." + name + ".example.com"), Konnectivity: lodiav1alpha1.Hostname("konnectivity." + name + ".example.com"), Tunnel: lodiav1alpha1.Hostname("tunnel." + name + ".example.com")},
 	}}
@@ -129,7 +129,7 @@ func gatewayHA(name string, uid int) *lodiav1alpha1.ControlPlane {
 	cp.Status.Conditions = conditions(cp, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionTrue, lodiav1alpha1.ReasonMaintaining}})
 	cp.Status.Components = components(count(3, 3, 3), count(2, 2, 2), count(2, 2, 1))
 	cp.Status.Datastore = datastore(count(3, 3, 3))
-	cp.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5, Ready: 4}}
+	cp.Status.Nodes = lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(5)), Ready: new(int32(4))}}
 	cp.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotSince: ago(10 * time.Minute)}
 	return cp
 }
@@ -141,7 +141,7 @@ func golden() []client.Object {
 
 	restored := controlPlane("restored", 3)
 	restored.Spec.Endpoint = lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}
-	restored.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "edge-before"}, Release: lodiav1alpha1.RestorePending}
+	restored.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "edge-before"}, Release: lodiav1alpha1.RestorePending}
 	steady(restored, "v1.36.4")
 	restored.Status.Conditions = conditions(restored, map[string]state{
 		lodiav1alpha1.ConditionAddonsAvailable:    {metav1.ConditionFalse, lodiav1alpha1.ReasonRolloutPending},
@@ -150,8 +150,8 @@ func golden() []client.Object {
 		lodiav1alpha1.ConditionReady:              {metav1.ConditionFalse, lodiav1alpha1.ReasonAwaitingRelease},
 	})
 	restored.Status.Components = components(count(1, 1, 1), count(0, 0, 0), count(1, 1, 1))
-	restored.Status.Nodes = &lodiav1alpha1.NodesStatus{}
-	restored.Status.MemberRestore = &lodiav1alpha1.MemberRestoreStatus{Member: "restored-etcd-0", DetectedAt: *ago(30 * time.Minute), From: lodiav1alpha1.MemberRestoreFromSnapshots}
+	restored.Status.Nodes = lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(0)), Ready: new(int32(0))}, OutdatedKubelets: new(int32(0))}
+	restored.Status.MemberRestore = lodiav1alpha1.MemberRestoreStatus{Member: "restored-etcd-0", DetectedAt: *ago(30 * time.Minute), From: lodiav1alpha1.MemberRestoreFromSnapshots}
 
 	failed := controlPlane("failed", 4)
 	failed.Generation = 2
@@ -159,7 +159,7 @@ func golden() []client.Object {
 	failed.Status.Conditions = conditions(failed, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionFalse, lodiav1alpha1.ReasonMaintenanceFailed}})
 	failed.Status.Datastore = datastore(count(1, 1))
 	failed.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotSince: ago(3 * time.Hour)}
-	failed.Status.MemberRestore = &lodiav1alpha1.MemberRestoreStatus{Member: "failed-etcd-0", DetectedAt: *ago(2 * time.Hour), From: lodiav1alpha1.MemberRestoreFromEmpty, ReportedAt: ago(2 * time.Hour)}
+	failed.Status.MemberRestore = lodiav1alpha1.MemberRestoreStatus{Member: "failed-etcd-0", DetectedAt: *ago(2 * time.Hour), From: lodiav1alpha1.MemberRestoreFromEmpty, ReportedAt: ago(2 * time.Hour)}
 
 	queued := controlPlane("queued", 5)
 	steady(queued, "v1.37.1")
@@ -172,26 +172,26 @@ func golden() []client.Object {
 	steady(upgrading, "v1.36.4")
 	upgrading.Status.Conditions = conditions(upgrading, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionTrue, lodiav1alpha1.ReasonUpgrading}})
 	upgrading.Status.Target.Version = "v1.37.1"
-	upgrading.Status.Kubernetes.Upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAddons, StartedAt: *ago(40 * time.Minute)}
-	upgrading.Status.Nodes.OutdatedKubelets = 2
+	upgrading.Status.Kubernetes.Upgrade = lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAddons, StartedAt: *ago(40 * time.Minute)}
+	upgrading.Status.Nodes.OutdatedKubelets = new(int32(2))
 
 	paused := controlPlane("paused", 7)
 	paused.Generation = 5
-	paused.Spec.Paused = true
+	paused.Spec.Paused = new(true)
 	steady(paused, "v1.37.1")
-	paused.Status.ObservedGeneration = 4
+	paused.Status.ObservedGeneration = new(int64(4))
 	paused.Status.Conditions = conditions(paused, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionFalse, lodiav1alpha1.ReasonPaused}})
 	paused.Status.Maintenance = &lodiav1alpha1.MaintenanceStatus{SlotSince: ago(2 * time.Hour)}
 
 	starting := controlPlane("starting", 10)
-	starting.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{RolloutCount: count(1, 0, 0)}}
+	starting.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: lodiav1alpha1.ComponentStatus{RolloutCount: count(1, 0, 0)}}
 
 	rolling := controlPlane("rolling", 11)
 	rolling.Generation = 2
 	steady(rolling, "v1.36.4")
 	rolling.Status.Conditions = conditions(rolling, map[string]state{lodiav1alpha1.ConditionProgressing: {metav1.ConditionTrue, lodiav1alpha1.ReasonUpgrading}})
 	rolling.Status.Target.Version = "v1.37.1"
-	rolling.Status.Kubernetes.Upgrade = &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAPIServer, StartedAt: *ago(5 * time.Minute)}
+	rolling.Status.Kubernetes.Upgrade = lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAPIServer, StartedAt: *ago(5 * time.Minute)}
 	rolling.Status.Components = components(count(3, 2, 2), count(2, 1, 1), count(2, 2, 1))
 	rolling.Status.Datastore = datastore(count(3, 2, 1))
 
@@ -219,7 +219,7 @@ func golden() []client.Object {
 	crowded := controlPlane("crowded", 16)
 	steady(crowded, "v1.37.1")
 	crowded.Status.Conditions = conditions(crowded, map[string]state{lodiav1alpha1.ConditionControllerManagerHeld: {metav1.ConditionFalse, lodiav1alpha1.ReasonTooManyNodes}})
-	crowded.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5000, Ready: 4990}, Truncated: true}
+	crowded.Status.Nodes = lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(5000)), Ready: new(int32(4990))}, Truncated: new(true)}
 
 	tenants := []client.Object{fresh, edge, restored, failed, queued, upgrading, paused, starting, rolling, waiting, overdue, deleting, aging, legacy, crowded}
 	return append(tenants, goldenEtcds(tenants)...)

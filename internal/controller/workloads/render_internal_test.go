@@ -16,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -48,7 +49,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 			status:   lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}},
 		},
 		"gateway": {
-			endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+			endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 			}},
@@ -56,7 +57,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
 				InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
+				Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
 			},
 		},
 	} {
@@ -70,7 +71,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 		}
 		var objects []any
 		objects = append(objects, service(cp))
-		if cp.Spec.Endpoint.Gateway != nil {
+		if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 			for _, route := range routes(cp) {
 				objects = append(objects, route)
 			}
@@ -144,13 +145,13 @@ func TestAnExtraArgumentNeverReplacesAFlagLodiaSets(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team"},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Network: lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-			APIServer: &lodiav1alpha1.APIServer{ExtraArgs: map[string]string{
+			APIServer: &lodiav1alpha1.APIServer{ExtraArgs: map[string]lodiav1alpha1.FlagValue{
 				"endpoint-reconciler-type": "lease",
 				"shutdown-delay-duration":  "70s",
 				"enable-admission-plugins": "PodSecurity",
 				"event-ttl":                "2h",
 			}},
-			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]string{"leader-elect": "false", "node-monitor-grace-period": "40s", "controllers": "-ttl-controller"}},
+			ControllerManager: &lodiav1alpha1.Component{ExtraArgs: map[string]lodiav1alpha1.FlagValue{"leader-elect": "false", "node-monitor-grace-period": "40s", "controllers": "-ttl-controller"}},
 		},
 	}
 	r := rendering{cp: cp, endpoint: &lodiav1alpha1.EndpointStatus{}, etcd: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team.svc", Port: 2379}}}
@@ -217,7 +218,7 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 		{"a scheduler without a Deployment", []*appsv1.Deployment{deployment(apiServer, 2, 1, false), deployment(controllerManager, 2, 2, false)}, "",
 			"False Unavailable kube-apiserver has 1 of 2 replicas ready; kube-scheduler has no Deployment"},
 	} {
-		c := availability(row.deployments, row.held, false)
+		c := availability(row.deployments, row.held, false, nil)
 		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
 			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
 		}
@@ -239,7 +240,7 @@ func TestAvailabilityIsAReadyReplicaOfEachComponent(t *testing.T) {
 		{name: "a scheduler with no ready replica under a hold", deployments: []*appsv1.Deployment{deployment(apiServer, 2, 2, false), deployment(controllerManager, 1, 0, false), deployment(scheduler, 2, 0, false)}, held: true,
 			want: "False Unavailable kube-controller-manager has 0 of 1 replicas ready while Health holds its leader Lease; kube-scheduler has 0 of 2 replicas ready"},
 	} {
-		c := availability(row.deployments, "", row.held)
+		c := availability(row.deployments, "", row.held, nil)
 		if got := fmt.Sprintf("%s %s %s", c.Status, c.Reason, c.Message); got != row.want {
 			t.Errorf("%s: APIServerReady is %q, want %q", row.name, got, row.want)
 		}
@@ -274,7 +275,7 @@ func TestUpdatedCountsAvailableReplicasOfTheCurrentTemplate(t *testing.T) {
 		if count.Updated != nil {
 			updated = fmt.Sprint(*count.Updated)
 		}
-		if got := fmt.Sprintf("%d/%d/%s", count.Total, count.Ready, updated); got != row.want {
+		if got := fmt.Sprintf("%d/%d/%s", ptr.Deref(count.Total, -1), ptr.Deref(count.Ready, -1), updated); got != row.want {
 			t.Errorf("%s: total/ready/updated %s, want %s", row.name, got, row.want)
 		}
 	}

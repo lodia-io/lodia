@@ -84,7 +84,7 @@ func TestLoadBalancerGate(t *testing.T) {
 						return err
 					}
 				}
-				ipEndpoint = *cp.Status.Endpoint
+				ipEndpoint = cp.Status.Endpoint
 				return nil
 			})
 			return ctx
@@ -143,7 +143,7 @@ func TestLoadBalancerGate(t *testing.T) {
 				if _, err := conditionAt(ctx, k8s, mismatched.key, lodiav1alpha1.ConditionReady, metav1.ConditionFalse, lodiav1alpha1.ReasonAddressMismatch); err != nil {
 					return err
 				}
-				before.endpoint = *cp.Status.Endpoint
+				before.endpoint = cp.Status.Endpoint
 				return nil
 			})
 			until(ctx, t, 2*time.Minute, "a Normal event AddressMismatch of LoadBalancerReady names "+named+" and "+given, func(ctx context.Context) error {
@@ -220,7 +220,7 @@ func TestLoadBalancerGate(t *testing.T) {
 						return err
 					}
 				}
-				nameEndpoint = *cp.Status.Endpoint
+				nameEndpoint = cp.Status.Endpoint
 				return nil
 			})
 			return ctx
@@ -261,8 +261,8 @@ func TestLoadBalancerGate(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if cp.Status.Endpoint != nil {
-					return fmt.Errorf("status.endpoint is %+v", *cp.Status.Endpoint)
+				if cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}) {
+					return fmt.Errorf("status.endpoint is %+v", cp.Status.Endpoint)
 				}
 				if _, err := conditionAt(ctx, k8s, discovered.key, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint); err != nil {
 					return err
@@ -379,7 +379,7 @@ func publishedAt(ctx context.Context, k8s client.Client, key client.ObjectKey, h
 		Konnectivity: hostPort(host, konnectivityPort),
 		InCluster:    inCluster,
 	}
-	if cp.Status.Endpoint == nil || !reflect.DeepEqual(*cp.Status.Endpoint, want) {
+	if cp.Status.Endpoint == (lodiav1alpha1.EndpointStatus{}) || !reflect.DeepEqual(cp.Status.Endpoint, want) {
 		return nil, fmt.Errorf("status.endpoint is %+v, want %+v", cp.Status.Endpoint, want)
 	}
 	return cp, nil
@@ -408,8 +408,8 @@ func settled(ctx context.Context, k8s client.Client, b *balanced, address string
 	if err := controlPlaneReady(ctx, k8s, b.key, cp); err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(*cp.Status.Endpoint, endpoint) {
-		return fmt.Errorf("status.endpoint moved from %+v to %+v", endpoint, *cp.Status.Endpoint)
+	if !reflect.DeepEqual(cp.Status.Endpoint, endpoint) {
+		return fmt.Errorf("status.endpoint moved from %+v to %+v", endpoint, cp.Status.Endpoint)
 	}
 	return nil
 }

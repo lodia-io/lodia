@@ -44,7 +44,7 @@ const (
 )
 
 func gatewayMode(cp *lodiav1alpha1.ControlPlane) {
-	cp.Spec.Endpoint = lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+	cp.Spec.Endpoint = lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 	}}
@@ -206,7 +206,7 @@ func TestAGatewayTenantGetsApiserverProxy(t *testing.T) {
 	refresh(t, cp)
 	left := cp.DeepCopy()
 	left.Spec.Endpoint = lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: endpointHost}}
-	left.Status.Endpoint = &lodiav1alpha1.EndpointStatus{
+	left.Status.Endpoint = lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: endpointHost, Port: apiServerPort},
 		Konnectivity: lodiav1alpha1.HostPort{Host: endpointHost, Port: konnectivityPort},
 		InCluster:    lodiav1alpha1.HostPort{Host: endpointHost, Port: inClusterPort},
@@ -449,7 +449,7 @@ func TestARenewalReachesATenantWhoseEndpointIsGone(t *testing.T) {
 	setCondition(t, cp, lodiav1alpha1.ConditionAccessReady, lodiav1alpha1.ReasonBound)
 	applyStatus(t, cp, "test/endpoint", map[string]any{})
 	refresh(t, cp)
-	if cp.Status.Endpoint != nil {
+	if cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}) {
 		t.Fatalf("status.endpoint is still %+v", cp.Status.Endpoint)
 	}
 	renew(t, cp, "without an endpoint")
@@ -632,7 +632,7 @@ func TestWhatStopsDelivery(t *testing.T) {
 		t.Errorf("a paused pass dialled %d times and requeues after %s", dials.Load(), result.RequeueAfter)
 	}
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.Paused = false
+		cp.Spec.Paused = new(false)
 		cp.Finalizers = append(cp.Finalizers, "test.lodia.io/hold")
 	})
 	if err := k8s.Delete(ctx, cp); err != nil {
@@ -820,7 +820,7 @@ func TestDeliveryUsesOnlyWhatThisControlPlaneControls(t *testing.T) {
 	pause(t, cp)
 	plain := func(*lodiav1alpha1.ControlPlane) {}
 	restored := func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "backup"}}
+		cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "backup"}}
 	}
 	pass := func(shape func(*lodiav1alpha1.ControlPlane)) {
 		t.Helper()

@@ -55,7 +55,7 @@ func TestAnAddressMismatchBuildsTheTenantMovesNothingAndIsRepairedInPlace(t *tes
 		markAvailable(t, eventuallyDeployment(t, cp, component))
 	}
 	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady) })
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Errorf("status.endpoint is %+v while the load balancer is elsewhere, want %+v", e, want)
 	}
 	expectFlags(t, deployment(t, cp, "kube-apiserver").Spec.Template.Spec.Containers[0].Command,
@@ -93,7 +93,7 @@ func TestAnAddressMismatchBuildsTheTenantMovesNothingAndIsRepairedInPlace(t *tes
 		}
 		return nil
 	})
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Errorf("status.endpoint is %+v after the load balancer moved, want %+v", e, want)
 	}
 	if err := expectCondition(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady); err != nil {
@@ -123,7 +123,7 @@ func TestARefusedServiceAtAHostKeepsTheSpecsEndpointFromTheStart(t *testing.T) {
 				if b := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady); b == nil || b.Reason != lodiav1alpha1.ReasonRefused {
 					return fmt.Errorf("LoadBalancerReady is %+v", b)
 				}
-				if e := fresh.Status.Endpoint; e == nil || *e != want {
+				if e := fresh.Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 					return fmt.Errorf("status.endpoint is %+v while the Service is refused, want the spec's %+v", e, want)
 				}
 				return nil
@@ -131,7 +131,7 @@ func TestARefusedServiceAtAHostKeepsTheSpecsEndpointFromTheStart(t *testing.T) {
 			if _, err := operatorAt(k8s, revision).Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cp)}); !apistatus.Refused(err) {
 				t.Errorf("a second pass whose Service is refused returned %v, want the refusal", err)
 			}
-			if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+			if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 				t.Errorf("status.endpoint is %+v after a second refused pass, want the spec's %+v", e, want)
 			}
 		})
@@ -167,7 +167,7 @@ func TestADiscoveredAddressStaysThroughWhatTheLoadBalancerReportsUntilAnotherRep
 			if c := meta.FindStatusCondition(fresh.Status.Conditions, lodiav1alpha1.ConditionLoadBalancerReady); c == nil || c.Status != step.ready {
 				return fmt.Errorf("%s: LoadBalancerReady is %+v, want %s", step.name, c, step.ready)
 			}
-			if e := fresh.Status.Endpoint; e == nil || *e != discovered(step.want) {
+			if e := fresh.Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != discovered(step.want) {
 				return fmt.Errorf("%s: status.endpoint is %+v, want %+v", step.name, e, discovered(step.want))
 			}
 			return nil
@@ -182,7 +182,7 @@ func TestAKeptDiscoveredAddressIsRebuiltInTheSpecsShapeOnEveryPass(t *testing.T)
 		Konnectivity: lodiav1alpha1.HostPort{Host: lbAddress, Port: 8132},
 		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
 	}
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Fatalf("status.endpoint is %+v, want %+v", e, want)
 	}
 	pause(t, cp)
@@ -218,7 +218,7 @@ func TestAKeptDiscoveredAddressIsRebuiltInTheSpecsShapeOnEveryPass(t *testing.T)
 			if applied == nil {
 				t.Fatal("the pass applied no status")
 			}
-			if e := applied.Status.Endpoint; e == nil || *e != want {
+			if e := applied.Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 				t.Errorf("over a stored endpoint of another shape at the host the load balancer reports, the pass applied %+v, want %+v", e, want)
 			}
 		})
@@ -437,7 +437,7 @@ func TestAPredecessorsServiceHoldsTheLoadBalancerButNotTheEndpointAtAHost(t *tes
 		b.Reason != lodiav1alpha1.ReasonObjectsControlledElsewhere || b.Message != held.Message {
 		t.Errorf("LoadBalancerReady is %+v, want the hold of APIServerReady %q", b, held.Message)
 	}
-	if e := fresh.Status.Endpoint; e == nil || e.APIServer.Host != lbAddress || e.InCluster != (lodiav1alpha1.HostPort{Host: lbAddress, Port: 443}) {
+	if e := fresh.Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != lbAddress || e.InCluster != (lodiav1alpha1.HostPort{Host: lbAddress, Port: 443}) {
 		t.Errorf("status.endpoint is %+v, want the spec's", e)
 	}
 	if result := reconcileNow(t, cp); result.RequeueAfter != 10*time.Second {
@@ -482,7 +482,7 @@ func TestANodePortEndpointIsOfTheFamilyOfTheFirstServiceRange(t *testing.T) {
 		Konnectivity: lodiav1alpha1.HostPort{Host: "2001:db8::200", Port: nodePort(svc, 8132)},
 		InCluster:    lodiav1alpha1.HostPort{Host: "2001:db8::200", Port: nodePort(svc, 443)},
 	}
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Errorf("status.endpoint is %+v, want %+v", e, want)
 	}
 }

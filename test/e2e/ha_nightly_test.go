@@ -40,7 +40,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 	)
 	const class = "e2e-ha-toggle"
 	key := client.ObjectKey{Namespace: "team-ha-toggle", Name: controlPlane}
-	zone := &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+	zone := lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	f := features.New("nightly on kind: highAvailability removed from a formed tenant and added back").
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
@@ -58,7 +58,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 		Assess("removing highAvailability scales etcd in to one member and each component to one replica, and Ready is back True", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			start := time.Now()
 			stop := watchPods(ctx, t, k8s, kubernetes.NewForConfigOrDie(cfg.Client().RESTConfig()), key)
-			setHighAvailability(ctx, t, k8s, key, nil)
+			setHighAvailability(ctx, t, k8s, key, lodiav1alpha1.HighAvailability{})
 			until(ctx, t, 10*time.Minute, "one member and one replica each, Ready", func(ctx context.Context) error {
 				return shaped(ctx, k8s, key, 1, 1)
 			})
@@ -94,7 +94,7 @@ func TestHighAvailabilityRemovedAndRestored(t *testing.T) {
 	testenv.Test(t, f)
 }
 
-func setHighAvailability(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, ha *lodiav1alpha1.HighAvailability) {
+func setHighAvailability(ctx context.Context, t *testing.T, k8s client.Client, key client.ObjectKey, ha lodiav1alpha1.HighAvailability) {
 	t.Helper()
 	cp := &lodiav1alpha1.ControlPlane{}
 	if err := k8s.Get(ctx, key, cp); err != nil {

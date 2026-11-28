@@ -145,7 +145,7 @@ func TestATunnelsProxyLeftInTheTenantBecomesThePlainProxy(t *testing.T) {
 	refresh(t, cp)
 	restored := cp.DeepCopy()
 	nameHostMode(restored)
-	restored.Status.Endpoint = &lodiav1alpha1.EndpointStatus{
+	restored.Status.Endpoint = lodiav1alpha1.EndpointStatus{
 		APIServer:    lodiav1alpha1.HostPort{Host: nameHost, Port: apiServerPort},
 		Konnectivity: lodiav1alpha1.HostPort{Host: nameHost, Port: konnectivityPort},
 		InCluster:    lodiav1alpha1.HostPort{Host: lodiav1alpha1.DefaultAdvertiseAddress, Port: 6443},

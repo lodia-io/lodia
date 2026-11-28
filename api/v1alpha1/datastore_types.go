@@ -4,7 +4,6 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -53,7 +52,7 @@ type DatastoreClassSpec struct {
 
 	// backup is where and how often snapshots go; without it, no backups.
 	// +optional
-	Backup *EtcdBackup `json:"backup,omitempty"`
+	Backup EtcdBackup `json:"backup,omitzero"`
 
 	// placement says where members run.
 	// +optional
@@ -75,11 +74,11 @@ type EtcdSettings struct {
 
 	// defragmentation runs followers first, the leader last.
 	// +optional
-	Defragmentation *Defragmentation `json:"defragmentation,omitempty"`
+	Defragmentation Defragmentation `json:"defragmentation,omitzero"`
 
 	// resources of each member.
 	// +optional
-	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	Resources *Resources `json:"resources,omitempty"`
 }
 
 // AutoCompaction is etcd's compaction mode and retention.
@@ -96,6 +95,7 @@ type AutoCompaction struct {
 	// else.
 	// +optional
 	// +kubebuilder:default="15m"
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=32
 	Retention string `json:"retention,omitempty"`
 }
@@ -107,7 +107,8 @@ type Defragmentation struct {
 	// run from 1 to 6, since etcd-druid refuses 0 and the backup sidecar 7;
 	// */7 selects Sunday.
 	// +required
-	Schedule CronSchedule `json:"schedule"`
+	// +kubebuilder:validation:MinLength=1
+	Schedule CronSchedule `json:"schedule,omitempty"`
 }
 
 // CronSchedule is a cron expression both etcd-druid and the backup sidecar
@@ -121,8 +122,9 @@ type CronSchedule string
 
 // EtcdStorage is the members' persistent volumes.
 type EtcdStorage struct {
-	// className is the StorageClass; empty means the cluster's default.
+	// className is the StorageClass; absent means the cluster's default.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	ClassName string `json:"className,omitempty"`
 
@@ -141,21 +143,21 @@ type EtcdStorage struct {
 type EtcdBackup struct {
 	// store is the bucket.
 	// +required
-	Store BackupStore `json:"store"`
+	Store BackupStore `json:"store,omitzero"`
 
 	// fullSnapshotSchedule is a cron expression as defragmentation.schedule
 	// takes it.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:default="0 0 * * *"
 	FullSnapshotSchedule CronSchedule `json:"fullSnapshotSchedule,omitempty"`
 
-	// deltaSnapshotPeriod is how often a delta snapshot is taken.
+	// deltaSnapshotPeriodSeconds is how often a delta snapshot is taken; 0
+	// takes none.
 	// +optional
-	// +kubebuilder:default="5m"
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
-	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="must be a duration"
-	DeltaSnapshotPeriod *metav1.Duration `json:"deltaSnapshotPeriod,omitempty"`
+	// +kubebuilder:default=300
+	// +kubebuilder:validation:Minimum=0
+	DeltaSnapshotPeriodSeconds *int32 `json:"deltaSnapshotPeriodSeconds,omitempty"`
 
 	// retention is how long snapshots are kept.
 	// +optional
@@ -166,13 +168,14 @@ type EtcdBackup struct {
 type BackupStore struct {
 	// provider is the object store's kind.
 	// +required
-	Provider StoreProvider `json:"provider"`
+	Provider StoreProvider `json:"provider,omitempty"`
 
 	// bucket name.
 	// +required
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,61}[a-zA-Z0-9]$`
-	Bucket string `json:"bucket"`
+	Bucket string `json:"bucket,omitempty"`
 
 	// @todo: refuses what etcd-backup-restore's parser misreads; remove with todo.md's v1/ prefix item.
 
@@ -180,17 +183,20 @@ type BackupStore struct {
 	// <prefix>/<namespace UID>/controlplanes/<ControlPlane UID>. It neither
 	// contains v1/ nor ends in v1, which etcd-backup-restore would misread.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:XValidation:rule="!(self + '/').contains('v1/')",message="must neither contain v1/ nor end in v1: etcd-backup-restore's snapshot parser takes the last v1/ in a key for its layout and would ignore every snapshot under this prefix"
 	Prefix string `json:"prefix,omitempty"`
 
 	// region of the bucket.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=64
 	Region string `json:"region,omitempty"`
 
 	// endpoint for S3-compatible stores.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:XValidation:rule="self.startsWith('https://') || self.startsWith('http://')",message="must be a URL"
 	// +kubebuilder:validation:XValidation:rule="isURL(self)",message="must be a URL"
@@ -198,7 +204,7 @@ type BackupStore struct {
 
 	// secretRef names the credentials.
 	// +required
-	SecretRef SecretReference `json:"secretRef"`
+	SecretRef SecretReference `json:"secretRef,omitzero"`
 }
 
 // StoreProvider is the kind of an object store: S3, GCS, ABS or Swift.

@@ -121,7 +121,7 @@ func TestAnObjectAnotherOwnerKeepsOutsideTheCacheIsLeftAlone(t *testing.T) {
 						t.Errorf("%d Deployments, want %d", n, wantDeployments)
 					}
 					if kind == "Service" {
-						if e := get(t, cp).Status.Endpoint; e != nil {
+						if e := get(t, cp).Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 							t.Errorf("endpoint %+v from the foreign Service", e)
 						}
 					}
@@ -193,7 +193,7 @@ func TestAServiceAnotherOwnerKeepsAfterTheCheckIsNotRead(t *testing.T) {
 	if err := k8s.Status().Update(t.Context(), svc); err != nil {
 		t.Fatal(err)
 	}
-	cp := create(t, ns, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	cp := create(t, ns, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = new(true) })
 	setTargetAt(t, cp, version, previous)
 	var mu sync.Mutex
 	seen := 0
@@ -216,7 +216,7 @@ func TestAServiceAnotherOwnerKeepsAfterTheCheckIsNotRead(t *testing.T) {
 		t.Error("the pass over another owner's Service returned no error, want the refusal for the backoff")
 	}
 	c := condition(t, cp)
-	if e := get(t, cp).Status.Endpoint; e != nil {
+	if e := get(t, cp).Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		t.Errorf("endpoint %+v read from another owner's Service", e)
 	}
 	if c.Reason != lodiav1alpha1.ReasonRefused {

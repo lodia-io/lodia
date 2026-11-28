@@ -150,7 +150,7 @@ func (r *Reconciler) restoreFirst(ctx context.Context, cp *lodiav1alpha1.Control
 		condition := notReady(lodiav1alpha1.ReasonBackupIncompatible, message)
 		return &condition, 0, nil
 	}
-	recorded := ptr.Deref(backup.Status.Snapshots, lodiav1alpha1.BackupSnapshotLocation{})
+	recorded := backup.Status.Snapshots
 	if message, err := r.storeDiffers(ctx, cp, class, backup, recorded, rendered); message != "" || err != nil {
 		if err != nil {
 			return nil, 0, err
@@ -216,11 +216,11 @@ func unsealed(backup *lodiav1alpha1.Backup) (string, string) {
 func incompatible(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.Backup, rendered *etcddruid.Store) string {
 	recorded, _ := versions.Minor(backup.Status.KubernetesVersion)
 	minor, _ := versions.Minor(cp.Spec.Version)
-	network := ptr.Deref(backup.Status.Network, lodiav1alpha1.Network{})
+	network := backup.Status.Network
 	differs := func(field string, spec, recorded any) string {
 		return fmt.Sprintf("spec.network.%s is %v, and Backup %s was taken of a network with %v: use that", field, spec, backup.Name, recorded)
 	}
-	seal := ptr.Deref(backup.Status.Seal, lodiav1alpha1.BackupSeal{})
+	seal := backup.Status.Seal
 	switch {
 	case minor != recorded:
 		return fmt.Sprintf("Backup %s was taken at Kubernetes %q, and spec.version %s is of another minor: use the Backup's", backup.Name, backup.Status.KubernetesVersion, cp.Spec.Version)
@@ -263,7 +263,7 @@ func (r *Reconciler) storeDiffers(ctx context.Context, cp *lodiav1alpha1.Control
 // restoreCheck is what a pass found of a restore once its Etcd exists.
 type restoreCheck struct {
 	// restored is the restore's status once it is complete.
-	restored *lodiav1alpha1.RestoreStatus
+	restored lodiav1alpha1.RestoreStatus
 	// condition is DatastoreReady while the restore is not complete.
 	condition    *metav1.Condition
 	requeueAfter time.Duration
@@ -275,7 +275,7 @@ func (c restoreCheck) reported(cp *lodiav1alpha1.ControlPlane, readiness metav1.
 	switch {
 	case c.condition != nil:
 		return *c.condition
-	case cp.Spec.RestoreFrom == nil || c.restored != nil || cp.Status.Restore != nil:
+	case cp.Spec.RestoreFrom == (lodiav1alpha1.RestoreFrom{}) || c.restored != (lodiav1alpha1.RestoreStatus{}) || cp.Status.Restore != (lodiav1alpha1.RestoreStatus{}):
 		return readiness
 	}
 	return *restoring(readiness.Message)
@@ -289,7 +289,7 @@ func (c restoreCheck) reported(cp *lodiav1alpha1.ControlPlane, readiness metav1.
 // an Etcd raised above one stays, whatever a check that could not run found.
 func (r *Reconciler) restoreMembers(ctx context.Context, p *pass) error {
 	cp := p.cp
-	if cp.Spec.RestoreFrom != nil && p.current != nil {
+	if cp.Spec.RestoreFrom != (lodiav1alpha1.RestoreFrom{}) && p.current != nil {
 		var err error
 		if p.check, err = r.checkRestore(ctx, cp, p.current); err != nil {
 			return err
@@ -297,7 +297,7 @@ func (r *Reconciler) restoreMembers(ctx context.Context, p *pass) error {
 	}
 	p.members = memberCount(cp)
 	switch {
-	case cp.Spec.RestoreFrom == nil || p.check.restored != nil || p.members == 1:
+	case cp.Spec.RestoreFrom == (lodiav1alpha1.RestoreFrom{}) || p.check.restored != (lodiav1alpha1.RestoreStatus{}) || p.members == 1:
 	case p.current == nil:
 		p.members = r.claimedMembers(cp.Name, p.claims, p.members)
 	default:
@@ -324,9 +324,9 @@ func (r *Reconciler) gateFirstEtcd(ctx context.Context, p *pass) (*outcome, erro
 	var requeueAfter time.Duration
 	var err error
 	switch {
-	case p.cp.Spec.RestoreFrom == nil:
+	case p.cp.Spec.RestoreFrom == (lodiav1alpha1.RestoreFrom{}):
 		first, err = r.caPredates(ctx, p.cp)
-	case p.cp.Status.Restore == nil:
+	case p.cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}):
 		first, requeueAfter, err = r.restoreFirst(ctx, p.cp, p.class, p.rendered)
 	}
 	if first == nil {
@@ -400,7 +400,7 @@ func request(ctx context.Context, call func(context.Context) error) error {
 func unanswered(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, err error) restoreCheck {
 	logf.FromContext(ctx).Error(err, "check the restore in the etcd", "etcd", etcd.Name())
 	check := restoreCheck{requeueAfter: 10 * time.Second}
-	if cp.Status.Restore == nil {
+	if cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 		check.condition = restoring("waiting for etcd of " + cp.Name + " to answer")
 	}
 	return check
@@ -412,7 +412,7 @@ func unanswered(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcdd
 // the Backup, which may be gone.
 func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane, etcd *etcddruid.Store, c *clientv3.Client) (restoreMarker, int64, *restoreCheck, error) {
 	var value restoreMarker
-	if recorded := cp.Status.Restore; recorded != nil {
+	if recorded := cp.Status.Restore; recorded != (lodiav1alpha1.RestoreStatus{}) {
 		value = restoreMarker{Backup: recorded.Backup, Source: recorded.Source}
 	} else {
 		name := cp.Spec.RestoreFrom.BackupRef.Name
@@ -424,7 +424,7 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 			}
 			return restoreMarker{}, 0, nil, fmt.Errorf("read Backup %s: %w", name, err)
 		}
-		value = restoreMarker{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: ptr.Deref(backup.Status.Source, lodiav1alpha1.UIDReference{})}
+		value = restoreMarker{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: backup.Status.Source}
 	}
 	var seal *clientv3.GetResponse
 	if err := request(ctx, func(ctx context.Context) (err error) {
@@ -463,9 +463,9 @@ func (r *Reconciler) cleanUp(ctx context.Context, cp *lodiav1alpha1.ControlPlane
 
 // restored is the status of a complete restore, from the marker's value; it
 // keeps the time it was first written for the same Backup.
-func restored(cp *lodiav1alpha1.ControlPlane, value restoreMarker) *lodiav1alpha1.RestoreStatus {
-	status := &lodiav1alpha1.RestoreStatus{Backup: value.Backup, Source: value.Source, CompletedAt: metav1.Now()}
-	if recorded := cp.Status.Restore; recorded != nil && recorded.Backup.UID == value.Backup.UID {
+func restored(cp *lodiav1alpha1.ControlPlane, value restoreMarker) lodiav1alpha1.RestoreStatus {
+	status := lodiav1alpha1.RestoreStatus{Backup: value.Backup, Source: value.Source, CompletedAt: metav1.Now()}
+	if recorded := cp.Status.Restore; recorded != (lodiav1alpha1.RestoreStatus{}) && recorded.Backup.UID == value.Backup.UID {
 		status.CompletedAt = recorded.CompletedAt
 	}
 	return status

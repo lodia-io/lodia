@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
@@ -262,13 +263,13 @@ func TestACacheHoldingAPredecessorWritesNothingToItsSuccessor(t *testing.T) {
 	}
 	err := apply(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{
 		Conditions:         []metav1.Condition{condition(metav1.ConditionTrue, "the predecessor's", earlier)},
-		ObservedGeneration: 1,
+		ObservedGeneration: new(int64(1)),
 	}, true)
 	if err == nil {
 		t.Fatal("the apply from a predecessor's cache succeeded")
 	}
 	got := stored(t, successor)
-	if len(got.Status.Conditions) != 0 || got.Status.ObservedGeneration != 0 {
+	if len(got.Status.Conditions) != 0 || ptr.Deref(got.Status.ObservedGeneration, 0) != 0 {
 		t.Errorf("the successor's status became %+v", got.Status)
 	}
 }
@@ -382,13 +383,13 @@ func TestAKeptConditionStaysInTheApplyOfAnotherField(t *testing.T) {
 	meta.RemoveStatusCondition(&cached.Status.Conditions, lodiav1alpha1.ConditionReady)
 	if err := writer().ApplyInto(t.Context(), cached, lodiav1alpha1.ControlPlaneStatus{
 		Conditions:         []metav1.Condition{statusapply.FirstPass(cached, lodiav1alpha1.ConditionReady)},
-		ObservedGeneration: 1,
+		ObservedGeneration: new(int64(1)),
 	}, true); err != nil {
 		t.Fatal(err)
 	}
 	got := stored(t, cp)
-	if got.Status.ObservedGeneration != 1 {
-		t.Errorf("observedGeneration %d, want 1", got.Status.ObservedGeneration)
+	if ptr.Deref(got.Status.ObservedGeneration, 0) != 1 {
+		t.Errorf("observedGeneration %v, want 1", ptr.Deref(got.Status.ObservedGeneration, 0))
 	}
 	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Reason != held.Reason || c.Message != held.Message || !c.LastTransitionTime.Equal(&held.LastTransitionTime) {
 		t.Errorf("Ready is %+v, want %+v", c, held)
@@ -469,12 +470,12 @@ func TestAnotherFieldThatChangedIsWrittenWithTheConditions(t *testing.T) {
 		t.Fatal(err)
 	}
 	cp.Status.Conditions = []metav1.Condition{held}
-	if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}, ObservedGeneration: 1}, true); err != nil {
+	if err := apply(t.Context(), cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{held}, ObservedGeneration: new(int64(1))}, true); err != nil {
 		t.Fatal(err)
 	}
 	got := stored(t, cp)
-	if got.Status.ObservedGeneration != 1 {
-		t.Errorf("observedGeneration %d, want 1", got.Status.ObservedGeneration)
+	if ptr.Deref(got.Status.ObservedGeneration, 0) != 1 {
+		t.Errorf("observedGeneration %v, want 1", ptr.Deref(got.Status.ObservedGeneration, 0))
 	}
 	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionReady); c == nil || c.Message != "held" {
 		t.Errorf("Ready is %+v", c)
@@ -539,7 +540,7 @@ func TestACancelledPassWritesNothingAndReturnsItsError(t *testing.T) {
 			return apply(ctx, cp, desired, false)
 		},
 		"Apply of another field": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
-			return apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{ObservedGeneration: 1}, true)
+			return apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{ObservedGeneration: new(int64(1))}, true)
 		},
 		"Apply with no change": func(cp *lodiav1alpha1.ControlPlane, _ *lodiav1alpha1.Backup) error {
 			held := cp.DeepCopy()

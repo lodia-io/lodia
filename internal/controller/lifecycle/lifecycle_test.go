@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -77,12 +78,12 @@ func TestTheTargetFollowsTheVersionWithinAMinorThroughAnUpgrade(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expectProgressing(t, cp, lodiav1alpha1.ReasonUpgrading, "upgrading to v1.35.1, step APIServer: kube-apiserver: reports v1.35.0, not v1.35.1; kube-controller-manager: reports v1.35.0, not v1.35.1; kube-scheduler: reports v1.35.0, not v1.35.1; the addons: reports v1.35.0, not v1.35.1")
 	})
-	if u := get(t, cp).Status.Kubernetes.Upgrade; u == nil || u.Step != lodiav1alpha1.UpgradeStepAPIServer {
+	if u := get(t, cp).Status.Kubernetes.Upgrade; u == (lodiav1alpha1.UpgradeStatus{}) || u.Step != lodiav1alpha1.UpgradeStepAPIServer {
 		t.Errorf("upgrade is %+v, want step APIServer", u)
 	}
 	reportAll(t, cp, "v1.35.1")
 	testenv.Eventually(t, func() error {
-		if k := get(t, cp).Status.Kubernetes; k == nil || k.Upgrade != nil {
+		if k := get(t, cp).Status.Kubernetes; k == nil || k.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
 			return fmt.Errorf("status.kubernetes is %+v, want no upgrade", k)
 		}
 		return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonIdle)
@@ -401,12 +402,12 @@ func TestAPausedControlPlaneKeepsItsTarget(t *testing.T) {
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonIdle) })
 
 	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
-		cp.Spec.Paused = true
+		cp.Spec.Paused = new(true)
 		cp.Spec.Version = "v1.35.1"
 	})
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.0", lodiav1alpha1.ReasonPaused) })
 
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false })
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(false) })
 	reportAll(t, cp, "v1.35.1")
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.35.1", lodiav1alpha1.ReasonIdle) })
 }
@@ -627,7 +628,7 @@ func loadBalancer(host lodiav1alpha1.EndpointHost) lodiav1alpha1.Endpoint {
 }
 
 func gateway() lodiav1alpha1.Endpoint {
-	return lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+	return lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 		ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 		Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
 	}}
@@ -787,8 +788,8 @@ func expectReady(t *testing.T, cp *lodiav1alpha1.ControlPlane, status metav1.Con
 	switch {
 	case c == nil || c.Status != status || c.Reason != reason || c.Message != message || c.ObservedGeneration != generation:
 		return fmt.Errorf("Ready is %+v, want %s %s %q at generation %d", c, status, reason, message, generation)
-	case fresh.Status.ObservedGeneration != observedGeneration:
-		return fmt.Errorf("status.observedGeneration is %d, want %d", fresh.Status.ObservedGeneration, observedGeneration)
+	case ptr.Deref(fresh.Status.ObservedGeneration, 0) != observedGeneration:
+		return fmt.Errorf("status.observedGeneration is %d, want %d", ptr.Deref(fresh.Status.ObservedGeneration, -1), observedGeneration)
 	}
 	return nil
 }

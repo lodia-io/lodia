@@ -17,7 +17,7 @@ func TestReadinessTakesTheConditionOfTheWayOutWhereItStandsInTheChainOfCauses(t 
 		endpoint lodiav1alpha1.Endpoint
 		want     string
 	}{
-		{"gateway", lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{}}, "RoutesReady " + build + " " + reach},
+		{"gateway", lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{ParentRef: lodiav1alpha1.ParentReference{Name: "tenants", Namespace: "gateway", SectionName: "tls"}}}, "RoutesReady " + build + " " + reach},
 		{"a load balancer without a host", lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{}}, "LoadBalancerReady " + build + " " + reach},
 		{"a load balancer at an IP address", lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "203.0.113.10"}}, build + " LoadBalancerReady " + reach},
 		{"a load balancer at a name", lodiav1alpha1.Endpoint{LoadBalancer: &lodiav1alpha1.LoadBalancerEndpoint{Host: "api.dev.example.com"}}, build + " LoadBalancerReady " + reach},

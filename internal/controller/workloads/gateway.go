@@ -37,22 +37,22 @@ import (
 // they are: the endpoint never moves, since the ServiceAccount issuer follows
 // its port and every kubelet dials it.
 func (r *Reconciler) gateway(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.EndpointStatus, *metav1.Condition, *metav1.Condition, error) {
-	published := cp.Status.Endpoint
-	gw, listener, problem, err := r.listener(ctx, cp, published)
+	known := published(cp)
+	gw, listener, problem, err := r.listener(ctx, cp, known)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if problem != nil {
 		routes := routesCondition(metav1.ConditionFalse, problem.reason, problem.message)
-		if published != nil {
-			return published, nil, routes, nil
+		if known != nil {
+			return known, nil, routes, nil
 		}
 		ref := cp.Spec.Endpoint.Gateway.ParentRef
 		waiting := newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint,
 			fmt.Sprintf("no endpoint until listener %s of Gateway %s/%s can take the routes, which RoutesReady says", ref.SectionName, ref.Namespace, ref.Name))
 		return nil, &waiting, routes, nil
 	}
-	endpoint := published
+	endpoint := known
 	if endpoint == nil {
 		endpoint = gatewayEndpoint(cp, listener.Port)
 	}
@@ -66,7 +66,7 @@ func gatewayEndpoint(cp *lodiav1alpha1.ControlPlane, port int32) *lodiav1alpha1.
 		APIServer:    lodiav1alpha1.HostPort{Host: string(hostnames.APIServer), Port: port},
 		Konnectivity: lodiav1alpha1.HostPort{Host: string(hostnames.Konnectivity), Port: port},
 		InCluster:    lodiav1alpha1.HostPort{Host: cp.Spec.AdvertiseAddress(), Port: kubernetesPort},
-		Tunnel:       &lodiav1alpha1.HostPort{Host: string(hostnames.Tunnel), Port: port},
+		Tunnel:       lodiav1alpha1.HostPort{Host: string(hostnames.Tunnel), Port: port},
 	}
 }
 
@@ -233,7 +233,7 @@ func (r *Reconciler) owners(ctx context.Context, cp *lodiav1alpha1.ControlPlane)
 	out := map[string]*lodiav1alpha1.ControlPlane{}
 	for i := range list.Items {
 		other := &list.Items[i]
-		if other.UID == cp.UID || !other.DeletionTimestamp.IsZero() || other.Spec.Endpoint.Gateway == nil || gatewayOf(other) != gatewayOf(cp) || !first(other, cp) {
+		if other.UID == cp.UID || !other.DeletionTimestamp.IsZero() || other.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) || gatewayOf(other) != gatewayOf(cp) || !first(other, cp) {
 			continue
 		}
 		for _, hostname := range hostnames(other) {
@@ -507,7 +507,7 @@ func (r *Reconciler) holders(ctx context.Context, obj client.Object) []reconcile
 	var out []reconcile.Request
 	for i := range list.Items {
 		cp := &list.Items[i]
-		if cp.Spec.Endpoint.Gateway == nil {
+		if cp.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) {
 			continue
 		}
 		key := gatewayOf(cp)
@@ -545,7 +545,7 @@ func (r *Reconciler) parented(ctx context.Context, gateway client.Object) []reco
 	}
 	var out []reconcile.Request
 	for i := range list.Items {
-		if cp := &list.Items[i]; cp.Spec.Endpoint.Gateway != nil && gatewayOf(cp) == client.ObjectKeyFromObject(gateway) {
+		if cp := &list.Items[i]; cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) && gatewayOf(cp) == client.ObjectKeyFromObject(gateway) {
 			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		}
 	}
@@ -556,7 +556,7 @@ func (r *Reconciler) parented(ctx context.Context, gateway client.Object) []reco
 // Gateway, whose owner its creation or deletion may change.
 func (r *Reconciler) sharers(ctx context.Context, obj client.Object) []reconcile.Request {
 	cp, ok := obj.(*lodiav1alpha1.ControlPlane)
-	if !ok || cp.Spec.Endpoint.Gateway == nil {
+	if !ok || cp.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) {
 		return nil
 	}
 	list := &lodiav1alpha1.ControlPlaneList{}
@@ -568,7 +568,7 @@ func (r *Reconciler) sharers(ctx context.Context, obj client.Object) []reconcile
 	var out []reconcile.Request
 	for i := range list.Items {
 		other := &list.Items[i]
-		if other.UID == cp.UID || other.Spec.Endpoint.Gateway == nil || gatewayOf(other) != gatewayOf(cp) {
+		if other.UID == cp.UID || other.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) || gatewayOf(other) != gatewayOf(cp) {
 			continue
 		}
 		if slices.ContainsFunc(hostnames(other), func(h string) bool { return slices.Contains(mine, h) }) {

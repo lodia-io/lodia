@@ -77,7 +77,7 @@ func TestGatewayGate(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if cp.Status.Endpoint != nil {
+				if cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}) {
 					return fmt.Errorf("status.endpoint is %+v", cp.Status.Endpoint)
 				}
 				_, err = conditionAt(ctx, k8s, a, lodiav1alpha1.ConditionAPIServerReady, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForEndpoint)

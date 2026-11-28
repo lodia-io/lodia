@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -101,7 +102,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if cp.DeletionTimestamp != nil || cp.Spec.Paused {
+	if cp.DeletionTimestamp != nil || ptr.Deref(cp.Spec.Paused, false) {
 		return ctrl.Result{}, nil
 	}
 	now := r.Clock.Now()
@@ -191,7 +192,7 @@ func (t *tenant) certificatesReady() metav1.Condition {
 			issuing = append(issuing, t.stagedSigner())
 		}
 		c.Reason, c.Message = lodiav1alpha1.ReasonIssuing, strings.Join(issuing, "; ")
-	case t.endpoint == nil || t.cp.Spec.Endpoint.Gateway != nil && t.tunnelHost == "":
+	case t.endpoint == nil || t.cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) && t.tunnelHost == "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint"
 	case t.waitingForBackup != "":
 		c.Reason, c.Message = lodiav1alpha1.ReasonWaitingForBackup, t.waitingForBackup
@@ -311,7 +312,7 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 // credentialRefs is the part of status.credentials PKI writes, nil when it
 // holds nothing.
 func credentialRefs(c *lodiav1alpha1.CredentialsStatus) *lodiav1alpha1.CredentialsStatus {
-	if c == nil || c.AdminKubeconfigSecretRef == nil && c.CABundleSecretRef == nil && c.NotAfter == nil {
+	if c == nil || c.AdminKubeconfigSecretRef == (lodiav1alpha1.LocalReference{}) && c.CABundleSecretRef == (lodiav1alpha1.LocalReference{}) && c.NotAfter == nil {
 		return nil
 	}
 	return &lodiav1alpha1.CredentialsStatus{AdminKubeconfigSecretRef: c.AdminKubeconfigSecretRef, CABundleSecretRef: c.CABundleSecretRef, NotAfter: c.NotAfter}

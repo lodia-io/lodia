@@ -22,7 +22,7 @@ type window struct {
 // operator's zone database lacks. "Local" names the operator's own zone, not
 // one of the database's.
 func windowOf(cp *lodiav1alpha1.ControlPlane) (*window, error) {
-	if cp.Spec.Maintenance == nil || cp.Spec.Maintenance.Window == nil {
+	if cp.Spec.Maintenance == nil || cp.Spec.Maintenance.Window == (lodiav1alpha1.MaintenanceWindow{}) {
 		return nil, nil
 	}
 	spec := cp.Spec.Maintenance.Window

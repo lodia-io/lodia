@@ -134,7 +134,7 @@ func TestKubernetesVersionFollowsTheReportsWhilePausedAndDeleting(t *testing.T) 
 	report(t, cp, "v1.37.1", "v1.37.1", "v1.37.1", "v1.37.1")
 	expectKubernetes(t, cp, "v1.37.1")
 
-	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true })
+	update(t, cp, func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) })
 	testenv.Eventually(t, func() error { return expect(t, cp, "v1.37.1", lodiav1alpha1.ReasonPaused) })
 	report(t, cp, "v1.37.1", "v1.37.1", "v1.37.1", "v1.37.0")
 	expectKubernetes(t, cp, "v1.37.0")
