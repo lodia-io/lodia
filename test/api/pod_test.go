@@ -62,7 +62,7 @@ var placements = []struct {
 	{"a node selector of an uppercase name and value", map[string]any{"nodeSelector": map[string]any{"topology.example.com/Zone": "EU-West"}}, ""},
 	{"a toleration of every taint", map[string]any{"tolerations": []any{map[string]any{"operator": "Exists"}}}, ""},
 	{"a toleration without a key, operator Equal by default", map[string]any{"tolerations": []any{map[string]any{"value": "x"}}}, withoutKey},
-	{"a toleration of an empty key, operator Equal", map[string]any{"tolerations": []any{map[string]any{"key": "", "operator": "Equal"}}}, withoutKey},
+	{"a toleration of an empty key", map[string]any{"tolerations": []any{map[string]any{"key": "", "operator": "Exists"}}}, "spec.placement.tolerations[0].key in body should be at least 1 chars long"},
 	{"a toleration of a prefixed key", map[string]any{"tolerations": []any{map[string]any{"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "effect": "NoSchedule"}}}, ""},
 	{"a toleration of a key with a space", map[string]any{"tolerations": []any{map[string]any{"key": "a b", "operator": "Exists"}}}, tolerationKey},
 	{"a toleration of a key of 63 characters", map[string]any{"tolerations": []any{map[string]any{"key": strings.Repeat("k", 63), "operator": "Exists"}}}, ""},
@@ -72,10 +72,10 @@ var placements = []struct {
 	{"a toleration of a key and a value", map[string]any{"tolerations": []any{map[string]any{"key": "dedicated", "operator": "Equal", "value": "control-planes", "effect": "NoSchedule"}}}, ""},
 	{"a toleration of an uppercase key", map[string]any{"tolerations": []any{map[string]any{"key": "example.com/GPU", "operator": "Exists"}}}, ""},
 	{"a toleration of an uppercase value", map[string]any{"tolerations": []any{map[string]any{"key": "dedicated", "value": "Control-Planes"}}}, ""},
-	{"a toleration of a key and an empty value", map[string]any{"tolerations": []any{map[string]any{"key": "dedicated", "value": ""}}}, ""},
+	{"a toleration of a key and no value", map[string]any{"tolerations": []any{map[string]any{"key": "dedicated"}}}, ""},
+	{"a toleration of a key and an empty value", map[string]any{"tolerations": []any{map[string]any{"key": "dedicated", "value": ""}}}, "spec.placement.tolerations[0].value in body should be at least 1 chars long"},
 	{"a toleration of a value with a space", map[string]any{"tolerations": []any{map[string]any{"key": "dedicated", "value": "a b"}}}, labelValue},
 	{"a toleration of a value of 64 characters", map[string]any{"tolerations": []any{map[string]any{"key": "dedicated", "value": strings.Repeat("v", 64)}}}, "Too long"},
-	{"a toleration Exists with an empty value", map[string]any{"tolerations": []any{map[string]any{"key": "a", "operator": "Exists", "value": ""}}}, ""},
 	{"a toleration Exists with a value", map[string]any{"tolerations": []any{map[string]any{"key": "a", "operator": "Exists", "value": "b"}}}, existsNoValue},
 	{"a toleration of seconds with NoExecute", map[string]any{"tolerations": []any{map[string]any{"key": "a", "operator": "Exists", "effect": "NoExecute", "tolerationSeconds": int64(300)}}}, ""},
 	{"a toleration of seconds with NoSchedule", map[string]any{"tolerations": []any{map[string]any{"key": "a", "operator": "Exists", "effect": "NoSchedule", "tolerationSeconds": int64(5)}}}, noExecute},
@@ -91,10 +91,12 @@ var placements = []struct {
 }
 
 var refusedOnPurpose = map[string]string{
-	"a toleration of operator Lt":        "pod validation admits it only behind a feature gate",
-	"a toleration of operator Gt":        "pod validation admits it only behind a feature gate",
-	"a resource a component never needs": "a control plane pod needs no extended resource",
-	"a request of huge pages":            "a control plane pod needs no huge pages",
+	"a toleration of an empty key":             "an empty optional string would mean what leaving it out means",
+	"a toleration of a key and an empty value": "an empty optional string would mean what leaving it out means",
+	"a toleration of operator Lt":              "pod validation admits it only behind a feature gate",
+	"a toleration of operator Gt":              "pod validation admits it only behind a feature gate",
+	"a resource a component never needs":       "a control plane pod needs no extended resource",
+	"a request of huge pages":                  "a control plane pod needs no huge pages",
 }
 
 var resourceRows = []struct {

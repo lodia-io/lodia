@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clocktesting "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -59,7 +60,7 @@ func fleetTenant(t *testing.T, namespace string) *lodiav1alpha1.ControlPlane {
 func autoUpdate(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 	t.Helper()
 	fresh := getQuiet(t, cp)
-	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{AutoUpdate: &lodiav1alpha1.AutoUpdate{KubernetesPatch: true}}
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{AutoUpdate: &lodiav1alpha1.AutoUpdate{KubernetesPatch: new(true)}}
 	if err := quiet.Update(t.Context(), fresh); err != nil {
 		t.Fatal(err)
 	}
@@ -235,6 +236,22 @@ func TestASlotIsCountedFromTheCacheThenFromTheAPIServer(t *testing.T) {
 	expectMaintenance(t, y, lodiav1alpha1.ReasonMaintaining, runningRevision)
 }
 
+// TestATenantNotPausedInItsSpecCountsTheFleetsSlots waits for a slot the fleet holds when its spec says paused: false.
+func TestATenantNotPausedInItsSpecCountsTheFleetsSlots(t *testing.T) {
+	x, y := fleetTenant(t, "unpaused-x"), fleetTenant(t, "unpaused-y")
+	mustPass(t, fleetReconciler(quiet, quiet, later, 1), x)
+	expectMaintenance(t, x, lodiav1alpha1.ReasonMaintaining, runningRevision)
+	fresh := getQuiet(t, y)
+	fresh.Spec.Paused = new(false)
+	if err := quiet.Update(t.Context(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	reportsOf(t, y, otherRevision)
+	seedLifecycle(t, y, otherRevision, lodiav1alpha1.ReasonIdle, nil, nil)
+	mustPass(t, fleetReconciler(quiet, quiet, later, 1), y)
+	expectMaintenance(t, y, lodiav1alpha1.ReasonFleetLimit, otherRevision)
+}
+
 func TestTwoTenantsRacingForTheLastSlotGetOne(t *testing.T) {
 	a, b := fleetTenant(t, "race-a"), fleetTenant(t, "race-b")
 	before := &lodiav1alpha1.ControlPlaneList{}
@@ -344,7 +361,7 @@ func TestARestartedOperatorCountsTheSlotsFromStatus(t *testing.T) {
 func TestARestartedOperatorReadsTheSlotWhateverProgressingSays(t *testing.T) {
 	x, y := fleetTenant(t, "restart-zone-x"), fleetTenant(t, "restart-zone-y")
 	fresh := getQuiet(t, x)
-	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00", TimeZone: "Mars/Olympus_Mons"}}
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00", TimeZone: "Mars/Olympus_Mons"}}
 	if err := quiet.Update(t.Context(), fresh); err != nil {
 		t.Fatal(err)
 	}
@@ -380,10 +397,10 @@ func TestAnOwnersEditAndAPauseKeepTheSlotUntilTheChangeSettles(t *testing.T) {
 		reason string
 	}{
 		{"an edit of the window", func(cp *lodiav1alpha1.ControlPlane) {
-			cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
+			cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
 		}, lodiav1alpha1.ReasonMaintaining},
-		{"a pause", func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = true }, lodiav1alpha1.ReasonPaused},
-		{"an unpause", func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = false }, lodiav1alpha1.ReasonMaintaining},
+		{"a pause", func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(true) }, lodiav1alpha1.ReasonPaused},
+		{"an unpause", func(cp *lodiav1alpha1.ControlPlane) { cp.Spec.Paused = new(false) }, lodiav1alpha1.ReasonMaintaining},
 	} {
 		fresh := getQuiet(t, x)
 		step.edit(fresh)
@@ -487,7 +504,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 		}},
 		{"a cache from before an owner's edit and the grant", func(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 			fresh := getQuiet(t, cp)
-			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
+			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
 			if err := quiet.Update(t.Context(), fresh); err != nil {
 				t.Fatal(err)
 			}
@@ -505,7 +522,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			seedSlot(t, cp, map[string]any{"version": latest137, "operatorRevision": runningRevision}, true, nil)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
 			cp.Status.Target.Version = "v1.37.1"
-			cp.Status.Kubernetes.Upgrade = nil
+			cp.Status.Kubernetes.Upgrade = lodiav1alpha1.UpgradeStatus{}
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},
@@ -517,7 +534,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			cp.Generation--
 			cp.Spec.Maintenance = nil
 			cp.Status.Target.Version = "v1.37.1"
-			cp.Status.Kubernetes.Upgrade = nil
+			cp.Status.Kubernetes.Upgrade = lodiav1alpha1.UpgradeStatus{}
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},
@@ -527,7 +544,7 @@ func TestAStaleCacheNeverRevokesAGrantOrASlot(t *testing.T) {
 			applyQuiet(t, cp, "test/class", runsClass(class, 1))
 			seedSlot(t, cp, classGrant(class, editClass(t, quiet, "stale-grant")), false, nil)
 		}, func(cp *lodiav1alpha1.ControlPlane) {
-			cp.Status.Target.DatastoreClass = nil
+			cp.Status.Target.DatastoreClass = lodiav1alpha1.DatastoreClassGeneration{}
 			cp.Status.Maintenance = nil
 			meta.SetStatusCondition(&cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionProgressing, Status: metav1.ConditionFalse, Reason: lodiav1alpha1.ReasonIdle, ObservedGeneration: cp.Generation})
 		}},
@@ -766,7 +783,7 @@ func TestTheWindowsRequeueAndATimeZoneChange(t *testing.T) {
 	cp := fleetTenant(t, "window")
 	setWindow := func(window *lodiav1alpha1.MaintenanceWindow) {
 		fresh := getQuiet(t, cp)
-		fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: window}
+		fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: ptr.Deref(window, lodiav1alpha1.MaintenanceWindow{})}
 		if err := quiet.Update(t.Context(), fresh); err != nil {
 			t.Fatal(err)
 		}
@@ -804,7 +821,7 @@ func TestTheWindowsRequeueAndATimeZoneChange(t *testing.T) {
 func TestAWindowEdgeCrossedBetweenTwoPasses(t *testing.T) {
 	cp := fleetTenant(t, "edge")
 	fresh := getQuiet(t, cp)
-	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "11:00", End: "12:00"}}
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "11:00", End: "12:00"}}
 	if err := quiet.Update(t.Context(), fresh); err != nil {
 		t.Fatal(err)
 	}
@@ -819,7 +836,7 @@ func TestAWindowEdgeCrossedBetweenTwoPasses(t *testing.T) {
 
 	other := fleetTenant(t, "edge-end")
 	fresh = getQuiet(t, other)
-	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "10:00", End: "11:00"}}
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "10:00", End: "11:00"}}
 	if err := quiet.Update(t.Context(), fresh); err != nil {
 		t.Fatal(err)
 	}
@@ -841,7 +858,7 @@ func TestATokenIsHandledOncePerValue(t *testing.T) {
 		}
 	}
 	fresh := getQuiet(t, cp)
-	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
 	if err := quiet.Update(t.Context(), fresh); err != nil {
 		t.Fatal(err)
 	}

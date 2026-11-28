@@ -146,6 +146,31 @@ func expect(t *testing.T, err error, want string) {
 	}
 }
 
+// TestEveryPrinterColumnReadsAFieldOfItsSchema finds each printer column's JSONPath, up to its first filter, in its CRD's schema.
+func TestEveryPrinterColumnReadsAFieldOfItsSchema(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "api", "crds", "*.yaml"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no CRDs found: %v", err)
+	}
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := yaml.Unmarshal(raw, crd); err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range crd.Spec.Versions {
+			for _, c := range v.AdditionalPrinterColumns {
+				if path, _, _ := strings.Cut(c.JSONPath, "["); path != ".metadata.creationTimestamp" {
+					at(t, *v.Schema.OpenAPIV3Schema, path)
+				}
+			}
+		}
+	}
+}
+
 func TestExamplesAreAccepted(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a", "team-b")
@@ -180,7 +205,10 @@ func TestControlPlaneValidation(t *testing.T) {
 		{"a patch with a leading zero", func(t *testing.T, o *unstructured.Unstructured) { set(t, o, "v1.37.01", "spec", "version") }, "spec.version"},
 		{"an empty datastore", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, map[string]any{}, "spec", "datastore")
-		}, ""},
+		}, "spec.datastore in body should have at least 1 properties"},
+		{"an empty class name", func(t *testing.T, o *unstructured.Unstructured) {
+			set(t, o, "", "spec", "datastore", "className")
+		}, "spec.datastore.className in body should be at least 1 chars long"},
 		{"a class name of 253 characters", func(t *testing.T, o *unstructured.Unstructured) {
 			set(t, o, strings.Repeat("c", 253), "spec", "datastore", "className")
 		}, ""},
@@ -998,11 +1026,6 @@ func TestTheDatastoreClassCannotChange(t *testing.T) {
 		from, to map[string]any
 		want     string
 	}{
-		{"absent, then empty", nil, map[string]any{}, ""},
-		{"absent, then an empty class name", nil, map[string]any{"className": ""}, ""},
-		{"an empty class name, then absent", map[string]any{"className": ""}, nil, ""},
-		{"empty, then absent", map[string]any{}, nil, ""},
-		{"empty, then a class", map[string]any{}, map[string]any{"className": "fast-ssd"}, immutable},
 		{"absent, then a class", nil, map[string]any{"className": "fast-ssd"}, immutable},
 		{"a class, then absent", map[string]any{"className": "fast-ssd"}, nil, immutable},
 		{"a class, then another", map[string]any{"className": "fast-ssd"}, map[string]any{"className": "slow-hdd"}, immutable},
@@ -1787,8 +1810,8 @@ func TestRemovedFieldsAreUnknown(t *testing.T) {
 		{"controlplane-single.yaml", map[string]any{"configRef": map[string]any{"name": "admission"}}, []string{"spec", "apiServer", "admission"}},
 		{"controlplane-single.yaml", map[string]any{"name": "profiles"}, []string{"spec", "scheduler", "configRef"}},
 		{"controlplane-single.yaml", true, []string{"spec", "serviceAccount", "publicDiscovery"}},
-		{"controlplane-single.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
-		{"controlplane-single.yaml", map[string]any{"className": "fast-ssd"}, []string{"spec", "datastore", "dedicated"}},
+		{"controlplane-ha.yaml", map[string]any{"name": "pool-a"}, []string{"spec", "datastore", "shared"}},
+		{"controlplane-ha.yaml", map[string]any{"className": "fast-ssd"}, []string{"spec", "datastore", "dedicated"}},
 		{"datastoreclass.yaml", "720h", []string{"spec", "backup", "retention", "afterDelete"}},
 	} {
 		field := strings.Join(c.path, ".")
@@ -1955,6 +1978,17 @@ func TestKubeconfigRequestValidation(t *testing.T) {
 	}
 }
 
+// TestDatastoreClassDefaults takes a delta snapshot every 300 seconds when a class names no period.
+func TestDatastoreClassDefaults(t *testing.T) {
+	needsEnvtest(t)
+	obj := example(t, "datastoreclass.yaml", "defaults")
+	unstructured.RemoveNestedField(obj.Object, "spec", "backup", "deltaSnapshotPeriodSeconds")
+	expect(t, k8s.Create(context.Background(), obj, client.DryRunAll), "")
+	if seconds, _, _ := unstructured.NestedInt64(obj.Object, "spec", "backup", "deltaSnapshotPeriodSeconds"); seconds != 300 {
+		t.Fatalf("deltaSnapshotPeriodSeconds = %d, want 300", seconds)
+	}
+}
+
 func TestKubeconfigRequestDefaults(t *testing.T) {
 	needsEnvtest(t)
 	ensureNamespaces(t, "team-a")
@@ -2030,9 +2064,9 @@ func TestDatastoreClassValidation(t *testing.T) {
 		path  []string
 		want  string
 	}{
-		{"delta snapshots every 30 days", "30d", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
-		{"delta snapshots beyond a Go duration", "2562048h", []string{"spec", "backup", "deltaSnapshotPeriod"}, "must be a duration"},
-		{"delta snapshots every 90 seconds", "1m30s", []string{"spec", "backup", "deltaSnapshotPeriod"}, ""},
+		{"delta snapshots every 90 seconds", int64(90), []string{"spec", "backup", "deltaSnapshotPeriodSeconds"}, ""},
+		{"no delta snapshots", int64(0), []string{"spec", "backup", "deltaSnapshotPeriodSeconds"}, ""},
+		{"delta snapshots every -1 seconds", int64(-1), []string{"spec", "backup", "deltaSnapshotPeriodSeconds"}, "spec.backup.deltaSnapshotPeriodSeconds in body should be greater than or equal to 0"},
 		{"a two-letter bucket", "ab", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a bucket with a slash", "backups/prod", []string{"spec", "backup", "store", "bucket"}, "should match"},
 		{"a 64-letter bucket", strings.Repeat("b", 64), []string{"spec", "backup", "store", "bucket"}, "spec.backup.store.bucket"},
@@ -2045,7 +2079,7 @@ func TestDatastoreClassValidation(t *testing.T) {
 		{"a prefix v1/", "v1/", []string{"spec", "backup", "store", "prefix"}, "etcd-backup-restore's snapshot parser"},
 		{"a prefix v10", "v10", []string{"spec", "backup", "store", "prefix"}, ""},
 		{"a prefix team-v2", "team-v2", []string{"spec", "backup", "store", "prefix"}, ""},
-		{"an empty prefix", "", []string{"spec", "backup", "store", "prefix"}, ""},
+		{"an empty prefix", "", []string{"spec", "backup", "store", "prefix"}, "spec.backup.store.prefix in body should be at least 1 chars long"},
 		{"a prefix /lodia", "/lodia", []string{"spec", "backup", "store", "prefix"}, ""},
 		{"a prefix lodia/", "lodia/", []string{"spec", "backup", "store", "prefix"}, ""},
 		{"a prefix of 253 characters", strings.Repeat("a/v", 84) + "1", []string{"spec", "backup", "store", "prefix"}, "etcd-backup-restore's snapshot parser"},

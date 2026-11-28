@@ -4,6 +4,7 @@
 package workloads
 
 import (
+	"cmp"
 	"maps"
 	"net"
 	"slices"
@@ -113,7 +114,7 @@ func service(cp *lodiav1alpha1.ControlPlane) *corev1.Service {
 			svc.Spec.LoadBalancerSourceRanges = append(svc.Spec.LoadBalancerSourceRanges, string(cidr))
 		}
 	}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		svc.Spec.Type = corev1.ServiceTypeClusterIP
 		svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Name: "tunnel", Protocol: corev1.ProtocolTCP, Port: tunnelPort, TargetPort: intstr.FromString("tunnel")})
 	}
@@ -270,7 +271,7 @@ func (r rendering) deployments() []*appsv1.Deployment {
 func (r rendering) apiServer() *appsv1.Deployment {
 	cp := r.cp
 	settings := ptr.Deref(cp.Spec.APIServer, lodiav1alpha1.APIServer{})
-	replicas := ptr.Deref(settings.Replicas, defaultReplicas(cp))
+	replicas := cmp.Or(settings.Replicas, defaultReplicas(cp))
 	etcd := make([]string, 0, len(r.etcd))
 	for _, e := range r.etcd {
 		etcd = append(etcd, "https://"+net.JoinHostPort(e.Host, strconv.Itoa(int(e.Port))))
@@ -331,7 +332,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 			"etcd-ca", "etcd-client", "encryption", "authentication", "egress",
 		),
 	}
-	if cp.Spec.HighAvailability != nil {
+	if cp.Spec.HighAvailability != (lodiav1alpha1.HighAvailability{}) {
 		container.ReadinessProbe.PeriodSeconds, container.ReadinessProbe.FailureThreshold = 2, 5
 		container.LivenessProbe.HTTPGet.Path = "/livez?exclude=etcd"
 	}
@@ -410,7 +411,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 		"konnectivity-kubeconfig": lodiav1alpha1.KonnectivityKubeconfigSecret,
 		"sa-keys":                 lodiav1alpha1.ServiceAccountKeysSecret,
 	}
-	if gateway := cp.Spec.Endpoint.Gateway; gateway != nil {
+	if gateway := cp.Spec.Endpoint.Gateway; gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		sidecars = append(sidecars, r.tunnel(gateway))
 		secrets["tunnel-serving"], secrets["tunnel-ca"] = lodiav1alpha1.TunnelServingSecret, lodiav1alpha1.TunnelCASecret
 	}
@@ -434,7 +435,7 @@ func (r rendering) apiServer() *appsv1.Deployment {
 // in-cluster path, which splices each session to the API server on loopback.
 // It has no readiness probe: one pod-wide Ready would take the replica's API
 // and konnectivity out of the Service with it.
-func (r rendering) tunnel(gateway *lodiav1alpha1.GatewayEndpoint) corev1.Container {
+func (r rendering) tunnel(gateway lodiav1alpha1.GatewayEndpoint) corev1.Container {
 	health := corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromInt32(tunnelHealthPort)}}
 	return corev1.Container{
 		Name:          "lodia-tunnel",
@@ -565,7 +566,7 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 	if p := cp.Spec.Placement; p != nil {
 		pod.NodeSelector, pod.Tolerations, pod.PriorityClassName = p.PodNodeSelector(), p.PodTolerations(), p.PriorityClassName
 	}
-	if ha := cp.Spec.HighAvailability; ha != nil {
+	if ha := cp.Spec.HighAvailability; ha != (lodiav1alpha1.HighAvailability{}) {
 		pod.TopologySpreadConstraints = spread(ha.FailureTolerance, labels, replicas)
 	}
 	template := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: pod}
@@ -606,12 +607,12 @@ func (r rendering) deployment(component string, replicas int32, pod corev1.PodSp
 // back and forth.
 func rollsFor(cp *lodiav1alpha1.ControlPlane, component string) *metav1.Time {
 	if component == apiServer {
-		if record := cp.Status.MemberRestore; record != nil {
+		if record := cp.Status.MemberRestore; record != (lodiav1alpha1.MemberRestoreStatus{}) {
 			return &record.DetectedAt
 		}
 		return nil
 	}
-	if c := cp.Status.Components; c != nil && c.APIServer != nil {
+	if c := cp.Status.Components; c != nil {
 		return c.APIServer.MemberRestoreDetectedAt
 	}
 	return nil
@@ -620,7 +621,7 @@ func rollsFor(cp *lodiav1alpha1.ControlPlane, component string) *metav1.Time {
 func annotated(t metav1.Time) string { return t.UTC().Format(time.RFC3339) }
 
 func defaultReplicas(cp *lodiav1alpha1.ControlPlane) int32 {
-	if cp.Spec.HighAvailability != nil {
+	if cp.Spec.HighAvailability != (lodiav1alpha1.HighAvailability{}) {
 		return 2
 	}
 	return 1
@@ -650,7 +651,7 @@ func spread(tolerance lodiav1alpha1.FailureTolerance, labels map[string]string, 
 }
 
 func podDisruptionBudgets(cp *lodiav1alpha1.ControlPlane) []*policyv1.PodDisruptionBudget {
-	if cp.Spec.HighAvailability == nil {
+	if cp.Spec.HighAvailability == (lodiav1alpha1.HighAvailability{}) {
 		return nil
 	}
 	var out []*policyv1.PodDisruptionBudget
@@ -693,7 +694,7 @@ func networkPolicies(cp *lodiav1alpha1.ControlPlane) []*networkingv1.NetworkPoli
 		if component == apiServer {
 			var ports []networkingv1.NetworkPolicyPort
 			numbers := []intstr.IntOrString{intstr.FromString("https"), intstr.FromInt32(konnectivityPort)}
-			if cp.Spec.Endpoint.Gateway != nil {
+			if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 				numbers = append(numbers, intstr.FromInt32(tunnelPort))
 			}
 			for _, port := range numbers {

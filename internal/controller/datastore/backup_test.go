@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/clock"
 	clocktesting "k8s.io/utils/clock/testing"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -282,7 +283,7 @@ func namespaceUID(t *testing.T, name string) types.UID {
 }
 
 func sealed(backup *lodiav1alpha1.Backup) error {
-	if backup.Status.Seal == nil {
+	if backup.Status.Seal == (lodiav1alpha1.BackupSeal{}) {
 		return errors.New("no seal yet")
 	}
 	return nil
@@ -308,10 +309,10 @@ func TestABackupIsSealedAndCopied(t *testing.T) {
 	prefix := "prod/" + string(namespaceUID(t, src.ns)) + "/backups/" + string(created.UID)
 	if want := (lodiav1alpha1.BackupStatus{
 		Conditions:        started.Status.Conditions,
-		Source:            &lodiav1alpha1.UIDReference{Name: sourceName, UID: cp.UID},
+		Source:            lodiav1alpha1.UIDReference{Name: sourceName, UID: cp.UID},
 		KubernetesVersion: "v1.37.1",
-		Network:           &cp.Spec.Network,
-		Snapshots:         &lodiav1alpha1.BackupSnapshotLocation{SnapshotLocation: lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: prefix}, FromSecret: &lodiav1alpha1.StoreSecretFields{Region: new("eu-central-1")}},
+		Network:           cp.Spec.Network,
+		Snapshots:         lodiav1alpha1.BackupSnapshotLocation{SnapshotLocation: lodiav1alpha1.SnapshotLocation{Provider: "S3", Endpoint: "https://s3.example.test", Bucket: "lodia-backups", Prefix: prefix}, FromSecret: &lodiav1alpha1.StoreSecretFields{Region: new("eu-central-1")}},
 		StartedAt:         started.Status.StartedAt,
 	}); started.Status.StartedAt == nil || !reflect.DeepEqual(started.Status, want) {
 		t.Fatalf("the started status is\n%+v\nwant\n%+v", started.Status, want)
@@ -663,7 +664,7 @@ func seal(t *testing.T, src *source, name string, nth int) int {
 				t.Fatalf("after pass %d the seal key was created at %d and written at %d, first created at %d", pass, key.GetCreateRevision(), key.GetModRevision(), revision)
 			}
 		}
-		if backup.Status.Seal != nil && backup.Status.Seal.Revision != revision {
+		if backup.Status.Seal != (lodiav1alpha1.BackupSeal{}) && backup.Status.Seal.Revision != revision {
 			t.Fatalf("after pass %d status.seal.revision is %d, the key's %d", pass, backup.Status.Seal.Revision, revision)
 		}
 		if copyTask := getCopyTask(t, src.ns, created.UID); copyTask != nil {
@@ -838,7 +839,7 @@ func TestABackupThatCannotBeTaken(t *testing.T) {
 			}},
 		})
 		paused := controlPlane(src.ns, sourceName, src.ns)
-		paused.Spec.Paused = true
+		paused.Spec.Paused = new(true)
 		create(t, paused)
 		meta.SetStatusCondition(&paused.Status.Conditions, metav1.Condition{
 			Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "written by the test", ObservedGeneration: paused.Generation,
@@ -914,7 +915,7 @@ func TestASealThatDidNotComeBack(t *testing.T) {
 		passes(t, r, src.ns, backup.Name, readyIs(metav1.ConditionFalse, lodiav1alpha1.ReasonSealLost,
 			"the Backup was sealed as "+backup.Annotations[lodiav1alpha1.SealedUIDAnnotation]+"; its status, which says where the copy is, did not come back with it, so it is never sealed again"))
 		unmoved(t, r, src.ns, backup.Name)
-		if got := getBackup(t, src.ns, backup.Name).Status; got.StartedAt != nil || got.Seal != nil {
+		if got := getBackup(t, src.ns, backup.Name).Status; got.StartedAt != nil || got.Seal != (lodiav1alpha1.BackupSeal{}) {
 			t.Errorf("%s started: %+v", backup.Name, got)
 		}
 		if getFlush(t, src.ns, backup.UID) != nil || getCopyTask(t, src.ns, backup.UID) != nil {
@@ -1007,7 +1008,7 @@ func TestABackupDeletedBeforeItIsSealedGoesAtOnce(t *testing.T) {
 	r := src.reconciler(cached)
 	backup := src.toCopy(t, r)
 	cp := controlPlane(src.ns, "restored", src.ns)
-	cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}
+	cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}
 	create(t, cp)
 	writeGeneration(t, src.ns, cp.Name, 1)
 	waitCondition(t, src.ns, cp.Name, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForBackup, "Backup b is Copying: ")
@@ -1043,7 +1044,7 @@ func TestASealTheEtcdRefuses(t *testing.T) {
 	if result, err := reconcileBackup(r, src.ns, created.Name); err != nil || result.RequeueAfter != time.Minute {
 		t.Fatalf("a refused seal returned %+v, %v; want a requeue after a minute", result, err)
 	}
-	if getBackup(t, src.ns, created.Name).Status.Seal != nil {
+	if getBackup(t, src.ns, created.Name).Status.Seal != (lodiav1alpha1.BackupSeal{}) {
 		t.Fatal("a refused seal was recorded")
 	}
 }
@@ -1222,8 +1223,8 @@ func TestTheWatchesBringTheNextPass(t *testing.T) {
 		if err := backups.Get(t.Context(), client.ObjectKey{Namespace: src.ns, Name: sourceName}, cp); err != nil {
 			return err
 		}
-		if !cp.Spec.Paused || cp.Generation < generation {
-			return fmt.Errorf("the Backup controller's cache holds the ControlPlane at generation %d, paused %t, want it paused at %d", cp.Generation, cp.Spec.Paused, generation)
+		if !ptr.Deref(cp.Spec.Paused, false) || cp.Generation < generation {
+			return fmt.Errorf("the Backup controller's cache holds the ControlPlane at generation %d, paused %t, want it paused at %d", cp.Generation, ptr.Deref(cp.Spec.Paused, false), generation)
 		}
 		return nil
 	})
@@ -1284,10 +1285,11 @@ func TestTheFlushIsAFullSnapshotWhateverTheDeltaPeriod(t *testing.T) {
 	t.Parallel()
 	src := newSource(t, nil, nil)
 	r := src.reconciler(cached)
-	for _, period := range []time.Duration{0, 999 * time.Millisecond, time.Second, 5 * time.Minute} {
+	for _, seconds := range []int32{0, 1, 300} {
+		period := time.Duration(seconds) * time.Second
 		t.Run(period.String(), func(t *testing.T) {
 			editClass(t, src.ns, func(class *lodiav1alpha1.DatastoreClass) {
-				class.Spec.Backup.DeltaSnapshotPeriod = &metav1.Duration{Duration: period}
+				class.Spec.Backup.DeltaSnapshotPeriodSeconds = new(seconds)
 			})
 			grantClass(t, src.ns, sourceName, src.ns)
 			waitEtcd(t, src.ns, sourceName, func(etcd *druidv1alpha1.Etcd) error {
@@ -1530,7 +1532,7 @@ func TestABackupWaitsForTheCredentialsCopy(t *testing.T) {
 		if err != nil || result.RequeueAfter != 10*time.Second {
 			t.Fatalf("a pass without the copy returned %+v, %v; want a requeue in 10s", result, err)
 		}
-		if backup := getBackup(t, src.ns, created.Name); (backup.Status.StartedAt != nil) != sealedYet || (backup.Status.Seal != nil) != sealedYet {
+		if backup := getBackup(t, src.ns, created.Name); (backup.Status.StartedAt != nil) != sealedYet || (backup.Status.Seal != (lodiav1alpha1.BackupSeal{})) != sealedYet {
 			t.Fatalf("a pass without the copy left startedAt %v and seal %+v", backup.Status.StartedAt, backup.Status.Seal)
 		}
 		passes(t, r, src.ns, created.Name, sealed)
@@ -1560,7 +1562,7 @@ func completeRestore(t *testing.T, cp *lodiav1alpha1.ControlPlane, backup *lodia
 	t.Helper()
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		fresh := getControlPlane(t, cp.Namespace, cp.Name)
-		fresh.Status.Restore = &lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: restoredSource, CompletedAt: metav1.Now()}
+		fresh.Status.Restore = lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: backup.Name, UID: backup.UID}, Source: restoredSource, CompletedAt: metav1.Now()}
 		return k8s.Status().Update(t.Context(), fresh)
 	}); err != nil {
 		t.Fatal(err)
@@ -1681,7 +1683,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	restoring := func(t *testing.T, name, backup string) *lodiav1alpha1.ControlPlane {
 		t.Helper()
 		cp := controlPlane(ns, name, "no-such-class")
-		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup}}
+		cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup}}
 		create(t, cp)
 		return getControlPlane(t, ns, name)
 	}
@@ -1740,7 +1742,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 	t.Run("released by the ControlPlane's deletion", func(t *testing.T) {
 		b, _ := backup(t, "orphaned", nil)
 		cp := controlPlane(ns, "deleted", "no-such-class")
-		cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: b.Name}}
+		cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: b.Name}}
 		cp.Finalizers = []string{"test.lodia.io/hold"}
 		create(t, cp)
 		deleteBackup(t, b.Name)
@@ -2021,7 +2023,7 @@ func TestTheRestoreSourceFinalizer(t *testing.T) {
 		ownKeys(t, cp)
 		if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 			fresh := getControlPlane(t, ns, cp.Name)
-			fresh.Status.Restore = &lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: b.Name, UID: "7d1f0a52-3c2b-4f0e-8a6d-5b9c4e2f1a32"}, Source: restoredSource, CompletedAt: metav1.Now()}
+			fresh.Status.Restore = lodiav1alpha1.RestoreStatus{Backup: lodiav1alpha1.UIDReference{Name: b.Name, UID: "7d1f0a52-3c2b-4f0e-8a6d-5b9c4e2f1a32"}, Source: restoredSource, CompletedAt: metav1.Now()}
 			return k8s.Status().Update(t.Context(), fresh)
 		}); err != nil {
 			t.Fatal(err)
@@ -2074,7 +2076,7 @@ func TestTheRestoreSourceFinalizerFollowsItsEvents(t *testing.T) {
 				return k8s.Get(t.Context(), client.ObjectKeyFromObject(backup), &lodiav1alpha1.Backup{})
 			}
 			cp := controlPlane(s.ns, name, "no-such-class")
-			cp.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}
+			cp.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backup.Name}}
 			create(t, cp)
 			if err := k8s.Delete(t.Context(), getBackup(t, s.ns, backup.Name)); err != nil {
 				t.Fatal(err)

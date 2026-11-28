@@ -59,7 +59,7 @@ func apiServerNow(ctx context.Context, t *testing.T, k8s client.Client, key clie
 		s.pods = append(s.pods, p.UID)
 	}
 	slices.Sort(s.pods)
-	if c := getControlPlane(ctx, t, k8s, key).Status.Components; c != nil && c.APIServer != nil {
+	if c := getControlPlane(ctx, t, k8s, key).Status.Components; c != nil && c.APIServer != (lodiav1alpha1.ComponentStatus{}) {
 		s.version = c.APIServer.Version
 	}
 	return s
@@ -75,7 +75,7 @@ func expectRehearsed(ctx context.Context, t *testing.T, k8s client.Client, key c
 		}
 		c = meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
 		switch {
-		case c == nil || c.ObservedGeneration != cp.Generation || cp.Status.Rehearsal == nil || cp.Status.Rehearsal.Version != version:
+		case c == nil || c.ObservedGeneration != cp.Generation || cp.Status.Rehearsal == (lodiav1alpha1.RehearsalStatus{}) || cp.Status.Rehearsal.Version != version:
 			return fmt.Errorf("Rehearsed is %+v, status.rehearsal %+v", c, cp.Status.Rehearsal)
 		case c.Status != status || c.Reason != reason:
 			return fmt.Errorf("Rehearsed is %s %s: %s", c.Status, c.Reason, c.Message)

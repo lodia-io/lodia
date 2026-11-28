@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -232,7 +233,7 @@ func (r *NodesReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		result, _ := r.again(now, false)
 		return result, nil
 	}
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
+	if !cp.DeletionTimestamp.IsZero() || ptr.Deref(cp.Spec.Paused, false) {
 		r.forget(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
@@ -556,12 +557,18 @@ func (s *sampling) status(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.NodesSt
 // the minor of running, which counts none while it is absent or unparsable. A
 // truncated list counts the nodes it read and tells nothing of the kubelets.
 func nodesStatus(nodes []node, running string, truncated bool) *lodiav1alpha1.NodesStatus {
-	status := &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: int32(len(nodes))}, Truncated: truncated}
+	ready := int32(0)
+	status := &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(len(nodes))), Ready: &ready}}
+	if truncated {
+		status.Truncated = new(true)
+	} else {
+		status.OutdatedKubelets = new(int32(0))
+	}
 	floor, _ := version.ParseSemantic(running)
 	var oldest *version.Version
 	for _, n := range nodes {
 		if n.ready == corev1.ConditionTrue {
-			status.Ready++
+			ready++
 		}
 		if truncated {
 			continue
@@ -574,7 +581,7 @@ func nodesStatus(nodes []node, running string, truncated bool) *lodiav1alpha1.No
 			oldest, status.OldestKubelet = kubelet, n.kubelet
 		}
 		if floor != nil && (kubelet.Major() < floor.Major() || kubelet.Major() == floor.Major() && kubelet.Minor() < floor.Minor()) {
-			status.OutdatedKubelets++
+			*status.OutdatedKubelets++
 		}
 	}
 	return status
@@ -601,22 +608,23 @@ func (r *NodesReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlP
 	if err := live.Nodes(ctx, r.Reader, cp, lodiav1alpha1.ConditionControllerManagerHeld); err != nil {
 		return err
 	}
-	if nodes == nil {
-		nodes = cp.Status.Nodes
+	written := cp.Status.Nodes
+	if nodes != nil {
+		written = *nodes
 	}
-	if s.reread = changes(cp, nodes, health, c); !s.reread {
+	if s.reread = changes(cp, &written, health, c); !s.reread {
 		return nil
 	}
-	return r.apply(ctx, cp, nodes, health, c)
+	return r.apply(ctx, cp, written, health, c)
 }
 
 func changes(cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) bool {
-	return statusapply.Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c) || nodes != nil && !equality.Semantic.DeepEqual(nodes, cp.Status.Nodes) || !equality.Semantic.DeepEqual(health, cp.Status.Health)
+	return statusapply.Differs(meta.FindStatusCondition(cp.Status.Conditions, c.Type), c) || nodes != nil && !equality.Semantic.DeepEqual(*nodes, cp.Status.Nodes) || !equality.Semantic.DeepEqual(health, cp.Status.Health)
 }
 
 // apply writes every field each time, since an apply that leaves one out
 // removes it; it leaves cp with what it wrote.
-func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes *lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
+func (r *NodesReconciler) apply(ctx context.Context, cp *lodiav1alpha1.ControlPlane, nodes lodiav1alpha1.NodesStatus, health *lodiav1alpha1.HealthStatus, c metav1.Condition) error {
 	if err := (statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: NodesFieldManager, Events: r.Events}).ApplyInto(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{c}, Nodes: nodes, Health: health}, true); err != nil {
 		return err
 	}

@@ -74,8 +74,8 @@ func tooManyPagesOfNodes(n int) string {
 	return fmt.Sprintf("more than %d pages of Nodes (health.maxNodes)", n) + beyond
 }
 
-func truncatedNodes(total, ready int32) *lodiav1alpha1.NodesStatus {
-	return &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: total, Ready: ready}, Truncated: true}
+func truncatedNodes(total, ready int32) lodiav1alpha1.NodesStatus {
+	return lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(total), Ready: new(ready)}, Truncated: new(true)}
 }
 
 func expectTooMany(t *testing.T, cp *lodiav1alpha1.ControlPlane, message string) {
@@ -262,7 +262,7 @@ func TestAPassOverListsOfPagesWithNoItemsSendsAtMostTheRequestsTheBoundsAllow(t 
 		name                string
 		leaseAsks, nodeAsks int
 		message             string
-		nodes               *lodiav1alpha1.NodesStatus
+		nodes               lodiav1alpha1.NodesStatus
 	}{
 		{"the Leases", 11, 1, tooManyPagesOfLeases(11), nodesOf(0, 0, 0, "")},
 		{"the Nodes", 1, 51, tooManyPagesOfNodes(51), truncatedNodes(0, 0)},
@@ -626,7 +626,7 @@ func TestAPageOrANodeBeyondItsBoundIsATenantBeyondTheBound(t *testing.T) {
 		path    string
 		body    string
 		message string
-		nodes   *lodiav1alpha1.NodesStatus
+		nodes   lodiav1alpha1.NodesStatus
 	}{
 		{"a Node with 65 conditions", nodeListPath, nodes(1, 65, 1), "a Node has more than 64 conditions" + beyond, truncatedNodes(1, 1)},
 		{"a Node with 64 conditions", nodeListPath, nodes(1, 64, 1), "", nodesOf(3, 3, 0, "v1.35.0")},

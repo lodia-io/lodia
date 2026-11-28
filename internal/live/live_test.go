@@ -34,34 +34,34 @@ func held(t *testing.T) (client.Reader, *lodiav1alpha1.ControlPlane) {
 				{Type: lodiav1alpha1.ConditionDatastoreReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "the API server's", LastTransitionTime: at},
 				{Type: lodiav1alpha1.ConditionAPIServerReady, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonReady, Message: "the API server's", LastTransitionTime: at},
 			},
-			Datastore: &lodiav1alpha1.DatastoreStatus{
+			Datastore: lodiav1alpha1.DatastoreStatus{
 				Endpoints: []lodiav1alpha1.HostPort{{Host: "dev-etcd-client.team-a.svc", Port: 2379}},
-				Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}},
+				Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(1)), Ready: new(int32(1))}},
 			},
-			Restore: &lodiav1alpha1.RestoreStatus{
+			Restore: lodiav1alpha1.RestoreStatus{
 				Backup:      lodiav1alpha1.UIDReference{Name: "a-1", UID: "5e1f7c3a-0000-4000-8000-000000000003"},
 				Source:      lodiav1alpha1.UIDReference{Name: "a", UID: "5e1f7c3a-0000-4000-8000-000000000004"},
 				CompletedAt: at,
 			},
-			MemberRestore: &lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: at, From: lodiav1alpha1.MemberRestoreFromSnapshots},
-			Endpoint: &lodiav1alpha1.EndpointStatus{
+			MemberRestore: lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: at, From: lodiav1alpha1.MemberRestoreFromSnapshots},
+			Endpoint: lodiav1alpha1.EndpointStatus{
 				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.com", Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.com", Port: 443},
 				InCluster:    lodiav1alpha1.HostPort{Host: lodiav1alpha1.DefaultAdvertiseAddress, Port: 6443},
-				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.com", Port: 443},
+				Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev.example.com", Port: 443},
 			},
 			Addons: &lodiav1alpha1.Rendered{Version: "v1.37.1"},
 			Components: &lodiav1alpha1.ComponentsStatus{
-				APIServer: &lodiav1alpha1.ComponentStatus{
-					RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 2, Ready: 2}, Updated: new(int32(2))},
+				APIServer: lodiav1alpha1.ComponentStatus{
+					RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(2)), Ready: new(int32(2))}, Updated: new(int32(2))},
 					Rendered:     lodiav1alpha1.Rendered{Version: "v1.37.1"},
 				},
 			},
-			Nodes:  &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 3, Ready: 2}, OldestKubelet: "v1.34.2"},
-			Health: &lodiav1alpha1.HealthStatus{ControllerManagerHold: &lodiav1alpha1.ControllerManagerHold{Since: &at, SilentNodes: 2, CountedNodes: 3}},
+			Nodes:  lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(3)), Ready: new(int32(2))}, OldestKubelet: "v1.34.2"},
+			Health: &lodiav1alpha1.HealthStatus{ControllerManagerHold: &lodiav1alpha1.ControllerManagerHold{Since: &at, SilentNodes: new(int32(2)), CountedNodes: new(int32(3))}},
 			Credentials: &lodiav1alpha1.CredentialsStatus{
-				AdminKubeconfigSecretRef: &lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
-				CABundleSecretRef:        &lodiav1alpha1.LocalReference{Name: "dev-ca-bundle"},
+				AdminKubeconfigSecretRef: lodiav1alpha1.LocalReference{Name: "dev-admin-kubeconfig"},
+				CABundleSecretRef:        lodiav1alpha1.LocalReference{Name: "dev-ca-bundle"},
 			},
 		},
 	}
@@ -86,7 +86,7 @@ func TestDatastoreTakesTheAPIServersStatusAndReturnsItsResourceVersionApart(t *t
 	}
 	cp := cachedAs(server.UID)
 	cp.ResourceVersion = "1"
-	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: new(metav1.NewTime(at.Add(-time.Hour)))}}
+	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: new(metav1.NewTime(at.Add(-time.Hour)))}}
 	version, err := live.Datastore(t.Context(), reader, cp, lodiav1alpha1.ConditionDatastoreReady)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,7 @@ func TestDatastoreTakesTheAPIServersStatusAndReturnsItsResourceVersionApart(t *t
 func TestComponentsTakesTheAPIServersStatus(t *testing.T) {
 	reader, server := held(t)
 	cp := cachedAs(server.UID)
-	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: "v1.36.9"}}}
+	cp.Status.Components = &lodiav1alpha1.ComponentsStatus{APIServer: lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: "v1.36.9"}}}
 	if err := live.Components(t.Context(), reader, cp, lodiav1alpha1.ConditionAPIServerReady); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestComponentsTakesTheAPIServersStatus(t *testing.T) {
 			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
 		}
 	}
-	if cp.Status.Datastore != nil || cp.Status.Restore != nil {
+	if len(cp.Status.Datastore.Endpoints) > 0 || cp.Status.Restore != (lodiav1alpha1.RestoreStatus{}) {
 		t.Errorf("status.datastore %+v and status.restore %+v, want the cache's, none", cp.Status.Datastore, cp.Status.Restore)
 	}
 }
@@ -151,7 +151,7 @@ func TestAddonsTakesTheAPIServersStatus(t *testing.T) {
 			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
 		}
 	}
-	if cp.Status.Components != nil || cp.Status.Endpoint != nil {
+	if cp.Status.Components != nil || cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}) {
 		t.Errorf("status.components %+v and status.endpoint %+v, want the cache's, none", cp.Status.Components, cp.Status.Endpoint)
 	}
 }
@@ -174,7 +174,7 @@ func TestCredentialsTakesTheAPIServersStatus(t *testing.T) {
 			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
 		}
 	}
-	if cp.Status.Datastore != nil || cp.Status.Endpoint != nil {
+	if len(cp.Status.Datastore.Endpoints) > 0 || cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}) {
 		t.Errorf("status.datastore %+v and status.endpoint %+v, want the cache's, none", cp.Status.Datastore, cp.Status.Endpoint)
 	}
 }
@@ -197,7 +197,7 @@ func TestNodesTakesTheAPIServersStatus(t *testing.T) {
 			t.Errorf("%s is %+v, want %+v", c.conditionType, got, want)
 		}
 	}
-	if cp.Status.Datastore != nil || cp.Status.Endpoint != nil {
+	if len(cp.Status.Datastore.Endpoints) > 0 || cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}) {
 		t.Errorf("status.datastore %+v and status.endpoint %+v, want the cache's, none", cp.Status.Datastore, cp.Status.Endpoint)
 	}
 }

@@ -51,16 +51,16 @@ func TestTheCopyIsPinned(t *testing.T) {
 		"nodePort": {spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}}}, endpoint: nodePort},
 		"highAvailability": {spec: lodiav1alpha1.ControlPlaneSpec{
 			Endpoint:         lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}},
-			HighAvailability: &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"},
+			HighAvailability: lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"},
 		}, endpoint: nodePort},
-		"gateway": {spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+		"gateway": {spec: lodiav1alpha1.ControlPlaneSpec{Endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 			ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 			Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 		}}}, endpoint: lodiav1alpha1.EndpointStatus{
 			APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
 			Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
 			InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-			Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
+			Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
 		}},
 	} {
 		spec := c.spec

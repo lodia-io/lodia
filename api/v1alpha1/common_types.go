@@ -26,7 +26,7 @@ type LocalReference struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 }
 
 // UIDReference is an identity record: an object in the same namespace by its
@@ -38,14 +38,14 @@ type UIDReference struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// uid of the object.
 	// +required
 	// +kubebuilder:validation:Type=string
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=36
-	UID types.UID `json:"uid"`
+	UID types.UID `json:"uid,omitempty"`
 }
 
 // SecretReference names a Secret in a namespace.
@@ -54,13 +54,13 @@ type SecretReference struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 
 	// namespace of the Secret.
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
-	Namespace string `json:"namespace"`
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // LabelValue is a label's value: empty, or at most 63 alphanumerics, dashes,
@@ -71,15 +71,16 @@ type LabelValue string
 
 // Toleration is a pod's toleration as pod validation takes it, without the
 // operators Lt and Gt.
-// +kubebuilder:validation:XValidation:rule="has(self.key) && size(self.key) > 0 || has(self.operator) && self.operator == 'Exists'",message="a toleration without a key has operator Exists"
+// +kubebuilder:validation:XValidation:rule="has(self.key) || has(self.operator) && self.operator == 'Exists'",message="a toleration without a key has operator Exists"
 // +kubebuilder:validation:XValidation:rule="!has(self.tolerationSeconds) || has(self.effect) && self.effect == 'NoExecute'",message="tolerationSeconds is set only with effect NoExecute"
-// +kubebuilder:validation:XValidation:rule="!has(self.operator) || self.operator != 'Exists' || !has(self.value) || size(self.value) == 0",message="a toleration with operator Exists has no value"
+// +kubebuilder:validation:XValidation:rule="!has(self.operator) || self.operator != 'Exists' || !has(self.value)",message="a toleration with operator Exists has no value"
 type Toleration struct {
 	// key is the taint's key, a label's name; without it, and with operator
 	// Exists, the toleration matches every taint.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=317
-	// +kubebuilder:validation:XValidation:rule="size(self) == 0 || self.matches('^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$') && (self.contains('/') ? size(self.split('/')[0]) <= 253 && size(self.split('/')[1]) <= 63 : size(self) <= 63)",message="must be a label's name: at most 63 alphanumerics, dashes, underscores and dots that begin and end with an alphanumeric, after a lowercase DNS subdomain of at most 253 characters and a slash"
+	// +kubebuilder:validation:XValidation:rule="self.matches('^([a-z0-9]([-a-z0-9]*[a-z0-9])?([.][a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$') && (self.contains('/') ? size(self.split('/')[0]) <= 253 && size(self.split('/')[1]) <= 63 : size(self) <= 63)",message="must be a label's name: at most 63 alphanumerics, dashes, underscores and dots that begin and end with an alphanumeric, after a lowercase DNS subdomain of at most 253 characters and a slash"
 	Key string `json:"key,omitempty"`
 
 	// operator is Equal, the taint's value equal to value, or Exists, any
@@ -90,6 +91,7 @@ type Toleration struct {
 
 	// value is the taint's value that operator Equal matches.
 	// +optional
+	// +kubebuilder:validation:MinLength=1
 	Value LabelValue `json:"value,omitempty"`
 
 	// effect is the taint's effect, NoSchedule, PreferNoSchedule or NoExecute;

@@ -21,7 +21,7 @@ import (
 // with the UID of the source cp's completed restore replaces; nil while the
 // restore is not complete or once no such ControlPlane exists.
 func Source(ctx context.Context, reader client.Reader, cp *lodiav1alpha1.ControlPlane) (*lodiav1alpha1.ControlPlane, error) {
-	if cp.Status.Restore == nil {
+	if cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 		return nil, nil
 	}
 	list := &lodiav1alpha1.ControlPlaneList{}
@@ -75,7 +75,7 @@ func RestoresOf(reader client.Reader) handler.MapFunc {
 		}
 		var requests []reconcile.Request
 		for i := range list.Items {
-			if from := list.Items[i].Spec.RestoreFrom; from != nil && from.BackupRef.Name == backup.GetName() {
+			if list.Items[i].Spec.RestoreFrom.BackupRef.Name == backup.GetName() {
 				requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 			}
 		}

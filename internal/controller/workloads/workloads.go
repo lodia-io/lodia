@@ -164,7 +164,7 @@ func (r *Reconciler) replacements(ctx context.Context, source client.Object) []r
 	}
 	var out []reconcile.Request
 	for i := range list.Items {
-		if restore := list.Items[i].Status.Restore; restore != nil && restore.Source.UID == source.GetUID() {
+		if list.Items[i].Status.Restore.Source.UID == source.GetUID() {
 			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
 		}
 	}
@@ -210,11 +210,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !cp.DeletionTimestamp.IsZero() || cp.Spec.Paused {
+	if !cp.DeletionTimestamp.IsZero() || ptr.Deref(cp.Spec.Paused, false) {
 		return ctrl.Result{}, nil
 	}
 	var read []string
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		read = append(read, lodiav1alpha1.ConditionRoutesReady)
 	}
 	if cp.Spec.Endpoint.LoadBalancer != nil {
@@ -226,7 +226,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionAPIServerReady) == nil {
 		first := statusapply.FirstPass(cp, lodiav1alpha1.ConditionAPIServerReady)
 		var routes *metav1.Condition
-		if cp.Spec.Endpoint.Gateway != nil {
+		if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 			routes = as(lodiav1alpha1.ConditionRoutesReady, first)
 		}
 		if err := r.applyStatus(ctx, cp, published(cp), cp.Status.Components, first, routes, balancerOf(cp, first)); err != nil {
@@ -443,7 +443,7 @@ func (r *Reconciler) inputs(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 			return nil, waiting, err
 		}
 	}
-	if cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
+	if len(cp.Status.Datastore.Endpoints) == 0 {
 		waiting, err := r.wait(ctx, cp, newCondition(metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForDatastore, "waiting for the Datastore controller to publish status.datastore.endpoints"))
 		return nil, waiting, err
 	}
@@ -599,7 +599,7 @@ func imagesOf(cp *lodiav1alpha1.ControlPlane) (versions.Images, string, string) 
 		return versions.Images{}, "status.target.version " + target + " is not a version Lodia runs", ""
 	}
 	running := target
-	if c := cp.Status.Components; c != nil && c.APIServer != nil && c.APIServer.Version != "" {
+	if c := cp.Status.Components; c != nil && c.APIServer.Version != "" {
 		running = c.APIServer.Version
 	}
 	followed, ok := versions.For(running)
@@ -649,7 +649,7 @@ func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.Control
 			return refused(endpoint, obj, err)
 		}
 	}
-	if cp.Spec.HighAvailability == nil {
+	if cp.Spec.HighAvailability == (lodiav1alpha1.HighAvailability{}) {
 		if err := r.deletePodDisruptionBudgets(ctx, cp); err != nil {
 			return nil, err
 		}
@@ -662,14 +662,14 @@ func (r *Reconciler) writeObjects(ctx context.Context, cp *lodiav1alpha1.Control
 // at 0 replicas; both are empty for a ControlPlane that restores nothing.
 func (r *Reconciler) release(ctx context.Context, cp *lodiav1alpha1.ControlPlane) ([]string, string, error) {
 	restoring := cp.Spec.RestoreFrom
-	if restoring == nil {
+	if restoring == (lodiav1alpha1.RestoreFrom{}) {
 		return nil, "", nil
 	}
 	var unmet []string
 	if restoring.Release != lodiav1alpha1.RestoreReleased {
 		unmet = append(unmet, "spec.restoreFrom.release is Pending")
 	}
-	if cp.Status.Restore == nil {
+	if cp.Status.Restore == (lodiav1alpha1.RestoreStatus{}) {
 		unmet = append(unmet, "the restore is not complete")
 	} else if source, err := restore.Source(ctx, r.Client, cp); err != nil {
 		return nil, "", err
@@ -1019,11 +1019,13 @@ func cached(obj client.Object) client.Object {
 func published(cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.EndpointStatus {
 	lb := cp.Spec.Endpoint.LoadBalancer
 	switch {
+	case lb == nil && cp.Status.Endpoint == (lodiav1alpha1.EndpointStatus{}):
+		return nil
 	case lb == nil:
-		return cp.Status.Endpoint
+		return new(cp.Status.Endpoint)
 	case lb.Host != "":
 		return atHost(cp, string(lb.Host))
-	case cp.Status.Endpoint != nil:
+	case cp.Status.Endpoint != (lodiav1alpha1.EndpointStatus{}):
 		return atHost(cp, cp.Status.Endpoint.APIServer.Host)
 	}
 	return nil
@@ -1118,7 +1120,7 @@ func listed(addresses []string) string {
 // by name. No event reports a node, so the caller checks again every minute.
 func (r *Reconciler) nodePortEndpoint(ctx context.Context, cp *lodiav1alpha1.ControlPlane, svc *corev1.Service) (*lodiav1alpha1.EndpointStatus, *metav1.Condition, error) {
 	published := ""
-	if e := cp.Status.Endpoint; e != nil {
+	if e := cp.Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		published = e.APIServer.Host
 	}
 	range0, err := netip.ParsePrefix(string(cp.Spec.Network.ServiceCIDRs[0]))
@@ -1342,7 +1344,7 @@ func (r *Reconciler) components(cp *lodiav1alpha1.ControlPlane, controlled map[s
 	return out
 }
 
-func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.ComponentStatus {
+func slot(c *lodiav1alpha1.ComponentsStatus, component string) *lodiav1alpha1.ComponentStatus {
 	switch component {
 	case apiServer:
 		return &c.APIServer
@@ -1361,20 +1363,16 @@ func slot(c *lodiav1alpha1.ComponentsStatus, component string) **lodiav1alpha1.C
 // rolled out, which moves no report back. A component with neither a
 // Deployment nor a report is absent. A stamp longer than the field is not
 // reported, as a hand-edited image is not.
-func rolledOut(d *appsv1.Deployment, component string, previous *lodiav1alpha1.ComponentStatus, rendered *metav1.Time) *lodiav1alpha1.ComponentStatus {
-	var report lodiav1alpha1.Rendered
-	var detectedAt *metav1.Time
-	if previous != nil {
-		report, detectedAt = previous.Rendered, previous.MemberRestoreDetectedAt
-	}
+func rolledOut(d *appsv1.Deployment, component string, previous lodiav1alpha1.ComponentStatus, rendered *metav1.Time) lodiav1alpha1.ComponentStatus {
 	if d == nil {
-		if report == (lodiav1alpha1.Rendered{}) && detectedAt == nil {
-			return nil
+		if previous.Rendered == (lodiav1alpha1.Rendered{}) && previous.MemberRestoreDetectedAt == nil {
+			return lodiav1alpha1.ComponentStatus{}
 		}
-		return &lodiav1alpha1.ComponentStatus{Rendered: report, MemberRestoreDetectedAt: detectedAt}
+		none := lodiav1alpha1.Count{Total: new(int32(0)), Ready: new(int32(0))}
+		return lodiav1alpha1.ComponentStatus{RolloutCount: lodiav1alpha1.RolloutCount{Count: none}, Rendered: previous.Rendered, MemberRestoreDetectedAt: previous.MemberRestoreDetectedAt}
 	}
-	status := &lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d), Rendered: report, MemberRestoreDetectedAt: detectedAt}
-	if status.Updated != nil && *status.Updated == status.Total {
+	status := lodiav1alpha1.ComponentStatus{RolloutCount: rolloutCount(d), Rendered: previous.Rendered, MemberRestoreDetectedAt: previous.MemberRestoreDetectedAt}
+	if status.Updated != nil && *status.Updated == *status.Total {
 		if version := imageVersion(d, component); version != "" {
 			status.Version = version
 		}
@@ -1413,7 +1411,7 @@ func imageVersion(d *appsv1.Deployment, component string) string {
 // ones are.
 func rolloutCount(d *appsv1.Deployment) lodiav1alpha1.RolloutCount {
 	s, total := d.Status, ptr.Deref(d.Spec.Replicas, 1)
-	count := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: total, Ready: min(s.ReadyReplicas, total)}}
+	count := lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(total), Ready: new(min(s.ReadyReplicas, total))}}
 	if s.ObservedGeneration == d.Generation {
 		count.Updated = new(max(0, min(s.UpdatedReplicas, s.AvailableReplicas-(s.Replicas-s.UpdatedReplicas))))
 	}
@@ -1557,8 +1555,9 @@ func (r *Reconciler) applyStatus(ctx context.Context, cp *lodiav1alpha1.ControlP
 			conditions[i].ObservedGeneration = cp.Generation
 		}
 	}
-	changed := !equality.Semantic.DeepEqual(cp.Status.Endpoint, endpoint) || !equality.Semantic.DeepEqual(cp.Status.Components, components)
-	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Endpoint: endpoint, Components: components}, changed)
+	published := ptr.Deref(endpoint, lodiav1alpha1.EndpointStatus{})
+	changed := cp.Status.Endpoint != published || !equality.Semantic.DeepEqual(cp.Status.Components, components)
+	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: FieldManager, Events: r.Events}.Apply(ctx, cp, lodiav1alpha1.ControlPlaneStatus{Conditions: conditions, Endpoint: published, Components: components}, changed)
 }
 
 func newCondition(status metav1.ConditionStatus, reason, message string) metav1.Condition {
@@ -1593,7 +1592,7 @@ func balancerOf(cp *lodiav1alpha1.ControlPlane, service metav1.Condition) *metav
 // pass's, False with the Service's reason and message, since Reconciling would
 // come first in Ready and hide a Service held until a person acts.
 func keptRoutes(cp *lodiav1alpha1.ControlPlane, service metav1.Condition) *metav1.Condition {
-	if cp.Spec.Endpoint.Gateway == nil {
+	if cp.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) {
 		return nil
 	}
 	if kept := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRoutesReady); kept != nil && kept.Reason != lodiav1alpha1.ReasonReconciling {

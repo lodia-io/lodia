@@ -44,15 +44,15 @@ func ruleSampler(t *testing.T, live *lodiav1alpha1.ControlPlane, funcs intercept
 	return &SampleReconciler{Reader: reader, Latches: NewLatches()}
 }
 
-func told(t *testing.T, r *SampleReconciler, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.MemberRestoreStatus {
+func told(t *testing.T, r *SampleReconciler, cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.MemberRestoreStatus {
 	t.Helper()
 	r.Latches.mu.Lock()
 	defer r.Latches.mu.Unlock()
 	l := r.Latches.held[client.ObjectKeyFromObject(cp)]
 	if l == nil {
-		return nil
+		return lodiav1alpha1.MemberRestoreStatus{}
 	}
-	return &l.told
+	return l.told
 }
 
 func answered(t *testing.T, r *SampleReconciler, cp *lodiav1alpha1.ControlPlane, listed []string, answers map[string]answer) {
@@ -79,7 +79,7 @@ func TestEachSignalTellsANewLifeAndTheBoundsAtEqualityDoNot(t *testing.T) {
 			r := ruleSampler(t, cp, interceptor.Funcs{})
 			answered(t, r, cp, []string{"dev-etcd-0"}, map[string]answer{"dev-etcd-0": kept})
 			answered(t, r, cp, []string{"dev-etcd-0"}, map[string]answer{"dev-etcd-0": c.got})
-			if got := told(t, r, cp); (got != nil) != c.new {
+			if got := told(t, r, cp); (got != (lodiav1alpha1.MemberRestoreStatus{})) != c.new {
 				t.Errorf("%s told %+v, want a new life told: %t", c.name, got, c.new)
 			}
 		})
@@ -104,7 +104,7 @@ func TestANewLifeIsLatchedAtTheSecondOfThePassForTheFirstMemberByNameWithItsSour
 			fresh := answer{cluster: c.cluster, term: 2, lower: -4, upper: -4}
 			answered(t, r, cp, members, map[string]answer{"dev-etcd-2": fresh, "dev-etcd-1": fresh, "dev-etcd-0": kept})
 			want := lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-1", DetectedAt: metav1.NewTime(time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)), From: c.from}
-			if got := told(t, r, cp); got == nil || !same(got, &want) {
+			if got := told(t, r, cp); !same(got, want) {
 				t.Errorf("the latch is %+v, want %+v", got, want)
 			}
 		})
@@ -123,7 +123,7 @@ func TestAMemberNoLongerListedStartsAfresh(t *testing.T) {
 		"dev-etcd-0": {cluster: druidCluster, term: 3, lower: -22, upper: -21},
 		"dev-etcd-1": {cluster: druidCluster, term: 3, lower: -2, upper: -1},
 	})
-	if got := told(t, r, cp); got != nil {
+	if got := told(t, r, cp); got != (lodiav1alpha1.MemberRestoreStatus{}) {
 		t.Errorf("a member added back under its name told %+v, want nothing told", got)
 	}
 }
@@ -138,7 +138,7 @@ func TestAMemberListedThatDoesNotAnswerKeepsItsAnswer(t *testing.T) {
 	})
 	answered(t, r, cp, members, map[string]answer{"dev-etcd-0": {cluster: druidCluster, term: 3, lower: -21, upper: -20}})
 	answered(t, r, cp, members, map[string]answer{"dev-etcd-1": {cluster: druidCluster, term: 2, lower: -40, upper: -40}})
-	if got := told(t, r, cp); got == nil || got.Member != "dev-etcd-1" {
+	if got := told(t, r, cp); got == (lodiav1alpha1.MemberRestoreStatus{}) || got.Member != "dev-etcd-1" {
 		t.Errorf("a member that answered again under a lower term told %+v, want it told", got)
 	}
 }
@@ -152,7 +152,7 @@ func TestAFireDropsTheAnswersOfTheMembersThatGaveNone(t *testing.T) {
 	restored := answer{cluster: restoredCluster, term: 3, lower: 90, upper: 90}
 	answered(t, r, cp, members, map[string]answer{"dev-etcd-0": restored})
 	first := told(t, r, cp)
-	if first == nil {
+	if first == (lodiav1alpha1.MemberRestoreStatus{}) {
 		t.Fatal("the restore told nothing")
 	}
 	answered(t, r, cp, members, map[string]answer{"dev-etcd-0": restored, "dev-etcd-1": restored, "dev-etcd-2": restored})
@@ -162,24 +162,24 @@ func TestAFireDropsTheAnswersOfTheMembersThatGaveNone(t *testing.T) {
 }
 
 func TestTheFirstAnswerUnderTheClusterIDOfARestoreIsANewLifeUnlessTheNewestKnownIsOne(t *testing.T) {
-	snapshots := &lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: metav1.NewTime(toldAt.Add(-time.Hour).Truncate(time.Second)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
-	empty := &lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: snapshots.DetectedAt, From: lodiav1alpha1.MemberRestoreFromEmpty}
+	snapshots := lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: metav1.NewTime(toldAt.Add(-time.Hour).Truncate(time.Second)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
+	empty := lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: snapshots.DetectedAt, From: lodiav1alpha1.MemberRestoreFromEmpty}
 	for _, c := range []struct {
 		name        string
 		restoreFrom bool
-		record      *lodiav1alpha1.MemberRestoreStatus
-		cached      *lodiav1alpha1.MemberRestoreStatus
+		record      lodiav1alpha1.MemberRestoreStatus
+		cached      lodiav1alpha1.MemberRestoreStatus
 		latch       lodiav1alpha1.MemberRestoreFrom
 		fires       bool
 	}{
-		{"no record and no restoreFrom", false, nil, nil, "", true},
-		{"restoreFrom and nothing newer", true, nil, nil, "", false},
+		{"no record and no restoreFrom", false, lodiav1alpha1.MemberRestoreStatus{}, lodiav1alpha1.MemberRestoreStatus{}, "", true},
+		{"restoreFrom and nothing newer", true, lodiav1alpha1.MemberRestoreStatus{}, lodiav1alpha1.MemberRestoreStatus{}, "", false},
 		{"a record from snapshots", false, snapshots, snapshots, "", false},
 		{"a record of an empty start", false, empty, empty, "", true},
 		{"a record of an empty start after restoreFrom", true, empty, empty, "", true},
 		{"a latch from snapshots over a record of an empty start", false, empty, empty, lodiav1alpha1.MemberRestoreFromSnapshots, false},
 		{"a latch of an empty start over a record from snapshots", true, snapshots, snapshots, lodiav1alpha1.MemberRestoreFromEmpty, true},
-		{"a record from snapshots the cache lacks", false, snapshots, nil, "", false},
+		{"a record from snapshots the cache lacks", false, snapshots, lodiav1alpha1.MemberRestoreStatus{}, "", false},
 		{"a record of an empty start where the cache shows one from snapshots", true, empty, snapshots, "", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -188,7 +188,7 @@ func TestTheFirstAnswerUnderTheClusterIDOfARestoreIsANewLifeUnlessTheNewestKnown
 			cp := ruleControlPlane()
 			cp.Status.MemberRestore = c.cached
 			if c.restoreFrom {
-				live.Spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "nightly"}}
+				live.Spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "nightly"}}
 				cp.Spec.RestoreFrom = live.Spec.RestoreFrom
 			}
 			r := ruleSampler(t, live, interceptor.Funcs{})
@@ -216,7 +216,7 @@ func TestAReadOfTheRecordThatFailsKeepsNoAnswerAndTellsNothingUntilOneReads(t *t
 	}})
 	restored := map[string]answer{"dev-etcd-0": {cluster: restoredCluster, term: 3, lower: 90, upper: 90}}
 	answered(t, r, cp, []string{"dev-etcd-0"}, restored)
-	if got := told(t, r, cp); got != nil {
+	if got := told(t, r, cp); got != (lodiav1alpha1.MemberRestoreStatus{}) {
 		t.Fatalf("a pass whose read failed told %+v, want nothing", got)
 	}
 	if kept := r.answers(client.ObjectKeyFromObject(cp), cp.UID); len(kept) > 0 {
@@ -224,14 +224,14 @@ func TestAReadOfTheRecordThatFailsKeepsNoAnswerAndTellsNothingUntilOneReads(t *t
 	}
 	failing = false
 	answered(t, r, cp, []string{"dev-etcd-0"}, restored)
-	if got := told(t, r, cp); got == nil {
+	if got := told(t, r, cp); got == (lodiav1alpha1.MemberRestoreStatus{}) {
 		t.Error("the next pass told nothing, want the restore told once the read answers")
 	}
 }
 
 func TestTheRecordIsReadOnlyForAFirstAnswerUnderTheClusterIDOfARestoreWithNoLatch(t *testing.T) {
 	cp := ruleControlPlane()
-	cp.Status.MemberRestore = &lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: metav1.NewTime(toldAt.Add(-time.Hour).Truncate(time.Second)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
+	cp.Status.MemberRestore = lodiav1alpha1.MemberRestoreStatus{Member: "dev-etcd-0", DetectedAt: metav1.NewTime(toldAt.Add(-time.Hour).Truncate(time.Second)), From: lodiav1alpha1.MemberRestoreFromSnapshots}
 	reads := 0
 	r := ruleSampler(t, cp, interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 		reads++
@@ -252,7 +252,7 @@ func TestTheRecordIsReadOnlyForAFirstAnswerUnderTheClusterIDOfARestoreWithNoLatc
 		{"a first answer under the cluster ID of a restore with a latch held", true, map[string]answer{"dev-etcd-0": bootstrapped, "dev-etcd-1": restored, "dev-etcd-2": restored}, 0},
 	} {
 		if step.latch {
-			r.Latches.tell(client.ObjectKeyFromObject(cp), cp.UID, *cp.Status.MemberRestore)
+			r.Latches.tell(client.ObjectKeyFromObject(cp), cp.UID, cp.Status.MemberRestore)
 		}
 		before := reads
 		answered(t, r, cp, []string{"dev-etcd-0", "dev-etcd-1", "dev-etcd-2"}, step.answers)

@@ -84,9 +84,9 @@ func waitsFor(cp *lodiav1alpha1.ControlPlane) (string, string) {
 		return lodiav1alpha1.ReasonWaitingForTarget, "status.target has no version"
 	case cp.Status.Target.OperatorRevision == "":
 		return lodiav1alpha1.ReasonWaitingForTarget, "status.target has no operatorRevision"
-	case endpoint == nil:
+	case endpoint == (lodiav1alpha1.EndpointStatus{}):
 		return lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint is not published"
-	case cp.Spec.Endpoint.Gateway != nil && endpoint.Tunnel == nil:
+	case cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) && endpoint.Tunnel == (lodiav1alpha1.HostPort{}):
 		return lodiav1alpha1.ReasonWaitingForEndpoint, "status.endpoint has no tunnel"
 	}
 	return "", ""
@@ -142,7 +142,7 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 		v.ProxyListen = net.JoinHostPort(v.InClusterHost, strconv.Itoa(int(endpoint.InCluster.Port)))
 		v.ProxyUpstream = v.Endpoint
 	}
-	if cp.Spec.Endpoint.Gateway != nil {
+	if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 		v.Tunnel = true
 		v.ProxyUpstream = net.JoinHostPort(endpoint.Tunnel.Host, strconv.Itoa(int(endpoint.Tunnel.Port)))
 	}
@@ -174,8 +174,8 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 		}
 		if d := addons.CoreDNS; d != nil {
 			v.coreDNS = d.Enabled == nil || *d.Enabled
-			if d.Replicas != nil {
-				v.CoreDNSReplicas = *d.Replicas
+			if d.Replicas != 0 {
+				v.CoreDNSReplicas = d.Replicas
 			}
 		}
 		if k := addons.Konnectivity; k != nil {
@@ -186,8 +186,8 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 			v.AgentImage = pinned.KonnectivityAgent
 			if a := k.Agent; a != nil && a.Mode == "Deployment" {
 				v.AgentDeployment = true
-				if a.Replicas != nil {
-					v.AgentReplicas = *a.Replicas
+				if a.Replicas != 0 {
+					v.AgentReplicas = a.Replicas
 				}
 			}
 		}
@@ -205,10 +205,8 @@ func newValues(cp *lodiav1alpha1.ControlPlane, clusterCA []byte) (*values, strin
 func reported(cp *lodiav1alpha1.ControlPlane) [3]string {
 	var out [3]string
 	if c := cp.Status.Components; c != nil {
-		for i, s := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
-			if s != nil {
-				out[i] = s.Version
-			}
+		for i, s := range []lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+			out[i] = s.Version
 		}
 	}
 	return out

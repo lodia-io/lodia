@@ -84,7 +84,7 @@ func (r *reads) Get(ctx context.Context, key client.ObjectKey, obj client.Object
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if cp.Spec.Paused {
+	if ptr.Deref(cp.Spec.Paused, false) {
 		r.paused[key] = max(r.paused[key], cp.Generation)
 	}
 	r.targets[key] = cp.Status.Target.DeepCopy()
@@ -154,7 +154,7 @@ func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {
 		!slices.Equal(svc.Spec.LoadBalancerSourceRanges, []string{"198.51.100.0/24"}) || svc.Annotations["example.com/tier"] != "control-plane" {
 		t.Errorf("the Service is %s with class %v, ranges %v and annotations %v", svc.Spec.Type, svc.Spec.LoadBalancerClass, svc.Spec.LoadBalancerSourceRanges, svc.Annotations)
 	}
-	if e := get(t, cp).Status.Endpoint; e != nil {
+	if e := get(t, cp).Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		t.Errorf("status.endpoint is %+v before the load balancer has an address", e)
 	}
 	if err := expectBalancer(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForLoadBalancer, "the load balancer of Service dev-kube-apiserver reports no address yet"); err != nil {
@@ -171,7 +171,7 @@ func TestTheEndpointIsPublishedBeforeAnythingWaits(t *testing.T) {
 		Konnectivity: lodiav1alpha1.HostPort{Host: "lb.example.com", Port: 8132},
 		InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
 	}
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Errorf("status.endpoint is %+v, want %+v", e, want)
 	}
 	if err := expectBalancer(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, "the load balancer of Service dev-kube-apiserver reports lb.example.com"); err != nil {
@@ -216,7 +216,7 @@ func TestAHostIsPublishedOnTheFirstPassBeforeTheServiceHasAnIngress(t *testing.T
 					t.Errorf("the first %s is %+v, want Unknown/%s", conditionType, c, lodiav1alpha1.ReasonReconciling)
 				}
 			}
-			if e := first.Status.Endpoint; e == nil || *e != want {
+			if e := first.Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 				t.Errorf("the first pass published %+v, want %+v", e, want)
 			}
 
@@ -224,7 +224,7 @@ func TestAHostIsPublishedOnTheFirstPassBeforeTheServiceHasAnIngress(t *testing.T
 			if err := expectBalancer(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForLoadBalancer, "the load balancer of Service dev-kube-apiserver reports no address yet"); err != nil {
 				t.Error(err)
 			}
-			if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+			if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 				t.Errorf("status.endpoint is %+v before the load balancer has an address, want %+v", e, want)
 			}
 			inputsReady(t, cp)
@@ -248,7 +248,7 @@ func TestANodePortControlPlanePublishesItsNodePorts(t *testing.T) {
 		Konnectivity: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: konnectivity},
 		InCluster:    lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: api},
 	}
-	if svc.Spec.Type != corev1.ServiceTypeNodePort || api == 0 || konnectivity == 0 || e == nil || *e != want {
+	if svc.Spec.Type != corev1.ServiceTypeNodePort || api == 0 || konnectivity == 0 || e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Fatalf("Service %s with node ports %d and %d, status.endpoint %+v", svc.Spec.Type, api, konnectivity, e)
 	}
 	if ports := servicePorts(svc); ports != "https 443 https, konnectivity 8132 konnectivity" {
@@ -270,12 +270,12 @@ func TestANodePortControlPlanePublishesItsNodePorts(t *testing.T) {
 
 	setReady(t, "node-b", false)
 	reconcileNow(t, cp)
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Errorf("status.endpoint is %+v once node-b is NotReady, want %+v", e, want)
 	}
 	createNode(t, "node-0", true, "192.0.2.9")
 	reconcileNow(t, cp)
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Errorf("status.endpoint is %+v once node-0 sorts first, want %+v", e, want)
 	}
 	if err := k8s.Delete(t.Context(), &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-b"}}); err != nil {
@@ -283,7 +283,7 @@ func TestANodePortControlPlanePublishesItsNodePorts(t *testing.T) {
 	}
 	reconcileNow(t, cp)
 	want.APIServer.Host, want.Konnectivity.Host, want.InCluster.Host = "192.0.2.9", "192.0.2.9", "192.0.2.9"
-	if e := get(t, cp).Status.Endpoint; e == nil || *e != want {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != want {
 		t.Errorf("status.endpoint is %+v once node-b is gone, want %+v", e, want)
 	}
 }
@@ -596,7 +596,7 @@ func TestARolloutSurgesAndTheOldAPIServerDrains(t *testing.T) {
 
 func TestHighAvailabilitySpreadsEveryComponentAndBudgetsItsDisruptions(t *testing.T) {
 	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	})
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
@@ -636,7 +636,7 @@ func TestHighAvailabilitySpreadsEveryComponentAndBudgetsItsDisruptions(t *testin
 	}
 
 	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(3))}
+		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: 3}
 	})
 	testenv.Eventually(t, func() error {
 		if d := deployment(t, cp, "kube-apiserver"); *d.Spec.Replicas != 3 {
@@ -646,7 +646,9 @@ func TestHighAvailabilitySpreadsEveryComponentAndBudgetsItsDisruptions(t *testin
 	})
 	expectSpread(t, deployment(t, cp, "kube-apiserver"), map[string]int32{"kubernetes.io/hostname": 3, "topology.kubernetes.io/zone": 3})
 
-	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.HighAvailability, spec.APIServer = nil, nil })
+	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) {
+		spec.HighAvailability, spec.APIServer = lodiav1alpha1.HighAvailability{}, nil
+	})
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		testenv.Eventually(t, func() error {
 			if b := budgetOrNil(t, cp, component); b != nil {
@@ -688,7 +690,7 @@ func TestOneReplicaHasNoSpreadNoBudgetAndNoGoaway(t *testing.T) {
 
 func TestNodeToleranceSpreadsByHostnameAlone(t *testing.T) {
 	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	})
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
@@ -715,7 +717,7 @@ func TestAPodDisruptionBudgetOfAnotherOwnerHoldsEveryWorkload(t *testing.T) {
 		t.Fatal(err)
 	}
 	cp := create(t, ns, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	})
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
@@ -744,7 +746,7 @@ func TestAnOrphanPodDisruptionBudgetIsAdopted(t *testing.T) {
 		t.Fatal(err)
 	}
 	cp := create(t, ns, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	})
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
@@ -760,14 +762,14 @@ func TestAnOrphanPodDisruptionBudgetIsAdopted(t *testing.T) {
 
 func TestForeignPodDisruptionBudgetsSurviveTheRemovalOfHighAvailability(t *testing.T) {
 	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	})
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
 	inputsReady(t, cp)
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		eventuallyBudget(t, cp, component)
 	}
-	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.HighAvailability = nil })
+	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.HighAvailability = lodiav1alpha1.HighAvailability{} })
 	for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
 		testenv.Eventually(t, func() error {
 			if b := budgetOrNil(t, cp, component); b != nil {
@@ -939,7 +941,7 @@ func TestAPredecessorsServiceIsNotWrittenOver(t *testing.T) {
 	if svc := getService(t, cp); svc.ResourceVersion != held.ResourceVersion {
 		t.Error("the predecessor's Service was written")
 	}
-	if e := get(t, cp).Status.Endpoint; e != nil {
+	if e := get(t, cp).Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		t.Errorf("status.endpoint is %+v, from the predecessor's Service", e)
 	}
 	if result := reconcileNow(t, cp); result.RequeueAfter != 10*time.Second {
@@ -966,7 +968,7 @@ func TestOutsideGatewayModeAHeldOrRefusedServiceKeepsThePublishedEndpoint(t *tes
 		"nodePort": runningOnNodePort(t),
 	} {
 		published := get(t, cp).Status.Endpoint
-		if published == nil {
+		if published == (lodiav1alpha1.EndpointStatus{}) {
 			t.Fatalf("%s: no endpoint is published", mode)
 		}
 		for exit, c := range map[string]struct {
@@ -1107,7 +1109,7 @@ func TestAnObjectAnotherControlPlaneKeepsHoldsEveryWorkload(t *testing.T) {
 	if fresh := deployment(t, cp, "kube-scheduler"); written != 1 || fresh.ResourceVersion != held.ResourceVersion {
 		t.Errorf("%d objects in the namespace, the held Deployment at resourceVersion %s: want the held one alone, unchanged", written, fresh.ResourceVersion)
 	}
-	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != lbAddress {
 		t.Errorf("status.endpoint is %+v, want it published from the ControlPlane's own Service", e)
 	}
 	if c := get(t, cp).Status.Components; c != nil {
@@ -1161,7 +1163,7 @@ func TestAPolicyThatRefusesADeploymentIsSaid(t *testing.T) {
 	if c := condition(t, cp); c.Message != "the API server refuses Deployment dev-kube-scheduler; the reason is in Lodia's log" {
 		t.Errorf("APIServerReady says %q", c.Message)
 	}
-	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != lbAddress {
 		t.Errorf("status.endpoint is %+v while the scheduler is refused", e)
 	}
 
@@ -1221,7 +1223,7 @@ func TestAWaitCountsTheDeploymentsWorkloadsControls(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-				spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+				spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 			})
 			kept := get(t, cp).Generation
 			objects := []client.ObjectList{&appsv1.DeploymentList{}, &corev1.ConfigMapList{}, &networkingv1.NetworkPolicyList{}}
@@ -1408,7 +1410,7 @@ func TestAWaitComparesItsWriteWithTheServer(t *testing.T) {
 		"message": "kube-apiserver has 0 of 1 replicas ready", "observedGeneration": kept.ObservedGeneration, "lastTransitionTime": time.Now().UTC().Format(time.RFC3339),
 	}}})
 	held := stale.DeepCopy()
-	held.Spec.Paused = false
+	held.Spec.Paused = new(false)
 	cached := interceptor.NewClient(k8s, interceptor.Funcs{
 		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 			if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
@@ -1430,12 +1432,12 @@ func TestAWaitKeepsTheEndpointAndItsRequeue(t *testing.T) {
 	createNode(t, "waiting-node", true, "192.0.2.50")
 	cp := controlPlane(t, lodiav1alpha1.Endpoint{NodePort: &lodiav1alpha1.NodePortEndpoint{}})
 	testenv.Eventually(t, func() error { return expectCondition(cp, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget) })
-	published := *get(t, cp).Status.Endpoint
+	published := get(t, cp).Status.Endpoint
 	check := func(step string, generation int64, status metav1.ConditionStatus, reason string) {
 		t.Helper()
 		result := reconcileNow(t, cp)
 		fresh := get(t, cp)
-		if e := fresh.Status.Endpoint; e == nil || *e != published {
+		if e := fresh.Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e != published {
 			t.Errorf("%s: status.endpoint is %+v, want %+v", step, e, published)
 		}
 		if result.RequeueAfter != time.Minute {
@@ -1507,7 +1509,7 @@ func TestAFailureAmongTheObjectsEndsThePassInAnErrorAndWritesNoStatus(t *testing
 	cp := running(t)
 	pause(t, cp)
 	held := get(t, cp)
-	held.Spec.Paused = false
+	held.Spec.Paused = new(false)
 	budget := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{Name: cp.Name + "-kube-apiserver", Namespace: cp.Namespace, OwnerReferences: []metav1.OwnerReference{
 			*metav1.NewControllerRef(held, lodiav1alpha1.GroupVersion.WithKind("ControlPlane")),
@@ -1556,7 +1558,7 @@ func TestAFailureAmongTheObjectsEndsThePassInAnErrorAndWritesNoStatus(t *testing
 
 func TestAWaitOnAStaleReadKeepsTheGenerationItsConditionNames(t *testing.T) {
 	cp := running(t, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: new(int32(2))}
+		spec.APIServer = &lodiav1alpha1.APIServer{Replicas: 2}
 	})
 	pause(t, cp)
 	read := get(t, cp)
@@ -1572,7 +1574,7 @@ func TestAWaitOnAStaleReadKeepsTheGenerationItsConditionNames(t *testing.T) {
 	pass := func(at *lodiav1alpha1.ControlPlane) {
 		t.Helper()
 		held := at.DeepCopy()
-		held.Spec.Paused = false
+		held.Spec.Paused = new(false)
 		cached := interceptor.NewClient(k8s, interceptor.Funcs{
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if plane, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
@@ -2174,8 +2176,8 @@ func expectComponents(t *testing.T, cp *lodiav1alpha1.ControlPlane, want string)
 			return errors.New("status.components is absent")
 		}
 		var got []string
-		for _, s := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
-			if s == nil {
+		for _, s := range []lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+			if s == (lodiav1alpha1.ComponentStatus{}) {
 				got = append(got, "absent")
 				continue
 			}
@@ -2183,7 +2185,7 @@ func expectComponents(t *testing.T, cp *lodiav1alpha1.ControlPlane, want string)
 			if s.Updated != nil {
 				updated = strconv.Itoa(int(*s.Updated))
 			}
-			got = append(got, fmt.Sprintf("%d/%d/%s", s.Total, s.Ready, updated))
+			got = append(got, fmt.Sprintf("%d/%d/%s", ptr.Deref(s.Total, -1), ptr.Deref(s.Ready, -1), updated))
 		}
 		if strings.Join(got, " ") != want {
 			return fmt.Errorf("status.components counts total/ready/updated %s, want %s", strings.Join(got, " "), want)

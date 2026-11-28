@@ -40,7 +40,7 @@ const backupName = "a-1"
 var backupKeys = lodiav1alpha1.BackupEncryptionConfigSecretName(backupName)
 
 func restoring(spec *lodiav1alpha1.ControlPlaneSpec) {
-	spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backupName}}
+	spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: backupName}}
 }
 
 func TestARestoreAdoptsNoSecret(t *testing.T) {
@@ -576,7 +576,7 @@ func TestABackupReplacedAfterItsKeysWereCopiedHoldsTheRestoreUntilItsStatusNames
 				}
 				reconcile(t, r, cp)
 				expectCondition(t, cp, lodiav1alpha1.ConditionCertificatesReady, metav1.ConditionTrue, lodiav1alpha1.ReasonIssued)
-				if freshControlPlane(t, cp).Status.Restore != nil {
+				if freshControlPlane(t, cp).Status.Restore != (lodiav1alpha1.RestoreStatus{}) {
 					t.Error("status.restore is set once the successor is gone")
 				}
 			case "predecessor":

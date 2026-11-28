@@ -12,6 +12,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
 	"go.lodia.io/lodia/internal/versions"
@@ -86,7 +87,7 @@ func fleetOf(cps []lodiav1alpha1.ControlPlane, cp *lodiav1alpha1.ControlPlane, n
 		switch s := scheduledOf(other); {
 		case slotOf(other) != nil:
 			fleet = append(fleet, member{slot: true, key: key})
-		case other.Spec.Paused:
+		case ptr.Deref(other.Spec.Paused, false):
 		case s != nil && !s.After(now):
 			key.scheduledFor = s.Time
 			fleet = append(fleet, member{key: key})
@@ -260,9 +261,9 @@ func unrenderable(cp *lodiav1alpha1.ControlPlane, target string) string {
 	if c := cp.Status.Components; c != nil {
 		for _, component := range []struct {
 			field  string
-			status *lodiav1alpha1.ComponentStatus
+			status lodiav1alpha1.ComponentStatus
 		}{{"apiServer", c.APIServer}, {"controllerManager", c.ControllerManager}, {"scheduler", c.Scheduler}} {
-			if component.status != nil {
+			if component.status != (lodiav1alpha1.ComponentStatus{}) {
 				named = append(named, struct{ field, version string }{"status.components." + component.field + ".version", component.status.Version})
 			}
 		}
@@ -293,7 +294,7 @@ func (f facts) atOnce(c change) bool {
 	case (addons == nil || addons.Status != metav1.ConditionTrue) &&
 		(cp.Status.Addons == nil || cp.Status.Addons.Version == "" || addons != nil && slices.Contains(stoppedAddons, addons.Reason)):
 	case api != nil && api.Status == metav1.ConditionFalse && api.Reason == lodiav1alpha1.ReasonWaitingForTarget && api.ObservedGeneration == cp.Generation:
-	case cp.Spec.RestoreFrom != nil && (cp.Status.Components == nil || cp.Status.Components.ControllerManager == nil || cp.Status.Components.ControllerManager.Total == 0):
+	case cp.Spec.RestoreFrom != (lodiav1alpha1.RestoreFrom{}) && (cp.Status.Components == nil || cp.Status.Components.ControllerManager == (lodiav1alpha1.ComponentStatus{}) || ptr.Deref(cp.Status.Components.ControllerManager.Total, 0) == 0):
 	default:
 		return false
 	}
@@ -401,9 +402,9 @@ func behind(cp *lodiav1alpha1.ControlPlane, granted, running string) []string {
 	if c := cp.Status.Components; c != nil {
 		for _, component := range []struct {
 			name   string
-			status *lodiav1alpha1.ComponentStatus
+			status lodiav1alpha1.ComponentStatus
 		}{{"kube-apiserver", c.APIServer}, {"kube-controller-manager", c.ControllerManager}, {"kube-scheduler", c.Scheduler}} {
-			if component.status != nil {
+			if component.status != (lodiav1alpha1.ComponentStatus{}) {
 				reports = append(reports, report{component.name, component.status.OperatorRevision})
 			}
 		}
@@ -411,7 +412,7 @@ func behind(cp *lodiav1alpha1.ControlPlane, granted, running string) []string {
 	if a := cp.Status.Addons; a != nil {
 		reports = append(reports, report{"the addons", a.OperatorRevision})
 	}
-	if d := cp.Status.Datastore; d != nil {
+	if d := cp.Status.Datastore; len(d.Endpoints) > 0 {
 		reports = append(reports, report{"etcd", d.OperatorRevision})
 	}
 	var out []string

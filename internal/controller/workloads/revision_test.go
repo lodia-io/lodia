@@ -42,7 +42,7 @@ const (
 )
 
 func highAvailability(spec *lodiav1alpha1.ControlPlaneSpec) {
-	spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+	spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 }
 
 func operatorAt(c client.WithWatch, rev string) *workloads.Reconciler {
@@ -137,7 +137,7 @@ func editEveryObject(t *testing.T, cp *lodiav1alpha1.ControlPlane) {
 		b := &policyv1.PodDisruptionBudget{ObjectMeta: named(cp.Name + "-" + component)}
 		byHand(t, b, func() { b.Spec.MaxUnavailable = new(intstr.FromInt32(2)) })
 	}
-	if cp.Spec.Endpoint.Gateway == nil {
+	if cp.Spec.Endpoint.Gateway == (lodiav1alpha1.GatewayEndpoint{}) {
 		return
 	}
 	for _, name := range routeNames(cp) {
@@ -152,9 +152,9 @@ func revisions(c *lodiav1alpha1.ComponentsStatus) string {
 		return "absent"
 	}
 	var got []string
-	for _, s := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+	for _, s := range []lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
 		switch {
-		case s == nil:
+		case s == (lodiav1alpha1.ComponentStatus{}):
 			got = append(got, "absent")
 		case s.OperatorRevision == "":
 			got = append(got, "none")
@@ -234,10 +234,10 @@ func TestAHeldPassWritesNothingThatExistsAndReportsWhatRuns(t *testing.T) {
 			if err := expectAt(cp, ready.ObservedGeneration, metav1.ConditionTrue, lodiav1alpha1.ReasonReady, ready.Message); err != nil {
 				t.Error(err)
 			}
-			if e := get(t, cp).Status.Endpoint; published == nil || !equality.Semantic.DeepEqual(e, published) {
+			if e := get(t, cp).Status.Endpoint; published == (lodiav1alpha1.EndpointStatus{}) || !equality.Semantic.DeepEqual(e, published) {
 				t.Errorf("status.endpoint is %+v, want the published %+v", e, published)
 			}
-			if cp.Spec.Endpoint.Gateway != nil {
+			if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 				if err := expectRoutes(cp, metav1.ConditionTrue, lodiav1alpha1.ReasonAccepted); err != nil {
 					t.Error(err)
 				}
@@ -462,7 +462,7 @@ func waitingForTheGrant(running, granted string) string {
 }
 
 func TestAHeldPassOverAConditionThatReportsNoAvailabilityWaitsForTheGrant(t *testing.T) {
-	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = true })
+	cp := controlPlane(t, loadBalancer(), func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.Paused = new(true) })
 	setTargetAt(t, cp, version, previous)
 	held := operatorAt(unpaused(), next)
 	passOf(t, held, cp)
@@ -506,7 +506,7 @@ func TestWithoutAGrantedRevisionWorkloadsWaitsForTheTarget(t *testing.T) {
 	testenv.Eventually(t, func() error {
 		return expectAt(cp, 1, metav1.ConditionFalse, lodiav1alpha1.ReasonWaitingForTarget, "waiting for Lifecycle to set status.target.operatorRevision")
 	})
-	if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != lbAddress {
+	if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != lbAddress {
 		t.Errorf("status.endpoint is %+v, want it published from the Service", e)
 	}
 	if n := deployments(t, cp); n != 0 {
@@ -602,7 +602,7 @@ func TestAHeldPassDeletesThePodDisruptionBudgetsARemovedHighAvailabilityLeaves(t
 	for _, component := range componentNames {
 		eventuallyBudget(t, cp, component)
 	}
-	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.HighAvailability = nil })
+	update(t, cp, func(spec *lodiav1alpha1.ControlPlaneSpec) { spec.HighAvailability = lodiav1alpha1.HighAvailability{} })
 
 	passOf(t, operatorAt(unpaused(), next), cp)
 	for _, component := range componentNames {
@@ -746,7 +746,7 @@ func TestAHeldPassWritesNothingOverAPredecessorsService(t *testing.T) {
 	if svc := getService(t, cp); svc.ResourceVersion != leftover.ResourceVersion {
 		t.Error("a held pass wrote the predecessor's Service")
 	}
-	if e := get(t, cp).Status.Endpoint; e != nil {
+	if e := get(t, cp).Status.Endpoint; e != (lodiav1alpha1.EndpointStatus{}) {
 		t.Errorf("status.endpoint is %+v, from the predecessor's Service", e)
 	}
 }

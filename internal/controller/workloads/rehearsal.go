@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -139,7 +140,7 @@ func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		r.forget(req.NamespacedName)
 		return ctrl.Result{}, nil
 	}
-	if cp.Spec.Paused {
+	if ptr.Deref(cp.Spec.Paused, false) {
 		return ctrl.Result{}, nil
 	}
 	pod, err := r.copyOf(ctx, cp)
@@ -180,7 +181,7 @@ func (r *RehearsalReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // does.
 func (r *RehearsalReconciler) rehearsing(cp *lodiav1alpha1.ControlPlane) (string, bool) {
 	k := cp.Status.Kubernetes
-	if r.MaxConcurrent == 0 || k == nil || k.Upgrade == nil || k.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal || cp.Status.Target == nil {
+	if r.MaxConcurrent == 0 || k == nil || k.Upgrade == (lodiav1alpha1.UpgradeStatus{}) || k.Upgrade.Step != lodiav1alpha1.UpgradeStepRehearsal || cp.Status.Target == nil {
 		return "", false
 	}
 	version, _, inTable := versions.Step(cp.Spec.Version, cp.Status.Target.Version)
@@ -191,7 +192,7 @@ func (r *RehearsalReconciler) rehearsing(cp *lodiav1alpha1.ControlPlane) (string
 // generation, and nil otherwise.
 func verdictOf(cp *lodiav1alpha1.ControlPlane, version string) *metav1.Condition {
 	c := meta.FindStatusCondition(cp.Status.Conditions, lodiav1alpha1.ConditionRehearsed)
-	if c == nil || c.Status == metav1.ConditionUnknown || c.ObservedGeneration != cp.Generation || cp.Status.Rehearsal == nil || cp.Status.Rehearsal.Version != version {
+	if c == nil || c.Status == metav1.ConditionUnknown || c.ObservedGeneration != cp.Generation || cp.Status.Rehearsal == (lodiav1alpha1.RehearsalStatus{}) || cp.Status.Rehearsal.Version != version {
 		return nil
 	}
 	return c
@@ -217,7 +218,7 @@ func (r *RehearsalReconciler) copyOf(ctx context.Context, cp *lodiav1alpha1.Cont
 // copies run, its Pod, and says so unless a failed verdict stands for the
 // step, which stays while the rehearsal runs again.
 func (r *RehearsalReconciler) start(ctx context.Context, cp *lodiav1alpha1.ControlPlane, version string, verdict *metav1.Condition) (ctrl.Result, error) {
-	if cp.Status.Endpoint == nil || cp.Status.Datastore == nil || len(cp.Status.Datastore.Endpoints) == 0 {
+	if cp.Status.Endpoint == (lodiav1alpha1.EndpointStatus{}) || len(cp.Status.Datastore.Endpoints) == 0 {
 		return ctrl.Result{RequeueAfter: placeAgain}, nil
 	}
 	images, ok := versions.For(version)
@@ -228,7 +229,7 @@ func (r *RehearsalReconciler) start(ctx context.Context, cp *lodiav1alpha1.Contr
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	rendered := rendering{cp: cp, images: images, signerImage: r.SignerImage, endpoint: cp.Status.Endpoint, etcd: cp.Status.Datastore.Endpoints}
+	rendered := rendering{cp: cp, images: images, signerImage: r.SignerImage, endpoint: &cp.Status.Endpoint, etcd: cp.Status.Datastore.Endpoints}
 	pod := rendered.rehearsalCopy(version, cp.Generation, quota, etcdResources)
 	policy := copyPolicy(cp, r.OperatorNamespace)
 	if held, err := r.policyHeld(ctx, cp, policy); err != nil || held != "" {
@@ -307,7 +308,7 @@ func (r *RehearsalReconciler) place(ctx context.Context, cp *lodiav1alpha1.Contr
 func (r *RehearsalReconciler) class(ctx context.Context, cp *lodiav1alpha1.ControlPlane) (resource.Quantity, *lodiav1alpha1.Resources, error) {
 	quota := resource.MustParse(lodiav1alpha1.DefaultQuotaBackendBytes)
 	running := cp.Status.Datastore.Class
-	if running == nil {
+	if running == (lodiav1alpha1.DatastoreClassStatus{}) {
 		return quota, nil, nil
 	}
 	class := &lodiav1alpha1.DatastoreClass{}
@@ -599,8 +600,8 @@ func (r *RehearsalReconciler) refused(ctx context.Context, cp *lodiav1alpha1.Con
 // with cp's, which holds both as the API server does.
 func (r *RehearsalReconciler) report(ctx context.Context, cp *lodiav1alpha1.ControlPlane, version string, status metav1.ConditionStatus, reason, message string) error {
 	condition := metav1.Condition{Type: lodiav1alpha1.ConditionRehearsed, Status: status, Reason: reason, Message: message, ObservedGeneration: cp.Generation}
-	changed := cp.Status.Rehearsal == nil || cp.Status.Rehearsal.Version != version
-	desired := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition}, Rehearsal: &lodiav1alpha1.RehearsalStatus{Version: version}}
+	changed := cp.Status.Rehearsal == (lodiav1alpha1.RehearsalStatus{}) || cp.Status.Rehearsal.Version != version
+	desired := lodiav1alpha1.ControlPlaneStatus{Conditions: []metav1.Condition{condition}, Rehearsal: lodiav1alpha1.RehearsalStatus{Version: version}}
 	return statusapply.Writer{Client: r.Client, Reader: r.Reader, Manager: RehearsalFieldManager, Events: r.Events}.ApplyInto(ctx, cp, desired, changed)
 }
 

@@ -133,9 +133,9 @@ lodia_controlplane_condition_reason{controlplane="young",namespace="tenants",rea
 
 func TestATruncatedListOfNodesHasNoOutdatedKubeletsSeries(t *testing.T) {
 	truncated := controlPlane("crowded", 10)
-	truncated.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5000, Ready: 4990}, OutdatedKubelets: 7, Truncated: true}
+	truncated.Status.Nodes = lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(5000)), Ready: new(int32(4990))}, OutdatedKubelets: new(int32(7)), Truncated: new(true)}
 	whole := controlPlane("calm", 11)
-	whole.Status.Nodes = &lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: 5, Ready: 4}, OutdatedKubelets: 1}
+	whole.Status.Nodes = lodiav1alpha1.NodesStatus{Count: lodiav1alpha1.Count{Total: new(int32(5)), Ready: new(int32(4))}, OutdatedKubelets: new(int32(1))}
 	want := `
 # HELP lodia_controlplane_nodes_outdated_kubelets status.nodes.outdatedKubelets: the tenant's nodes whose kubelet runs an older minor than status.kubernetes.version; absent while status.nodes.truncated is true.
 # TYPE lodia_controlplane_nodes_outdated_kubelets gauge
@@ -164,7 +164,7 @@ lodia_controlplane_condition{controlplane="young",namespace="tenants",status="Un
 func TestAnAbsentKubernetesVersionKeepsTheInfoSeries(t *testing.T) {
 	without := controlPlane("young", 10)
 	upgrading := controlPlane("stepping", 11)
-	upgrading.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAPIServer, StartedAt: *ago(time.Minute)}}
+	upgrading.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepAPIServer, StartedAt: *ago(time.Minute)}}
 	want := `
 # HELP lodia_controlplane_info 1 for every ControlPlane: its UID, status.kubernetes.version, empty while absent, and the member of spec.endpoint that is set.
 # TYPE lodia_controlplane_info gauge

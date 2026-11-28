@@ -59,7 +59,7 @@ var conditionWriters = map[string]string{
 }
 
 var modeConditions = map[string]func(lodiav1alpha1.Endpoint) bool{
-	lodiav1alpha1.ConditionRoutesReady:       func(e lodiav1alpha1.Endpoint) bool { return e.Gateway != nil },
+	lodiav1alpha1.ConditionRoutesReady:       func(e lodiav1alpha1.Endpoint) bool { return e.Gateway != (lodiav1alpha1.GatewayEndpoint{}) },
 	lodiav1alpha1.ConditionLoadBalancerReady: func(e lodiav1alpha1.Endpoint) bool { return e.LoadBalancer != nil },
 }
 
@@ -216,7 +216,7 @@ func gatewayTenant(ns string) (*lodiav1alpha1.DatastoreClass, *gatewayv1.Gateway
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: ns},
 		Spec: lodiav1alpha1.ControlPlaneSpec{
 			Version: "v1.35.0",
-			Endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+			Endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: "shared", Namespace: ns, SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.com", Konnectivity: "konnectivity.dev.example.com", Tunnel: "tunnel.dev.example.com"},
 			}},
@@ -227,7 +227,7 @@ func gatewayTenant(ns string) (*lodiav1alpha1.DatastoreClass, *gatewayv1.Gateway
 }
 
 func complete(cp *lodiav1alpha1.ControlPlane) bool {
-	if cp.Status.Datastore == nil || cp.Status.Credentials == nil || cp.Status.Target == nil || cp.Status.Endpoint == nil || cp.Spec.Endpoint.Gateway != nil && cp.Status.Endpoint.Tunnel == nil {
+	if len(cp.Status.Datastore.Endpoints) == 0 || cp.Status.Credentials == nil || cp.Status.Target == nil || cp.Status.Endpoint == (lodiav1alpha1.EndpointStatus{}) || cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) && cp.Status.Endpoint.Tunnel == (lodiav1alpha1.HostPort{}) {
 		return false
 	}
 	for conditionType := range conditionWriters {
@@ -238,7 +238,7 @@ func complete(cp *lodiav1alpha1.ControlPlane) bool {
 			return false
 		}
 	}
-	return cp.Status.Rehearsal != nil
+	return cp.Status.Rehearsal != (lodiav1alpha1.RehearsalStatus{})
 }
 
 func statusOwners(obj metav1.Object) (map[string][]string, error) {

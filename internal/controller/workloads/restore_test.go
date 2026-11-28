@@ -210,7 +210,7 @@ func TestAControllerManagerScaledByHandIsReleased(t *testing.T) {
 
 func TestHighAvailabilityRunsTwoControllerManagersOnceReleased(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreReleased, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 	})
 	setRestore(t, cp, gone)
 	testenv.Eventually(t, func() error {
@@ -292,7 +292,7 @@ func TestAWaitKeepsTheHeldMessage(t *testing.T) {
 
 func TestAStaleCacheNeverStopsAReleasedControllerManager(t *testing.T) {
 	cp := restored(t, namespace(t), lodiav1alpha1.RestoreReleased, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
+		spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Node"}
 	})
 	setRestore(t, cp, gone)
 	setTrue(t, cp, lodiav1alpha1.ConditionAddonsApplied, lodiav1alpha1.ReasonApplied)
@@ -339,7 +339,7 @@ func unpaused(stale ...func(client.ObjectKey, client.Object)) client.WithWatch {
 				return err
 			}
 			if cp, ok := obj.(*lodiav1alpha1.ControlPlane); ok {
-				cp.Spec.Paused = false
+				cp.Spec.Paused = new(false)
 			}
 			for _, change := range stale {
 				change(key, obj)
@@ -352,7 +352,7 @@ func unpaused(stale ...func(client.ObjectKey, client.Object)) client.WithWatch {
 func restored(t *testing.T, ns string, release lodiav1alpha1.RestoreRelease, change ...func(*lodiav1alpha1.ControlPlaneSpec)) *lodiav1alpha1.ControlPlane {
 	t.Helper()
 	restoring := func(spec *lodiav1alpha1.ControlPlaneSpec) {
-		spec.RestoreFrom = &lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: release}
+		spec.RestoreFrom = lodiav1alpha1.RestoreFrom{BackupRef: lodiav1alpha1.LocalReference{Name: "prod-backup"}, Release: release}
 	}
 	cp := create(t, ns, loadBalancer(), append([]func(*lodiav1alpha1.ControlPlaneSpec){restoring}, change...)...)
 	setIngress(t, cp, corev1.LoadBalancerIngress{IP: lbAddress})
@@ -371,7 +371,7 @@ func source(t *testing.T, ns string, finalizers ...string) *lodiav1alpha1.Contro
 			Version:  version,
 			Endpoint: loadBalancer(),
 			Network:  lodiav1alpha1.Network{ServiceCIDRs: []lodiav1alpha1.CIDR{"10.96.0.0/16"}, PodCIDRs: []lodiav1alpha1.CIDR{"10.244.0.0/16"}},
-			Paused:   true,
+			Paused:   new(true),
 		},
 	}
 	if err := k8s.Create(t.Context(), prod); err != nil {

@@ -46,7 +46,7 @@ func TestHighAvailabilityGate(t *testing.T) {
 		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			k8s = newClient(t, cfg)
 			createTenant(ctx, t, k8s, key, haClass, func(spec *lodiav1alpha1.ControlPlaneSpec) {
-				spec.HighAvailability = &lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
+				spec.HighAvailability = lodiav1alpha1.HighAvailability{FailureTolerance: "Zone"}
 			})
 			image, err := build(ctx, cfg.KubeconfigFile(), "./test/"+apiLoop)
 			if err != nil {

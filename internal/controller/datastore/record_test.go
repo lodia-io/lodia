@@ -66,7 +66,7 @@ func waiting(t *testing.T, ns, name string, r *datastore.Reconciler) *lodiav1alp
 	return getControlPlane(t, ns, name)
 }
 
-func liveRecord(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.MemberRestoreStatus {
+func liveRecord(t *testing.T, cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.MemberRestoreStatus {
 	t.Helper()
 	return getControlPlane(t, cp.Namespace, cp.Name).Status.MemberRestore
 }
@@ -74,7 +74,7 @@ func liveRecord(t *testing.T, cp *lodiav1alpha1.ControlPlane) *lodiav1alpha1.Mem
 func wantRecord(t *testing.T, cp *lodiav1alpha1.ControlPlane, want lodiav1alpha1.MemberRestoreStatus) {
 	t.Helper()
 	got := liveRecord(t, cp)
-	if got == nil || got.Member != want.Member || !got.DetectedAt.Equal(&want.DetectedAt) || got.From != want.From {
+	if got == (lodiav1alpha1.MemberRestoreStatus{}) || got.Member != want.Member || !got.DetectedAt.Equal(&want.DetectedAt) || got.From != want.From {
 		t.Fatalf("status.memberRestore is %+v, want %+v", got, want)
 	}
 }
@@ -319,7 +319,7 @@ func TestARecordThatDidNotLandIsWrittenAtTheNextPass(t *testing.T) {
 			told := toldAt("dev-etcd-0", restoredAt, lodiav1alpha1.MemberRestoreFromSnapshots)
 			tell(latches, cp, told)
 			c.apply(t, cp, latches)
-			if got := liveRecord(t, cp); got != nil {
+			if got := liveRecord(t, cp); got != (lodiav1alpha1.MemberRestoreStatus{}) {
 				t.Fatalf("status.memberRestore is %+v after the apply that did not land, want none", got)
 			}
 			passOver(t, recorder(k8s, k8s, latches), cp)
@@ -345,7 +345,7 @@ func TestAConflictAloneOnTheLastApplyOfAFormedTenantRequeuesWithNoErrorAndNoEven
 		t.Errorf("the pass whose last apply conflicted recorded %q, want no event", <-recorded.Events)
 	}
 	got := getControlPlane(t, ns, cp.Name)
-	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Message != "another manager's" || got.Status.MemberRestore != nil {
+	if c := meta.FindStatusCondition(got.Status.Conditions, lodiav1alpha1.ConditionDatastoreReady); c == nil || c.Message != "another manager's" || got.Status.MemberRestore != (lodiav1alpha1.MemberRestoreStatus{}) {
 		t.Fatalf("DatastoreReady is %+v and status.memberRestore %+v after the apply that conflicted, want the other manager's write left as it is and no record", c, got.Status.MemberRestore)
 	}
 	if _, err := pass(t, recorder(k8s, k8s, latches), cp); err != nil {

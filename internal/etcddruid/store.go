@@ -406,7 +406,7 @@ func (s *Store) KeptCap(class *lodiav1alpha1.DatastoreClass) string {
 }
 
 // OnStore says whether the Etcd names the store backup renders for cp.
-func (s *Store) OnStore(cp *lodiav1alpha1.ControlPlane, backup *lodiav1alpha1.EtcdBackup, namespaceUID types.UID) bool {
+func (s *Store) OnStore(cp *lodiav1alpha1.ControlPlane, backup lodiav1alpha1.EtcdBackup, namespaceUID types.UID) bool {
 	return equality.Semantic.DeepEqual(store(cp, backup, namespaceUID), s.etcd.Spec.Backup.Store)
 }
 

@@ -435,7 +435,7 @@ func TestTheSweepOfACopyThatIsGoneOrBeingDeletedIsDropped(t *testing.T) {
 				Spec:       lodiav1alpha1.ControlPlaneSpec{Version: "v1.37.1"},
 				Status: lodiav1alpha1.ControlPlaneStatus{
 					Target:     &lodiav1alpha1.Target{Version: "v1.36.6"},
-					Kubernetes: &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: c.step}},
+					Kubernetes: &lodiav1alpha1.KubernetesStatus{Upgrade: lodiav1alpha1.UpgradeStatus{Step: c.step}},
 				},
 			}
 			objects := []client.Object{cp}
@@ -590,8 +590,8 @@ func TestACopyLeftBesideAPassedVerdictIsDeleted(t *testing.T) {
 		Spec:       lodiav1alpha1.ControlPlaneSpec{Version: "v1.37.1"},
 		Status: lodiav1alpha1.ControlPlaneStatus{
 			Target:     &lodiav1alpha1.Target{Version: "v1.36.6"},
-			Kubernetes: &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepRehearsal}},
-			Rehearsal:  &lodiav1alpha1.RehearsalStatus{Version: "v1.37.1"},
+			Kubernetes: &lodiav1alpha1.KubernetesStatus{Upgrade: lodiav1alpha1.UpgradeStatus{Step: lodiav1alpha1.UpgradeStepRehearsal}},
+			Rehearsal:  lodiav1alpha1.RehearsalStatus{Version: "v1.37.1"},
 			Conditions: []metav1.Condition{{Type: lodiav1alpha1.ConditionRehearsed, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonPassed, ObservedGeneration: 3, LastTransitionTime: metav1.Now()}},
 		},
 	}

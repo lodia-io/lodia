@@ -80,7 +80,7 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 	}
 	cp := &lodiav1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{Name: "dev", Namespace: "team", UID: uid, Generation: w.generation},
-		Spec:       lodiav1alpha1.ControlPlaneSpec{Version: w.spec, Paused: w.paused},
+		Spec:       lodiav1alpha1.ControlPlaneSpec{Version: w.spec, Paused: new(w.paused)},
 	}
 	if w.deleting {
 		cp.DeletionTimestamp = &started
@@ -93,14 +93,14 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 		if w.since != nil {
 			since = *w.since
 		}
-		cp.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: &lodiav1alpha1.UpgradeStatus{Step: w.step, StartedAt: since}}
+		cp.Status.Kubernetes = &lodiav1alpha1.KubernetesStatus{Upgrade: lodiav1alpha1.UpgradeStatus{Step: w.step, StartedAt: since}}
 	}
-	component := func(version string) *lodiav1alpha1.ComponentStatus {
+	component := func(version string) lodiav1alpha1.ComponentStatus {
 		updated := int32(1)
 		if w.rolling {
 			updated = 0
 		}
-		c := &lodiav1alpha1.ComponentStatus{RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 1, Ready: 1}, Updated: &updated}}
+		c := lodiav1alpha1.ComponentStatus{RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(1)), Ready: new(int32(1))}, Updated: &updated}}
 		c.Version = version
 		return c
 	}
@@ -129,11 +129,11 @@ func (w world) controlPlane() *lodiav1alpha1.ControlPlane {
 		cp.Status.Conditions = append(cp.Status.Conditions, metav1.Condition{Type: lodiav1alpha1.ConditionControllerManagerHeld, Status: metav1.ConditionTrue, Reason: lodiav1alpha1.ReasonNodesSilent})
 	}
 	if !w.nodesAbsent {
-		cp.Status.Nodes = &lodiav1alpha1.NodesStatus{OldestKubelet: w.oldestKubelet, Truncated: w.nodesTruncated}
+		cp.Status.Nodes = lodiav1alpha1.NodesStatus{OldestKubelet: w.oldestKubelet, Truncated: new(w.nodesTruncated)}
 	}
 	if w.rehearsed != nil {
 		cp.Status.Conditions = append(cp.Status.Conditions, *w.rehearsed)
-		cp.Status.Rehearsal = &lodiav1alpha1.RehearsalStatus{Version: w.rehearsedFor}
+		cp.Status.Rehearsal = lodiav1alpha1.RehearsalStatus{Version: w.rehearsedFor}
 	}
 	return cp
 }
@@ -188,7 +188,10 @@ func check(t *testing.T, f facts, w want) {
 	var upgrade *lodiav1alpha1.UpgradeStatus
 	version := ""
 	if got.Kubernetes != nil {
-		upgrade, version = got.Kubernetes.Upgrade, got.Kubernetes.Version
+		version = got.Kubernetes.Version
+		if got.Kubernetes.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
+			upgrade = &got.Kubernetes.Upgrade
+		}
 	}
 	if version != w.version {
 		t.Errorf("kubernetes.version is %q, want %q", version, w.version)
@@ -472,7 +475,7 @@ func TestAChainTakesOneMinorAtATime(t *testing.T) {
 			t.Errorf("target is %s, want %s", cp.Status.Target.Version, target)
 		}
 		var got lodiav1alpha1.UpgradeStep
-		if cp.Status.Kubernetes != nil && cp.Status.Kubernetes.Upgrade != nil {
+		if cp.Status.Kubernetes != nil && cp.Status.Kubernetes.Upgrade != (lodiav1alpha1.UpgradeStatus{}) {
 			got = cp.Status.Kubernetes.Upgrade.Step
 		}
 		if got != step {

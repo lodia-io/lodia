@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -51,7 +52,7 @@ func readiness(cp *lodiav1alpha1.ControlPlane) []string {
 	}
 	reach := []string{lodiav1alpha1.ConditionReachable, lodiav1alpha1.ConditionControllersLeading}
 	switch e := cp.Spec.Endpoint; {
-	case e.Gateway != nil:
+	case e.Gateway != (lodiav1alpha1.GatewayEndpoint{}):
 		return slices.Concat([]string{lodiav1alpha1.ConditionRoutesReady}, build, reach)
 	case e.LoadBalancer != nil && e.LoadBalancer.Host == "":
 		return slices.Concat([]string{lodiav1alpha1.ConditionLoadBalancerReady}, build, reach)
@@ -218,7 +219,7 @@ func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 			return f, err
 		}
 	}
-	if cp.DeletionTimestamp.IsZero() && !cp.Spec.Paused && f.pending(f.versionChange()).any() {
+	if cp.DeletionTimestamp.IsZero() && !ptr.Deref(cp.Spec.Paused, false) && f.pending(f.versionChange()).any() {
 		list := &lodiav1alpha1.ControlPlaneList{}
 		if err := fleet.List(ctx, list, client.UnsafeDisableDeepCopy); err != nil {
 			return f, err
@@ -233,8 +234,8 @@ func (r *Reconciler) gather(ctx context.Context, cp *lodiav1alpha1.ControlPlane,
 func oldestReported(cp *lodiav1alpha1.ControlPlane) string {
 	var reported []string
 	if c := cp.Status.Components; c != nil {
-		for _, component := range []*lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
-			if component != nil {
+		for _, component := range []lodiav1alpha1.ComponentStatus{c.APIServer, c.ControllerManager, c.Scheduler} {
+			if component != (lodiav1alpha1.ComponentStatus{}) {
 				reported = append(reported, component.Version)
 			}
 		}
@@ -261,14 +262,14 @@ func rollingOut(cp *lodiav1alpha1.ControlPlane) []string {
 	if c := cp.Status.Components; c != nil {
 		for _, component := range []struct {
 			name   string
-			status *lodiav1alpha1.ComponentStatus
+			status lodiav1alpha1.ComponentStatus
 		}{{"kube-apiserver", c.APIServer}, {"kube-controller-manager", c.ControllerManager}, {"kube-scheduler", c.Scheduler}} {
-			if component.status != nil {
+			if component.status != (lodiav1alpha1.ComponentStatus{}) {
 				counts = append(counts, rollout{component.name, "replicas", component.status.RolloutCount})
 			}
 		}
 	}
-	if d := cp.Status.Datastore; d != nil {
+	if d := cp.Status.Datastore; len(d.Endpoints) > 0 {
 		counts = append(counts, rollout{"etcd", "members", d.Members})
 	}
 	var rolling []string
@@ -276,8 +277,8 @@ func rollingOut(cp *lodiav1alpha1.ControlPlane) []string {
 		switch {
 		case c.count.Updated == nil:
 			rolling = append(rolling, fmt.Sprintf("%s: its updated %s are not reported yet", c.name, c.unit))
-		case *c.count.Updated < c.count.Total:
-			rolling = append(rolling, fmt.Sprintf("%s: %d of %d %s updated", c.name, *c.count.Updated, c.count.Total, c.unit))
+		case *c.count.Updated < ptr.Deref(c.count.Total, 0):
+			rolling = append(rolling, fmt.Sprintf("%s: %d of %d %s updated", c.name, *c.count.Updated, ptr.Deref(c.count.Total, 0), c.unit))
 		}
 	}
 	return rolling

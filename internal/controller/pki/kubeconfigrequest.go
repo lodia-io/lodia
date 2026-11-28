@@ -156,7 +156,7 @@ func (r *KubeconfigRequestReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	} else if err != nil {
 		return ctrl.Result{}, err
 	}
-	if cp.Status.Endpoint == nil {
+	if cp.Status.Endpoint == (lodiav1alpha1.EndpointStatus{}) {
 		return notReady(lodiav1alpha1.ReasonWaitingForEndpoint, "waiting for Workloads to publish status.endpoint of ControlPlane "+cp.Name)
 	}
 	ca, err := r.input(ctx, cp, cp.Name+"-cakey-"+requestCA)
@@ -317,7 +317,7 @@ func (r *KubeconfigRequestReconciler) applyStatus(ctx context.Context, kr *lodia
 	status := map[string]any{}
 	if kubeconfig != nil {
 		status["kubeconfig"] = base64.StdEncoding.EncodeToString(kubeconfig)
-		status["expirationTimestamp"] = expiration.UTC().Format(time.RFC3339)
+		status["expirationTime"] = expiration.UTC().Format(time.RFC3339)
 	}
 	if err := (statusapply.Writer{Client: r.Client, Manager: kubeconfigRequestFieldManager, Events: r.Events}).ApplyLocked(ctx, "KubeconfigRequest", kr, kr.Status.Conditions, status, *meta.FindStatusCondition(all, c.Type)); err != nil {
 		return fmt.Errorf("apply the status of KubeconfigRequest %s: %w", kr.Name, err)

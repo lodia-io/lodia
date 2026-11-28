@@ -226,7 +226,7 @@ func serveCRD(t *testing.T, crd *unstructured.Unstructured, ns string, probe fun
 
 func reportedAPIServer(t *testing.T, cp *lodiav1alpha1.ControlPlane) string {
 	t.Helper()
-	if c := get(t, cp).Status.Components; c != nil && c.APIServer != nil {
+	if c := get(t, cp).Status.Components; c != nil && c.APIServer != (lodiav1alpha1.ComponentStatus{}) {
 		return c.APIServer.Version
 	}
 	return ""
@@ -753,7 +753,7 @@ func TestAHeldPassOrAWaitCountsTheServedFileOnceTheIssuerMoves(t *testing.T) {
 
 			setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
 			testenv.Eventually(t, func() error {
-				if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != moved {
+				if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != moved {
 					return fmt.Errorf("status.endpoint is %+v", e)
 				}
 				return nil
@@ -809,7 +809,7 @@ func TestAHeldPassEndsTheRefusalItCarriesWithWhatTheFileItKeepsServes(t *testing
 			reconcileNow(t, cp)
 			setIngress(t, cp, corev1.LoadBalancerIngress{IP: moved})
 			testenv.Eventually(t, func() error {
-				if e := get(t, cp).Status.Endpoint; e == nil || e.APIServer.Host != moved {
+				if e := get(t, cp).Status.Endpoint; e == (lodiav1alpha1.EndpointStatus{}) || e.APIServer.Host != moved {
 					return fmt.Errorf("status.endpoint is %+v", e)
 				}
 				return nil

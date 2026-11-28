@@ -72,8 +72,8 @@ func TestTheVersionIsOfTheContainerNamedForTheComponent(t *testing.T) {
 
 func TestAComponentReportsTheVersionOnlyOnceEveryReplicaRunsIt(t *testing.T) {
 	const template = "registry.k8s.io/kube-controller-manager:v1.37.2"
-	previous := &lodiav1alpha1.ComponentStatus{
-		RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: 9, Ready: 9}},
+	previous := lodiav1alpha1.ComponentStatus{
+		RolloutCount: lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(9)), Ready: new(int32(9))}},
 		Rendered:     lodiav1alpha1.Rendered{Version: "v1.37.1", OperatorRevision: "kept"},
 	}
 	for _, c := range []struct {
@@ -81,7 +81,7 @@ func TestAComponentReportsTheVersionOnlyOnceEveryReplicaRunsIt(t *testing.T) {
 		image    string
 		replicas int32
 		status   appsv1.DeploymentStatus
-		previous *lodiav1alpha1.ComponentStatus
+		previous lodiav1alpha1.ComponentStatus
 		want     lodiav1alpha1.ComponentStatus
 	}{
 		{
@@ -126,18 +126,18 @@ func TestAComponentReportsTheVersionOnlyOnceEveryReplicaRunsIt(t *testing.T) {
 		},
 		{
 			"a tag that is not a version, and no previous report", "registry.k8s.io/kube-controller-manager:latest", 1,
-			appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}, nil,
+			appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}, lodiav1alpha1.ComponentStatus{},
 			lodiav1alpha1.ComponentStatus{RolloutCount: counts(1, 1, new(int32(1)))},
 		},
 		{
 			"no previous report", template, 1,
-			appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}, nil,
+			appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}, lodiav1alpha1.ComponentStatus{},
 			lodiav1alpha1.ComponentStatus{RolloutCount: counts(1, 1, new(int32(1))), Rendered: lodiav1alpha1.Rendered{Version: "v1.37.2"}},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := rolledOut(deploymentOf(controllerManager, c.image, c.replicas, c.status), controllerManager, c.previous, nil)
-			if got == nil || !equality.Semantic.DeepEqual(*got, c.want) {
+			if !equality.Semantic.DeepEqual(got, c.want) {
 				t.Errorf("the report is %+v, want %+v", got, c.want)
 			}
 		})
@@ -147,17 +147,17 @@ func TestAComponentReportsTheVersionOnlyOnceEveryReplicaRunsIt(t *testing.T) {
 func TestAComponentWhoseDeploymentIsGoneKeepsItsReportWithNoReplicas(t *testing.T) {
 	for _, c := range []struct {
 		name     string
-		previous *lodiav1alpha1.ComponentStatus
-		want     *lodiav1alpha1.ComponentStatus
+		previous lodiav1alpha1.ComponentStatus
+		want     lodiav1alpha1.ComponentStatus
 	}{
-		{"a version", &lodiav1alpha1.ComponentStatus{RolloutCount: counts(2, 2, new(int32(2))), Rendered: lodiav1alpha1.Rendered{Version: "v1.37.1"}},
-			&lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{Version: "v1.37.1"}}},
-		{"a revision", &lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{OperatorRevision: "v0.1.0+abc"}},
-			&lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{OperatorRevision: "v0.1.0+abc"}}},
-		{"a roll after a restored member", &lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt},
-			&lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt}},
-		{"counts alone", &lodiav1alpha1.ComponentStatus{RolloutCount: counts(2, 2, new(int32(2)))}, nil},
-		{"none", nil, nil},
+		{"a version", lodiav1alpha1.ComponentStatus{RolloutCount: counts(2, 2, new(int32(2))), Rendered: lodiav1alpha1.Rendered{Version: "v1.37.1"}},
+			lodiav1alpha1.ComponentStatus{RolloutCount: counts(0, 0, nil), Rendered: lodiav1alpha1.Rendered{Version: "v1.37.1"}}},
+		{"a revision", lodiav1alpha1.ComponentStatus{Rendered: lodiav1alpha1.Rendered{OperatorRevision: "v0.1.0+abc"}},
+			lodiav1alpha1.ComponentStatus{RolloutCount: counts(0, 0, nil), Rendered: lodiav1alpha1.Rendered{OperatorRevision: "v0.1.0+abc"}}},
+		{"a roll after a restored member", lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt},
+			lodiav1alpha1.ComponentStatus{RolloutCount: counts(0, 0, nil), MemberRestoreDetectedAt: &restoreAt}},
+		{"counts alone", lodiav1alpha1.ComponentStatus{RolloutCount: counts(2, 2, new(int32(2)))}, lodiav1alpha1.ComponentStatus{}},
+		{"none", lodiav1alpha1.ComponentStatus{}, lodiav1alpha1.ComponentStatus{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			got := rolledOut(nil, apiServer, c.previous, &laterAt)
@@ -194,8 +194,8 @@ func TestARollAfterARestoredMemberIsReportedOnceEveryReplicaRunsTheValueRendered
 			if c.annotation != "" {
 				d.Spec.Template.Annotations = map[string]string{lodiav1alpha1.MemberRestoreDetectedAtAnnotation: c.annotation}
 			}
-			got := rolledOut(d, apiServer, &lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt}, &laterAt)
-			if got == nil || !equality.Semantic.DeepEqual(got.MemberRestoreDetectedAt, c.want) {
+			got := rolledOut(d, apiServer, lodiav1alpha1.ComponentStatus{MemberRestoreDetectedAt: &restoreAt}, &laterAt)
+			if !equality.Semantic.DeepEqual(got.MemberRestoreDetectedAt, c.want) {
 				t.Errorf("the report is %+v, want memberRestoreDetectedAt %v", got, c.want)
 			}
 		})
@@ -203,5 +203,5 @@ func TestARollAfterARestoredMemberIsReportedOnceEveryReplicaRunsTheValueRendered
 }
 
 func counts(total, ready int32, updated *int32) lodiav1alpha1.RolloutCount {
-	return lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: total, Ready: ready}, Updated: updated}
+	return lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(total), Ready: new(ready)}, Updated: updated}
 }

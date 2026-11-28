@@ -16,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 
 	lodiav1alpha1 "go.lodia.io/lodia/api/v1alpha1"
@@ -48,7 +49,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 			status:   lodiav1alpha1.EndpointStatus{APIServer: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}, Konnectivity: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31132}, InCluster: lodiav1alpha1.HostPort{Host: "192.0.2.11", Port: 31443}},
 		},
 		"gateway": {
-			endpoint: lodiav1alpha1.Endpoint{Gateway: &lodiav1alpha1.GatewayEndpoint{
+			endpoint: lodiav1alpha1.Endpoint{Gateway: lodiav1alpha1.GatewayEndpoint{
 				ParentRef: lodiav1alpha1.ParentReference{Name: "edge", Namespace: "gateways", SectionName: "tls"},
 				Hostnames: lodiav1alpha1.GatewayHostnames{APIServer: "api.dev.example.test", Konnectivity: "konnectivity.dev.example.test", Tunnel: "tunnel.dev.example.test"},
 			}},
@@ -56,7 +57,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 				APIServer:    lodiav1alpha1.HostPort{Host: "api.dev.example.test", Port: 443},
 				Konnectivity: lodiav1alpha1.HostPort{Host: "konnectivity.dev.example.test", Port: 443},
 				InCluster:    lodiav1alpha1.HostPort{Host: "240.0.0.1", Port: 6443},
-				Tunnel:       &lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
+				Tunnel:       lodiav1alpha1.HostPort{Host: "tunnel.dev.example.test", Port: 443},
 			},
 		},
 	} {
@@ -70,7 +71,7 @@ func TestTheRenderIsPinned(t *testing.T) {
 		}
 		var objects []any
 		objects = append(objects, service(cp))
-		if cp.Spec.Endpoint.Gateway != nil {
+		if cp.Spec.Endpoint.Gateway != (lodiav1alpha1.GatewayEndpoint{}) {
 			for _, route := range routes(cp) {
 				objects = append(objects, route)
 			}
@@ -274,7 +275,7 @@ func TestUpdatedCountsAvailableReplicasOfTheCurrentTemplate(t *testing.T) {
 		if count.Updated != nil {
 			updated = fmt.Sprint(*count.Updated)
 		}
-		if got := fmt.Sprintf("%d/%d/%s", count.Total, count.Ready, updated); got != row.want {
+		if got := fmt.Sprintf("%d/%d/%s", ptr.Deref(count.Total, -1), ptr.Deref(count.Ready, -1), updated); got != row.want {
 			t.Errorf("%s: total/ready/updated %s, want %s", row.name, got, row.want)
 		}
 	}

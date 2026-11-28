@@ -54,7 +54,7 @@ func TestAStoreTheStatusCannotHoldIsLeftOutAndSaid(t *testing.T) {
 				}
 				mustPass(t, operatorAt(unpaused(k8s), revision), ns, cp)
 				status := getControlPlane(t, ns, cp).Status
-				if status.Datastore == nil || status.Datastore.Snapshots != nil {
+				if len(status.Datastore.Endpoints) == 0 || status.Datastore.Snapshots != (lodiav1alpha1.SnapshotLocation{}) {
 					t.Errorf("%s: status.datastore is %+v, want it without snapshots", pass.name, status.Datastore)
 				}
 				if ready := meta.FindStatusCondition(status.Conditions, lodiav1alpha1.ConditionDatastoreReady); ready == nil || ready.Reason != pass.ready {
@@ -88,7 +88,7 @@ func TestABackupWaitsWhileItsSourceNamesAStoreItsStatusCannotHold(t *testing.T) 
 			if result, err := reconcileBackup(r, s.ns, "b"); err != nil || result.RequeueAfter != 10*time.Second {
 				t.Errorf("the waiting pass returned %+v, %v, want a retry in 10 seconds", result, err)
 			}
-			if backup := getBackup(t, s.ns, "b"); backup.Status.StartedAt != nil || backup.Status.Snapshots != nil {
+			if backup := getBackup(t, s.ns, "b"); backup.Status.StartedAt != nil || backup.Status.Snapshots != (lodiav1alpha1.BackupSnapshotLocation{}) {
 				t.Errorf("the Backup started on a store its status cannot hold: %+v", backup.Status)
 			}
 		})
@@ -99,7 +99,7 @@ func TestTheStatusTakesAStoreExactlyWhenTheCheckSaysItCan(t *testing.T) {
 	t.Parallel()
 	ns := namespace(t)
 	cp := controlPlane(ns, "bounds", "")
-	cp.Spec.Paused = true
+	cp.Spec.Paused = new(true)
 	backup := &lodiav1alpha1.Backup{ObjectMeta: metav1.ObjectMeta{Name: "bounds", Namespace: ns}, Spec: lodiav1alpha1.BackupSpec{ControlPlaneRef: lodiav1alpha1.LocalReference{Name: "bounds"}}}
 	for _, obj := range []client.Object{cp, backup} {
 		if err := k8s.Create(t.Context(), obj); err != nil {
@@ -148,11 +148,12 @@ func TestTheStatusTakesAStoreExactlyWhenTheCheckSaysItCan(t *testing.T) {
 		described := fmt.Sprintf("provider %q, a bucket of %d characters, a prefix of %d and an endpoint of %d", location.Provider,
 			utf8.RuneCountInString(location.Bucket), utf8.RuneCountInString(location.Prefix), utf8.RuneCountInString(location.Endpoint))
 		for kind, status := range map[string]any{
-			"ControlPlane": &lodiav1alpha1.ControlPlaneStatus{Datastore: &lodiav1alpha1.DatastoreStatus{
+			"ControlPlane": &lodiav1alpha1.ControlPlaneStatus{Datastore: lodiav1alpha1.DatastoreStatus{
 				Endpoints: []lodiav1alpha1.HostPort{{Host: "bounds-etcd-client." + ns + ".svc", Port: 2379}},
-				Snapshots: &location,
+				Members:   lodiav1alpha1.RolloutCount{Count: lodiav1alpha1.Count{Total: new(int32(1)), Ready: new(int32(1))}},
+				Snapshots: location,
 			}},
-			"Backup": &lodiav1alpha1.BackupStatus{Snapshots: &lodiav1alpha1.BackupSnapshotLocation{SnapshotLocation: location}},
+			"Backup": &lodiav1alpha1.BackupStatus{Snapshots: lodiav1alpha1.BackupSnapshotLocation{SnapshotLocation: location}},
 		} {
 			if err := apply(kind, status); (err == nil) != (why == "") {
 				t.Errorf("%s's status with %s: the check says %q, the API server %v", kind, described, why, err)

@@ -66,10 +66,10 @@ func classAt(class *lodiav1alpha1.DatastoreClass, generation int64) lodiav1alpha
 }
 
 func classTarget(cp *lodiav1alpha1.ControlPlane) lodiav1alpha1.DatastoreClassGeneration {
-	if cp.Status.Target == nil || cp.Status.Target.DatastoreClass == nil {
+	if cp.Status.Target == nil || cp.Status.Target.DatastoreClass == (lodiav1alpha1.DatastoreClassGeneration{}) {
 		return lodiav1alpha1.DatastoreClassGeneration{}
 	}
-	return *cp.Status.Target.DatastoreClass
+	return cp.Status.Target.DatastoreClass
 }
 
 func TestAClassEditReachesTheControlPlanesWhoseEtcdRunsIt(t *testing.T) {
@@ -79,7 +79,7 @@ func TestAClassEditReachesTheControlPlanesWhoseEtcdRunsIt(t *testing.T) {
 	for _, class := range []string{edited, kept} {
 		cp := controlPlane(t, "v1.37.1")
 		update(t, cp, func(cp *lodiav1alpha1.ControlPlane) {
-			cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
+			cp.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
 		})
 		for _, conditionType := range readiness {
 			setCondition(t, cp, conditionType, metav1.ConditionTrue, "Fine", "")
@@ -169,7 +169,7 @@ func TestAClassDeletedWhileItsEditWaitsLeavesNothingPendingUntilItIsCreatedAgain
 	deleted := datastoreClass(t, quiet, class)
 	cp := fleetTenant(t, "class-deleted")
 	fresh := getQuiet(t, cp)
-	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
+	fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: "20:00", End: "21:00"}}
 	if err := quiet.Update(t.Context(), fresh); err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +213,7 @@ func TestAClassEditReachesAnEtcdThatNeverRolledOut(t *testing.T) {
 			class := datastoreClass(t, quiet, "lifecycle-unrolled-"+row.begin[:2])
 			cp := quietControlPlane(t)
 			fresh := getQuiet(t, cp)
-			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: row.begin, End: row.begin[:2] + ":59"}}
+			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: row.begin, End: row.begin[:2] + ":59"}}
 			if err := quiet.Update(t.Context(), fresh); err != nil {
 				t.Fatal(err)
 			}
@@ -265,7 +265,7 @@ func TestAClassEditReachesAnEtcdCreatedAgainFromAnotherClass(t *testing.T) {
 			class := datastoreClass(t, quiet, "lifecycle-recreated-"+row.begin[:2])
 			cp := quietControlPlane(t)
 			fresh := getQuiet(t, cp)
-			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: &lodiav1alpha1.MaintenanceWindow{Begin: row.begin, End: row.begin[:2] + ":59"}}
+			fresh.Spec.Maintenance = &lodiav1alpha1.Maintenance{Window: lodiav1alpha1.MaintenanceWindow{Begin: row.begin, End: row.begin[:2] + ":59"}}
 			if err := quiet.Update(t.Context(), fresh); err != nil {
 				t.Fatal(err)
 			}
